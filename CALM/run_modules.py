@@ -1,9 +1,9 @@
 import argparse
 from importlib.metadata import version
 from CALM.analyze.enter import Analyze
-from CALM.calibrate.enter import Calibrate
-from CALM.plot.enter import Map
-from CALM.utilize.enter import Link
+#from CALM.calibrate.enter import Calibrate
+#from CALM.plot.enter import Map
+#from CALM.utilize.enter import Link
 
 
 
@@ -30,7 +30,7 @@ def run_module(module_name, args):
 
 def main():
     """
-    main entry point for the TS2CG command-line interface.
+    main entry point for the CALM command-line interface.
     """
 
     # define the python based modules
@@ -38,8 +38,17 @@ def main():
 
     # parse arguments before a calling module
     parser = argparse.ArgumentParser(
-        description='TS2CG: converts triangulated surfaces (ts) to coarse-grained membrane models',
-        prog='TS2CG',
+        description=r"________/\\\\\\\\\_____/\\\\\\\\\_____/\\\______________/\\\\____________/\\\\_"+"\n"+\
+r"_____/\\\////////____/\\\\\\\\\\\\\__\/\\\_____________\/\\\\\\________/\\\\\\_"+"\n"+\
+r"___/\\\/____________/\\\/////////\\\_\/\\\_____________\/\\\//\\\____/\\\//\\\_"+"\n"+\
+r"__/\\\_____________\/\\\_______\/\\\_\/\\\_____________\/\\\\///\\\/\\\/_\/\\\_"+"\n"+\
+r"_\/\\\_____________\/\\\\\\\\\\\\\\\_\/\\\_____________\/\\\__\///\\\/___\/\\\_"+"\n"+\
+r"_\//\\\____________\/\\\/////////\\\_\/\\\_____________\/\\\____\///_____\/\\\_"+"\n"+\
+r"__\///\\\__________\/\\\_______\/\\\_\/\\\_____________\/\\\_____________\/\\\_"+"\n"+\
+r"____\////\\\\\\\\\_\/\\\_______\/\\\_\/\\\\\\\\\\\\\\\_\/\\\_____________\/\\\_"+"\n"+\
+r"_______\/////////__\///________\///__\///////////////__\///______________\///__"+"\n\n"+\
+"\nCalibrates Analyzes Links and Maps lipid membranes",
+        prog='CALM',
     )
 
     parser.add_argument(
