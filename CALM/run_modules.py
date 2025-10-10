@@ -66,7 +66,7 @@ r"_______\/////////__\///________\///__\///////////////__\///______________\///_
     parser.add_argument(
         "-v", "--version",
         action="version",
-        version=f'%(prog)s {version("ts2cg")}'
+        version=f'%(prog)s {version("CALM")}'
     )
 
     args = parser.parse_args()
