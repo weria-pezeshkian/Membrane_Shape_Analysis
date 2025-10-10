@@ -26,16 +26,19 @@ dynamic = ["dependencies"]
 dependencies = { file = ["requirements.in"] }
 
 [project.urls]
-Homepage = "https://example.com/CALM"
-Repository = "https://example.com/CALM.git"
-Issues = "https://example.com/CALM/issues"
+Homepage = "https://weria-pezeshkian.github.io/"
+Repository = "https://github.com/weria-pezeshkian/Membrane_Shape_Analysis"
+Issues = "https://github.com/weria-pezeshkian/Membrane_Shape_Analysis/issues"
 
 [tool.setuptools]
 license-files = ["LICENSE"]
 
-# If you use a src/ layout (recommended), uncomment the next two sections:
+# If you use a src/ layout (recommended), uncomment the next two sections:#
 #[tool.setuptools.packages.find]
-#where = ["src"]
+#where = ["CALM"]
 
 #[tool.setuptools.package-data]
 #"calm" = ["py.typed"]  # or any data files you ship
+
+[project.scripts]
+CALM = "CALM.run_modules:main"

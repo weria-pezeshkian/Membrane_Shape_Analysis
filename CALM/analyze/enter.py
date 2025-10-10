@@ -7,7 +7,7 @@ from typing import List
 from scipy.interpolate import RectBivariateSpline
 from ..core.fourier_core import Fourier_Series_Function
 import os
-
+from scipy.spatial.distance import cdist
 logger = logging.getLogger(__name__)
 
 def get_XY(box_size):
@@ -49,7 +49,7 @@ def h(t,Z_func,x0,y0,z0,nvec):
 
 def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
     t=t_sign
-    while True:                          #Newton iterations
+    while True:
         diff= h(t,Z_func,x0,y0,z0,nvec)
         if abs(diff) < 1e-8:               #Tolerance 
             break
@@ -58,7 +58,42 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
     return t
 
+def get_absolute_distances(ref,grid,mask=None):
+    ref = np.asarray(ref, dtype=float)
+    grid = np.asarray(grid, dtype=float)
+
+    N,M = ref.shape[0], grid.shape[0]
+    if mask is None:
+
+        dists = cdist(grid,ref, metric='euclidean')
+
+        # Define your threshold (adjust as needed)
+        threshold = np.percentile(dists, 25)
+
+        # Update mask: keep only pairs within threshold
+        mask = dists <= threshold
+        min_dists = np.min(dists, axis=1)
+    else:
+        mask = np.asarray(mask, dtype=bool)
+
+        # Output array of distances per ref point
+        min_dists = np.full(M, np.inf, dtype=float)
+
+        # Efficient loop: only compute distances for active pairs
+        for i in range(M):
+            valid = np.nonzero(mask[i])[0]
+            if valid.size == 0:
+                continue  # remains np.inf
+            # Compute only relevant distances for this row
+            diffs = ref[valid] - grid[i]
+            dists = np.sqrt(np.einsum('ij,ij->i', diffs, diffs))
+            min_dists[i] = np.min(dists)
+    return min_dists,mask
+
+
 def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
+    n_atoms=10000
+
     if Until is None:
         Until = len(u.trajectory)
     ndx = read_ndx(ndx)
@@ -77,9 +112,11 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
             layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
         else:
             layer_group = u.atoms[[x - 1 for x in ndx[Layer]]]
+            acc=np.zeros((len(u.trajectory),n_atoms))
 
-        with mda.coordinates.XTC.XTCWriter(f"{out_dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=100000) as writer:
+        with mda.coordinates.XTC.XTCWriter(f"{out_dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=n_atoms) as writer:
             count = 0
+            mask=None
             for t, ts in tqdm(enumerate(u.trajectory[From:Until:Step])):
                 count += 1
 
@@ -152,6 +189,7 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
                 np.save(f"{out_dir}/curvature_frame_{count}_{Layer}.npy", curvature)
 
                 pseudo_universe = mda.Universe.empty(n_atoms=coordinates.shape[0], trajectory=True)
+                pseudo_universe.add_TopologyAttr('tempfactors', np.zeros(pseudo_universe.atoms.n_atoms, dtype=float))
                 pseudo_universe.atoms.positions = coordinates
                 pseudo_universe.dimensions = ts.dimensions
 
@@ -159,6 +197,21 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
                     pseudo_universe.atoms.write(f"{out_dir}/pseudo_universe_{Layer}.gro")
 
                 writer.write(pseudo_universe.atoms)
+
+                if Layer != "Both":
+                    abs_distances,mask=get_absolute_distances(layer_group.positions,coordinates,mask)
+                    acc[t]=abs_distances
+                
+            
+            u.trajectory[0]
+            if Layer != "Both":
+                
+                acc=np.mean(acc,axis=0)
+                acc=(acc-np.min(acc))/(np.max(acc) - np.min(acc))
+                print(acc.shape)
+                pseudo_universe.atoms.tempfactors=acc
+                pseudo_universe.atoms.write(f"{out_dir}/pseudo_universe_{Layer}_fitacc.pdb")
+
 
 
 

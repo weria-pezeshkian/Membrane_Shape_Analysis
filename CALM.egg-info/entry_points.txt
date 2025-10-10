@@ -1,0 +1,2 @@
+[console_scripts]
+CALM = CALM.run_modules:main

@@ -1,0 +1,6 @@
+libmaker==0.1
+mdanalysis==2.9.0
+numpy==2.3.3
+scipy==1.16.2
+setuptools==78.1.0
+tqdm==4.67.1
