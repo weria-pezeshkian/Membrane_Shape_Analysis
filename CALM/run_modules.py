@@ -2,7 +2,7 @@ import argparse
 from importlib.metadata import version
 from CALM.analyze.enter import Analyze
 #from CALM.calibrate.enter import Calibrate
-#from CALM.plot.enter import Map
+from CALM.map.enter import Map
 #from CALM.utilize.enter import Link
 
 

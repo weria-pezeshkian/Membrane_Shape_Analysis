@@ -15,9 +15,10 @@ CALM/analyze/enter.py
 CALM/calibrate/__init__.py
 CALM/calibrate/enter.py
 CALM/core/__init__.py
+CALM/core/calc_vectors.py
 CALM/core/fourier_core.py
-CALM/plot/__init__.py
-CALM/plot/enter.py
-CALM/plot/modules/__init__.py
+CALM/map/__init__.py
+CALM/map/enter.py
+CALM/map/modules/__init__.py
 CALM/utilize/__init__.py
 CALM/utilize/enter.py
