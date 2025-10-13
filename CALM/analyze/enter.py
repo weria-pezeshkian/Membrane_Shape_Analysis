@@ -8,6 +8,8 @@ from scipy.interpolate import RectBivariateSpline
 from ..core.fourier_core import Fourier_Series_Function
 import os
 from scipy.spatial.distance import cdist
+from MDAnalysis.lib.distances import distance_array
+
 logger = logging.getLogger(__name__)
 
 def get_XY(box_size):
@@ -58,15 +60,15 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
     return t
 
-def get_absolute_distances(ref,grid,mask=None):
+def get_absolute_distances(ref,grid,mask=None,dimensions=None):
     ref = np.asarray(ref, dtype=float)
     grid = np.asarray(grid, dtype=float)
 
     N,M = ref.shape[0], grid.shape[0]
     if mask is None:
 
-        dists = cdist(grid,ref, metric='euclidean')
-
+        dists=distance_array(grid,ref,box=dimensions)
+        
         # Define your threshold (adjust as needed)
         threshold = np.percentile(dists, 25)
 
@@ -97,7 +99,8 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
     if Until is None:
         Until = len(u.trajectory)
     ndx = read_ndx(ndx)
-    box_size = u.trajectory[0].dimensions[:3]
+    dimensions=u.trajectory[0].dimensions
+    box_size = dimensions[:3]
     np.save(file=f"{out_dir}/boxsize.npy", arr=box_size)
     X, Y = get_XY(box_size)
 
@@ -199,7 +202,7 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
                 writer.write(pseudo_universe.atoms)
 
                 if Layer != "Both":
-                    abs_distances,mask=get_absolute_distances(layer_group.positions,coordinates,mask)
+                    abs_distances,mask=get_absolute_distances(layer_group.positions,coordinates,mask,dimensions=dimensions)
                     acc[t]=abs_distances
                 
             
