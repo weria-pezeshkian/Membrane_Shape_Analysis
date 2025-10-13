@@ -1,10 +1,12 @@
-import argparse, logging, os, glob, shutil, tempfile, subprocess, math
+import argparse, logging, os, glob, shutil, tempfile, subprocess, math, json
 import numpy as np
 import matplotlib.pyplot as plt
+import MDAnalysis as mda
 from matplotlib.colors import Normalize
 from matplotlib.ticker import MaxNLocator
 from PIL import Image
 from tqdm import tqdm
+from typing import List
 from ..core.calc_vectors import _rel_indices_within_protein
 from ..core.calc_vectors import get_rotation_and_protein
 
