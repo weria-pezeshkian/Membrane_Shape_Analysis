@@ -58,7 +58,7 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
         t -= diff #/ .95            #update using z-component
 
 
-    return t
+    return np.abs(t)
 
 def get_absolute_distances(ref,grid,mask=None,dimensions=None):
     ref = np.asarray(ref, dtype=float)
@@ -211,7 +211,6 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
                 
                 acc=np.mean(acc,axis=0)
                 acc=(acc-np.min(acc))/(np.max(acc) - np.min(acc))
-                print(acc.shape)
                 pseudo_universe.atoms.tempfactors=acc
                 pseudo_universe.atoms.write(f"{out_dir}/pseudo_universe_{Layer}_fitacc.pdb")
 
