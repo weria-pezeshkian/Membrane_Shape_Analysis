@@ -701,6 +701,14 @@ def Map(argv):
             u=u, From=ns.From, Until=ns.Until, Step=ns.Step,
             sele1=ns.selection1, sele2=ns.selection2,
         )
+
+        u.trajectory[ns.From]
+        lx = float(u.trajectory.ts.dimensions[0])
+        ly = float(u.trajectory.ts.dimensions[1])
+        box_path = os.path.join(ns.np_dir or "./", "boxsize.npy")
+        np.save(box_path, np.array([lx, ly], float))
+        logging.info(f"Wrote boxsize.npy: Lx={lx}, Ly={ly}")
+        
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
