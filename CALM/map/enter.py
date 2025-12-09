@@ -388,7 +388,7 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         tmp_dir = tempfile.mkdtemp(prefix=f"curv_frames_{layer_name}_")
         logging.info(f"Rendering PNG frames to: {tmp_dir} (bins={bins})")
 
-        cmap = "plasma"
+        cmap = "RdBu"
         levels = np.linspace(vmin, vmax, 20)
 
         # figure & first draw
