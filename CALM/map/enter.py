@@ -502,7 +502,7 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     titles = ["Fourier Approximation", "Curvature Upper", "Curvature Lower", "Curvature Both"]
 
 
-    cmap = "plasma"
+    cmap = "RdBu"
     levels = np.linspace(vmin_plot, vmax_plot, 20)
     mask2 = _inscribed_disk_mask(mean_U.shape, 0.5)
 
