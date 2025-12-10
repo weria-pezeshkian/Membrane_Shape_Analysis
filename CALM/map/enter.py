@@ -495,6 +495,8 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     vmax2 = max(map(np.nanmax, (mean_U, mean_L, mean_B)))
     vmin_plot, vmax_plot = float(vmin2), float(vmax2)
 
+    vmin_plot, vmax_plot = -0.15, 0.15
+
     fig, axes = plt.subplots(2,2, figsize=(16,16))
     fig.patch.set_facecolor('white')
     axes = axes.ravel()
