@@ -169,18 +169,18 @@ def _set_axes_style(ax, Lx, Ly):
     ax.set_xticks([0, Lx]); ax.set_yticks([0, Ly])
     ax.set_xticklabels(['0', 'L$_x$']); ax.set_yticklabels(['0', 'L$_y$'])
     ax.set_facecolor((0.1, 0.1, 0.1))
-    ax.tick_params(colors='white')
+    ax.tick_params(colors='black')
     for spine in ax.spines.values():
-        spine.set_edgecolor('white')
+        spine.set_edgecolor('black')
 
 def _colorbar_with_ticks(fig, cax, vmin, vmax, cmap):
     sm = plt.cm.ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
-    cb.set_label(r"Curvature ($\mathrm{nm^{-1}}$)", color='white')
+    cb.set_label(r"Curvature ($\mathrm{nm^{-1}}$)", color='black')
     cb.ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
-    cb.ax.tick_params(labelsize=10, colors='white')
-    for tick in cb.ax.get_yticklabels(): tick.set_color('white')
-    cb.outline.set_edgecolor('white')
+    cb.ax.tick_params(labelsize=10, colors='black')
+    for tick in cb.ax.get_yticklabels(): tick.set_color('black')
+    cb.outline.set_edgecolor('black')
     return cb
 
 def _fig_dual(Lx, Ly, vmin, vmax, cmap):
@@ -191,7 +191,7 @@ def _fig_dual(Lx, Ly, vmin, vmax, cmap):
     cax = fig.add_subplot(gs[0, 2])
     _set_axes_style(axL, Lx, Ly)
     _set_axes_style(axR, Lx, Ly)
-    fig.patch.set_facecolor('black')
+    fig.patch.set_facecolor('white')
     _colorbar_with_ticks(fig, cax, vmin, vmax, cmap)
     return fig, axL, axR
 
@@ -200,7 +200,7 @@ def _fig_single(Lx, Ly, vmin, vmax, cmap):
     gs = fig.add_gridspec(1, 2, width_ratios=[1, 0.055], wspace=0.12)
     ax = fig.add_subplot(gs[0, 0]); cax = fig.add_subplot(gs[0, 1])
     _set_axes_style(ax, Lx, Ly)
-    fig.patch.set_facecolor('black')
+    fig.patch.set_facecolor('white')
     _colorbar_with_ticks(fig, cax, vmin, vmax, cmap)
     return fig, ax
 
@@ -388,7 +388,7 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         tmp_dir = tempfile.mkdtemp(prefix=f"curv_frames_{layer_name}_")
         logging.info(f"Rendering PNG frames to: {tmp_dir} (bins={bins})")
 
-        cmap = "plasma"
+        cmap = "RdBu"
         levels = np.linspace(vmin, vmax, 20)
 
         # figure & first draw
@@ -448,9 +448,9 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
                 artists += _scatter_com_markers(axR, prot_rot, O_idx, P_idx)
 
             fig.suptitle(f"{layer_name} — Bin {bi+1}/{bins}",
-                         fontsize=14, color='white')
+                         fontsize=14, color='black')
             out_png_frame = os.path.join(tmp_dir, f"frame_{bi:05d}.png")
-            fig.savefig(out_png_frame, dpi=170, facecolor='black', bbox_inches="tight")
+            fig.savefig(out_png_frame, dpi=170, facecolor='white', bbox_inches="tight")
 
             # clear per-frame markers (contours already refreshed)
             for a in artists:
@@ -495,14 +495,16 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     vmax2 = max(map(np.nanmax, (mean_U, mean_L, mean_B)))
     vmin_plot, vmax_plot = float(vmin2), float(vmax2)
 
+    vmin_plot, vmax_plot = -0.15, 0.15
+
     fig, axes = plt.subplots(2,2, figsize=(16,16))
-    fig.patch.set_facecolor('black')
+    fig.patch.set_facecolor('white')
     axes = axes.ravel()
     arrays = [mean_Z, mean_U, mean_L, mean_B]
     titles = ["Fourier Approximation", "Curvature Upper", "Curvature Lower", "Curvature Both"]
 
 
-    cmap = "plasma"
+    cmap = "RdBu"
     levels = np.linspace(vmin_plot, vmax_plot, 20)
     mask2 = _inscribed_disk_mask(mean_U.shape, 0.5)
 
@@ -520,7 +522,7 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         _set_axes_style(ax, Lx, Ly)
         a = np.where(mask2, arr, np.nan)
         cs = _draw_contour(ax, a, Lx, Ly, vmin_plot, vmax_plot, cmap, None, levels)
-        ax.set_title(title, color='white')
+        ax.set_title(title, color='black')
 
         # overlay protein (white atoms + COM markers if available)
         _ = _scatter_protein(ax, prot_rot, -1, -1)
@@ -531,7 +533,7 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     plt.tight_layout(rect=[0.05,0.02,0.9,0.98])
 
     if out_png:
-        fig.savefig(out_png, dpi=220, facecolor='black', bbox_inches="tight")
+        fig.savefig(out_png, dpi=220, facecolor='white', bbox_inches="tight")
         logging.info(f"Saved: {out_png}")
     else:
         plt.show()
@@ -549,11 +551,11 @@ def _add_colorbar(fig, vmin, vmax, cmap):
     cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     sm = plt.cm.ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
-    cb.set_label(r"Curvature ($\mathrm{nm^{-1}}$)", color='white')
+    cb.set_label(r"Curvature ($\mathrm{nm^{-1}}$)", color='black')
     cb.ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
-    cb.ax.tick_params(labelsize=10, colors='white')
-    for tick in cb.ax.get_yticklabels(): tick.set_color('white')
-    cb.outline.set_edgecolor('white')
+    cb.ax.tick_params(labelsize=10, colors='black')
+    for tick in cb.ax.get_yticklabels(): tick.set_color('black')
+    cb.outline.set_edgecolor('black')
 
 def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
     """
@@ -610,7 +612,7 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
     fig_w = 4.8*cols + 2.0
     fig_h = 4.8*rows
     fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h), squeeze=False)
-    fig.patch.set_facecolor('black')
+    fig.patch.set_facecolor('white')
 
     for bi, ids in enumerate(idx_bins):
         r, c = divmod(bi, cols)
@@ -636,7 +638,7 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
         _ = _scatter_com_markers(ax, prot_rot, O_idx, P_idx)
 
         start, end = int(ids[0])+1, int(ids[-1])+1
-        ax.set_title(f"Frames {start}–{end}", color='white', fontsize=11)
+        ax.set_title(f"Frames {start}–{end}", color='black', fontsize=11)
 
     # turn off unused axes
     for k in range(bins, rows*cols):
@@ -648,7 +650,7 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
 
     if not outfile:
         outfile = f"bins_{layer}_{bins}.png"
-    fig.savefig(outfile, dpi=220, facecolor='black', bbox_inches="tight")
+    fig.savefig(outfile, dpi=220, facecolor='white', bbox_inches="tight")
     logging.info(f"Saved: {outfile}")
     plt.close(fig)
 
@@ -701,6 +703,14 @@ def Map(argv):
             u=u, From=ns.From, Until=ns.Until, Step=ns.Step,
             sele1=ns.selection1, sele2=ns.selection2,
         )
+
+        u.trajectory[ns.From]
+        lx = float(u.trajectory.ts.dimensions[0])
+        ly = float(u.trajectory.ts.dimensions[1])
+        box_path = os.path.join(ns.np_dir or "./", "boxsize.npy")
+        np.save(box_path, np.array([lx, ly], float))
+        logging.info(f"Wrote boxsize.npy: Lx={lx}, Ly={ly}")
+        
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
