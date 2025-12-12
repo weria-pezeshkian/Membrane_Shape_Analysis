@@ -7,7 +7,7 @@ from typing import List
 from scipy.interpolate import RectBivariateSpline
 from ..core.fourier_core import Fourier_Series_Function
 import os
-from scipy.spatial.distance import cdist
+from ..utilize.write_ndx import write
 from MDAnalysis.lib.distances import distance_array
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,15 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
 
     if Until is None:
         Until = len(u.trajectory)
-    ndx = read_ndx(ndx)
+    try:
+        ndx = read_ndx(ndx)
+        dynamic_select=False
+    except FileNotFoundError:
+        print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
+        dynamic_select=True
+        dynamic_selection=ndx
+        if layer_string.lower()!="both":
+            print("WARNING: dynamic component selection is used but the requested layer is not Both. It has been automatically adjusted to both.")
     dimensions=u.trajectory[0].dimensions
     box_size = dimensions[:3]
     np.save(file=f"{out_dir}/boxsize.npy", arr=box_size)
@@ -110,19 +118,23 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
         LayerList = ["Upper", "Lower", "Both"]
 
     for Layer in LayerList:
-        if Layer == "Both":
-            layer_group = u.atoms[[x - 1 for x in ndx["Upper"]]]
-            layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
-        else:
-            layer_group = u.atoms[[x - 1 for x in ndx[Layer]]]
-            acc=np.zeros((len(u.trajectory),n_atoms))
+        if not dynamic_select:
+            if Layer == "Both":
+                layer_group = u.atoms[[x - 1 for x in ndx["Upper"]]]
+                layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
+            else:
+                layer_group = u.atoms[[x - 1 for x in ndx[Layer]]]
+                acc=np.zeros((len(u.trajectory),n_atoms))
 
         with mda.coordinates.XTC.XTCWriter(f"{out_dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=n_atoms) as writer:
             count = 0
             mask=None
             for t, ts in tqdm(enumerate(u.trajectory[From:Until:Step])):
                 count += 1
-
+                if dynamic_select:
+                    _,upper_index,lower_index=write(u,dynamic_selection,write=False,t=t)
+                    layer_group = upper_index
+                    layer_group_2 = lower_index
                 if Layer == "Both":
                     Nx, Ny = 2, 2
                     fourier1 = fourier_by_layer(layer_group, box_size)
@@ -218,12 +230,12 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
 
 
 def Analyze(args: List[str]) -> None:
-    """Main entry point for Domain Placer tool"""
+    """Main entry point for Analyzer tool"""
     parser = argparse.ArgumentParser(description="Calculate the curvature of a membrane",
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file")
     parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file")
-    parser.add_argument('-n','--index',type=str,help="Specify the path to an index file containing the monolayers. To consider both monolayers, they need to be named 'Upper' and 'Lower'")
+    parser.add_argument('-n','--index',type=str,help="Specify the path to an index file containing the monolayers. To consider both monolayers, they need to be named 'Upper' and 'Lower'. Alternatively provide a selection for a dynamic calculation of the monolayers, i.e. 'name PO4'")
     parser.add_argument('-o','--out',type=str,help="Specify a path to a folder to which all calculated numpy arrays are saved")
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here")
     parser.add_argument('-U','--Until',default=None,type=int,help="Discard all frames in the trajectory after to the frame supplied here")
