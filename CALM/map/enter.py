@@ -483,7 +483,6 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         vals = []
         for i in range(F):
             rec_i, theta_i, *_ = _calc_frame_recenter_and_theta(raw_stack[i], o_all[i], p_all[i], Lx, Ly)
-            rot = np.where(np.abs(rot) < 0.05, 0.0, rot)
             vals.append(_rotate_image(rec_i, -theta_i))
         return np.nanmean(np.stack(vals,0), axis=0)
 
