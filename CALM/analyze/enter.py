@@ -9,6 +9,8 @@ from ..core.fourier_core import Fourier_Series_Function
 import os
 from ..utilize.write_ndx import write
 from MDAnalysis.lib.distances import distance_array
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +94,75 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
             min_dists[i] = np.min(dists)
     return min_dists,mask
 
+def one_frame(ts, *, layer_group, layer_group_2, out_dir, X, Y, box_size,
+              dynamic_select, dynamic_selection):
+    if dynamic_select:
+        _,upper_index,lower_index=write(ts,dynamic_selection,write=False)
+        layer_group = ts.atoms[[x - 1 for x in upper_index]]
+        layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
 
-def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
+    Nx, Ny = 2, 2
+    fourier1 = fourier_by_layer(layer_group, box_size)
+    fourier2 = fourier_by_layer(layer_group_2, box_size)
+    fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
+    fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
+
+    Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
+    np.save(f"{out_dir}/{t+1}_Z_fitted_Upper.npy", Z_fitted_1/10)
+    Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
+    np.save(f"{out_dir}/{t+1}_Z_fitted_Lower.npy", Z_fitted_2/10)
+    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2  #Mid-plane coordinates
+    
+
+    #Interpolators for leaflet surfaces z=f(x,y)
+    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)
+    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)
+    
+
+    ### Normal–intersection thickness calculation ###
+
+    #Compute grid spacing of surface in AA based on the shape of X Y already defined above. 
+    dx = box_size[0] / (X.shape[1] - 1)
+    dy = box_size[1] / (Y.shape[0] - 1) 
+
+    #Construct the surface normal vectors from fitted mid plane Z(x,y). Take fitted surafce, construct and normalize local normal vector. (Z_fitted_vmd gives surface height at each (x,y))
+    dz_dx, dz_dy = np.gradient(Z_fitted_vmd, dx, dy)    #Computes partial derivatives, slopes along x and y-axis and gives 2D arrays with local surface slopes. 
+    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so that they point "up".
+
+    Nz_arr = np.ones_like(Z_fitted_vmd)   #Sets all values on Z_fitted_vmd to 1
+    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)    #Stack the 3 components into a vector at every grid point → shape (Nx, Ny, 3).
+    N /= np.linalg.norm(N, axis=-1, keepdims=True)     #Divide by its length so every normal is a unit vector. (Normalises to unit normal vector)
+
+    thickness_map = np.zeros_like(Z_fitted_vmd)        #Creates thickness_map, makes it the size of Z_fitted_vmd and fills it with zeros. 
+    l1_map = np.zeros_like(Z_fitted_vmd)
+    l2_map = np.zeros_like(Z_fitted_vmd)
+
+
+    for i in range(X.shape[0]):        #Takes all the x coordinates of my surface, iterates over all rows (i). 
+        for j in range(X.shape[1]):    #Iterates over all columns (j)
+            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]    #Extracts coordinates, 3D-point of the surface. 
+            nvec = N[i, j]    #Get the normal vector that grid point. N is a 3D array containing the unit normal vector at every grid point. nvec is the direction perpendicular to the surface at that point. 
+
+            #Intersection function, finds intersect between a ray starting at the surface point and going along nvec to another surface (a spline) defined as z=f(x,y). 
+                    #Returns the distance along the normal. 
+            l1 = intersect_surface(interp_upper, 5.0,x0,y0,z0,nvec)   #upwards
+            l2 = intersect_surface(interp_lower, -5.0,x0,y0,z0,nvec)  #downwards
+            
+            l1_map[i,j]=l1
+            l2_map[i,j]=l2
+            #print(f"[i={i}, j={j}] l1={l1}, l2={l2}")
+            thickness_map[i, j] = l1 + l2               #add them both together
+
+
+
+    Z_fitted_middle = thickness_map
+    np.save(f"{out_dir}/{t+1}_Z_fitted_Middle.npy", Z_fitted_middle/10)
+
+    for fourier,layer in zip([fourier1,fourier2,fouriermiddle],["Upper","Lower","Middle"]):
+        curvature = fourier.Curv(X, Y)
+        np.save(f"{out_dir}/{t+1}_curvature_frame_{layer}.npy", curvature*10)
+
+def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     n_atoms=10000
 
     if Until is None:
@@ -101,130 +170,49 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1, layer_string="Both"):
     try:
         ndx = read_ndx(ndx)
         dynamic_select=False
+        dynamic_selection=None
     except FileNotFoundError:
         print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
         dynamic_select=True
         dynamic_selection=ndx
-        if layer_string.lower()!="both":
-            print("WARNING: dynamic component selection is used but the requested layer is not Both. It has been automatically adjusted to both.")
+        
     dimensions=u.trajectory[0].dimensions
     box_size = dimensions[:3]
-    np.save(file=f"{out_dir}/boxsize.npy", arr=box_size)
+    np.save(file=f"{out_dir}/boxsize.npy", arr=box_size)# TODO: Is this or can this be made redundant
+    np.save(file=f"{out_dir}/dimensions.npy", arr=dimensions)
     X, Y = get_XY(box_size)
 
-    if layer_string.lower() != "both":
-        LayerList = [layer_string]
+    LayerList = ["Upper", "Lower", "Middle"]
+
+
+    if not dynamic_select:
+        layer_group = u.atoms[[x - 1 for x in ndx["Upper"]]]
+        layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
     else:
-        LayerList = ["Upper", "Lower", "Both"]
-
-    for Layer in LayerList:
-        if not dynamic_select:
-            if Layer == "Both":
-                layer_group = u.atoms[[x - 1 for x in ndx["Upper"]]]
-                layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
-            else:
-                layer_group = u.atoms[[x - 1 for x in ndx[Layer]]]
-                acc=np.zeros((len(u.trajectory),n_atoms))
-
-        with mda.coordinates.XTC.XTCWriter(f"{out_dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=n_atoms) as writer:
-            count = 0
-            mask=None
-            for t, ts in tqdm(enumerate(u.trajectory[From:Until:Step])):
-                count += 1
-                if dynamic_select:
-                    _,upper_index,lower_index=write(u,dynamic_selection,write=False,t=t)
-                    layer_group = upper_index
-                    layer_group_2 = lower_index
-                if Layer == "Both":
-                    Nx, Ny = 2, 2
-                    fourier1 = fourier_by_layer(layer_group, box_size)
-                    fourier2 = fourier_by_layer(layer_group_2, box_size)
-                    fourier = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
-                    fourier.Update_coff(fourier1.getAnm(), fourier2.getAnm())
-
-                    Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-                    Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-                    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2  #Mid-plane coordinates
-
-                    #Interpolators for leaflet surfaces z=f(x,y)
-                    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)
-                    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)
-                    
-
-                    ### Normal–intersection thickness calculation ###
-
-                    #Compute grid spacing of surface in AA based on the shape of X Y already defined above. 
-                    dx = box_size[0] / (X.shape[1] - 1)
-                    dy = box_size[1] / (Y.shape[0] - 1) 
-
-                    #Construct the surface normal vectors from fitted mid plane Z(x,y). Take fitted surafce, construct and normalize local normal vector. (Z_fitted_vmd gives surface height at each (x,y))
-                    dz_dx, dz_dy = np.gradient(Z_fitted_vmd, dx, dy)    #Computes partial derivatives, slopes along x and y-axis and gives 2D arrays with local surface slopes. 
-                    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so that they point "up".
-  
-                    Nz_arr = np.ones_like(Z_fitted_vmd)   #Sets all values on Z_fitted_vmd to 1
-                    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)    #Stack the 3 components into a vector at every grid point → shape (Nx, Ny, 3).
-                    N /= np.linalg.norm(N, axis=-1, keepdims=True)     #Divide by its length so every normal is a unit vector. (Normalises to unit normal vector)
-
-                    thickness_map = np.zeros_like(Z_fitted_vmd)        #Creates thickness_map, makes it the size of Z_fitted_vmd and fills it with zeros. 
-                    l1_map = np.zeros_like(Z_fitted_vmd)
-                    l2_map = np.zeros_like(Z_fitted_vmd)
+        layer_group, layer_group_2=None,None
 
 
-                    for i in range(X.shape[0]):        #Takes all the x coordinates of my surface, iterates over all rows (i). 
-                        for j in range(X.shape[1]):    #Iterates over all columns (j)
-                            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]    #Extracts coordinates, 3D-point of the surface. 
-                            nvec = N[i, j]    #Get the normal vector that grid point. N is a 3D array containing the unit normal vector at every grid point. nvec is the direction perpendicular to the surface at that point. 
+    fn = partial(
+    one_frame,
+    layer_group=layer_group,
+    layer_group_2=layer_group_2,
+    out_dir=out_dir,
+    X=X,
+    Y=Y,
+    box_size=box_size,
+    dynamic_select=dynamic_select,
+    dynamic_selection=dynamic_selection
+    )
 
-                            #Intersection function, finds intersect between a ray starting at the surface point and going along nvec to another surface (a spline) defined as z=f(x,y). 
-                                   #Returns the distance along the normal. 
-                            l1 = intersect_surface(interp_upper, 5.0,x0,y0,z0,nvec)   #upwards
-                            l2 = intersect_surface(interp_lower, -5.0,x0,y0,z0,nvec)  #downwards
-                            
-                            l1_map[i,j]=l1
-                            l2_map[i,j]=l2
-                            #print(f"[i={i}, j={j}] l1={l1}, l2={l2}")
-                            thickness_map[i, j] = l1 + l2               #add them both together
+    with ThreadPoolExecutor(max_workers=Workers) as ex:
+        # map yields results in the same order as the input iterable.
+        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
+        for _ in ex.map(fn, u.trajectory[From:Until:Step]):
+            pass       
+
+        #####End of true normal–intersection calculation 
 
 
-
-                    Z_fitted = thickness_map
-                    #####End of true normal–intersection calculation 
-
-                else:
-                    fourier = fourier_by_layer(layer_group, box_size)
-                    Z_fitted = np.array([fourier.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-                    Z_fitted_vmd = Z_fitted[:]
-
-                curvature = fourier.Curv(X, Y)
-                coordinates = np.vstack([X.flatten(), Y.flatten(), Z_fitted_vmd.flatten()]).T
-                Z_fitted = Z_fitted / 10  # Å → nm
-                np.save(f"{out_dir}/Z_fitted_{count}_{Layer}.npy", Z_fitted)
-
-                curvature = curvature * 10  # Å⁻¹ → nm⁻¹
-                np.save(f"{out_dir}/curvature_frame_{count}_{Layer}.npy", curvature)
-
-                pseudo_universe = mda.Universe.empty(n_atoms=coordinates.shape[0], trajectory=True)
-                pseudo_universe.add_TopologyAttr('tempfactors', np.zeros(pseudo_universe.atoms.n_atoms, dtype=float))
-                pseudo_universe.atoms.positions = coordinates
-                pseudo_universe.dimensions = ts.dimensions
-
-                if t == 0:
-                    pseudo_universe.atoms.write(f"{out_dir}/pseudo_universe_{Layer}.gro")
-
-                writer.write(pseudo_universe.atoms)
-
-                if Layer != "Both":
-                    abs_distances,mask=get_absolute_distances(layer_group.positions,coordinates,mask,dimensions=dimensions)
-                    acc[t]=abs_distances
-                
-            
-            u.trajectory[0]
-            if Layer != "Both":
-                
-                acc=np.mean(acc,axis=0)
-                acc=(acc-np.min(acc))/(np.max(acc) - np.min(acc))
-                pseudo_universe.atoms.tempfactors=acc
-                pseudo_universe.atoms.write(f"{out_dir}/pseudo_universe_{Layer}_fitacc.pdb")
 
 
 
@@ -240,7 +228,7 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here")
     parser.add_argument('-U','--Until',default=None,type=int,help="Discard all frames in the trajectory after to the frame supplied here")
     parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here")
-    parser.add_argument('-l','--leaflet',default="Both",help="Choose which membrane leaflet to calculate. Default is Both")
+    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
     parser.add_argument('-c','--clear',default=False,action='store_true',help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
     
     args = parser.parse_args(args)
@@ -260,7 +248,7 @@ def Analyze(args: List[str]) -> None:
 
     try:
         universe=mda.Universe(args.structure,args.trajectory)
-        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,layer_string=args.leaflet)
+        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
 
     except Exception as e:
         logger.error(f"Error: {e}")

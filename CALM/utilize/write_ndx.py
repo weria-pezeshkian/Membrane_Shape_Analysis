@@ -22,9 +22,9 @@ def get_components(matrix, threshold):
     else:
         return components
 
-def write(u,selection,out_dir="",flip=False,write=True,t=0):
+def write(u,selection,out_dir="",flip=False,write=True):
     ndx={}
-    u.trajectory[t]
+    #u.trajectory[t]
     selection=u.select_atoms(selection)
     d_matrix=distance_array(selection.atoms.positions, selection.atoms.positions, box=u.dimensions)
     init_threshold=0.01
@@ -77,7 +77,7 @@ def write(u,selection,out_dir="",flip=False,write=True,t=0):
 
 def write_ndx(args: List[str]) -> None:
     """Main entry point for Domain Placer tool"""
-    parser = argparse.ArgumentParser(description="Write an index file to be used for other curv tasks",
+    parser = argparse.ArgumentParser(description="Write an index file to be used for other CALM tasks",
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file")
     parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file")
