@@ -9,7 +9,7 @@ from ..core.fourier_core import Fourier_Series_Function
 import os
 from ..utilize.write_ndx import write
 from MDAnalysis.lib.distances import distance_array
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import time
 
@@ -95,7 +95,7 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
             min_dists[i] = np.min(dists)
     return min_dists,mask
 
-def one_frame(frame, *, layer_group, layer_group_2, out_dir, X, Y, box_size,
+def one_frame(frame, *, layer_group, layer_group_2, out_dir,
               dynamic_select, dynamic_selection,universe):
     dimensions=universe.trajectory[frame].dimensions
     box_size = dimensions[:3]
@@ -203,11 +203,11 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     universe=u
     )
 
-    with ThreadPoolExecutor(max_workers=Workers) as ex:
+    with ProcessPoolExecutor(max_workers=Workers) as ex:
         # map yields results in the same order as the input iterable.
         # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-        for _ in ex.map(fn, range(From,Until,Step)):
-            pass       
+        for x in range(From,Until,Step):
+            ex.submit(fn,x)      
 
         #####End of true normal–intersection calculation 
 
@@ -249,7 +249,7 @@ def Analyze(args: List[str]) -> None:
         start=time.perf_counter()
         universe=mda.Universe(args.structure,args.trajectory)
         calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
-        print(f"Execution with {args.Workers} Workers took {round(time.perf-counter()-start,2)} seconds.")
+        print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
     except Exception as e:
         logger.error(f"Error: {e}")
