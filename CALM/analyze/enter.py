@@ -11,6 +11,7 @@ from ..utilize.write_ndx import write
 from MDAnalysis.lib.distances import distance_array
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +95,14 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
             min_dists[i] = np.min(dists)
     return min_dists,mask
 
-def one_frame(ts, *, layer_group, layer_group_2, out_dir, X, Y, box_size,
-              dynamic_select, dynamic_selection):
+def one_frame(frame, *, layer_group, layer_group_2, out_dir, X, Y, box_size,
+              dynamic_select, dynamic_selection,universe):
+    dimensions=universe.trajectory[frame].dimensions
+    box_size = dimensions[:3]
+    ts=universe.trajectory[frame]
+    #np.save(file=f"{out_dir}/boxsize.npy", arr=box_size)# TODO: Is this or can this be made redundant, check how this can be saved well for every step? file explision?
+    #np.save(file=f"{out_dir}/dimensions.npy", arr=dimensions)
+    X, Y = get_XY(box_size)
     if dynamic_select:
         _,upper_index,lower_index=write(ts,dynamic_selection,write=False)
         layer_group = ts.atoms[[x - 1 for x in upper_index]]
@@ -108,9 +115,9 @@ def one_frame(ts, *, layer_group, layer_group_2, out_dir, X, Y, box_size,
     fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
 
     Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    np.save(f"{out_dir}/{t+1}_Z_fitted_Upper.npy", Z_fitted_1/10)
+    np.save(f"{out_dir}/{frame}_Z_fitted_Upper.npy", Z_fitted_1/10)
     Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    np.save(f"{out_dir}/{t+1}_Z_fitted_Lower.npy", Z_fitted_2/10)
+    np.save(f"{out_dir}/{frame}_Z_fitted_Lower.npy", Z_fitted_2/10)
     Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2  #Mid-plane coordinates
     
 
@@ -156,11 +163,11 @@ def one_frame(ts, *, layer_group, layer_group_2, out_dir, X, Y, box_size,
 
 
     Z_fitted_middle = thickness_map
-    np.save(f"{out_dir}/{t+1}_Z_fitted_Middle.npy", Z_fitted_middle/10)
+    np.save(f"{out_dir}/{frame}_Z_fitted_Middle.npy", Z_fitted_middle/10)
 
     for fourier,layer in zip([fourier1,fourier2,fouriermiddle],["Upper","Lower","Middle"]):
         curvature = fourier.Curv(X, Y)
-        np.save(f"{out_dir}/{t+1}_curvature_frame_{layer}.npy", curvature*10)
+        np.save(f"{out_dir}/{frame}_curvature_frame_{layer}.npy", curvature*10)
 
 def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     n_atoms=10000
@@ -175,12 +182,6 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
         print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
         dynamic_select=True
         dynamic_selection=ndx
-        
-    dimensions=u.trajectory[0].dimensions
-    box_size = dimensions[:3]
-    np.save(file=f"{out_dir}/boxsize.npy", arr=box_size)# TODO: Is this or can this be made redundant
-    np.save(file=f"{out_dir}/dimensions.npy", arr=dimensions)
-    X, Y = get_XY(box_size)
 
     LayerList = ["Upper", "Lower", "Middle"]
 
@@ -197,17 +198,15 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     layer_group=layer_group,
     layer_group_2=layer_group_2,
     out_dir=out_dir,
-    X=X,
-    Y=Y,
-    box_size=box_size,
     dynamic_select=dynamic_select,
-    dynamic_selection=dynamic_selection
+    dynamic_selection=dynamic_selection,
+    universe=u
     )
 
     with ThreadPoolExecutor(max_workers=Workers) as ex:
         # map yields results in the same order as the input iterable.
         # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-        for _ in ex.map(fn, u.trajectory[From:Until:Step]):
+        for _ in ex.map(fn, range(From,Until,Step)):
             pass       
 
         #####End of true normal–intersection calculation 
@@ -247,8 +246,10 @@ def Analyze(args: List[str]) -> None:
                     print(f"Error deleting {file_path}: {e}")
 
     try:
+        start=time.perf_counter()
         universe=mda.Universe(args.structure,args.trajectory)
         calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
+        print(f"Execution with {args.Workers} Workers took {round(time.perf-counter()-start,2)} seconds.")
 
     except Exception as e:
         logger.error(f"Error: {e}")
