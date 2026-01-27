@@ -6,12 +6,15 @@ import logging
 from typing import List
 from scipy.interpolate import RectBivariateSpline
 from ..core.fourier_core import Fourier_Series_Function
+from ..core import argument_parser as arg_helper
 import os
 from ..utilize.write_ndx import write
 from MDAnalysis.lib.distances import distance_array
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import time
+import shlex
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +180,11 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
 def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     n_atoms=10000
 
+    print(Until)
     if Until is None:
         Until = len(u.trajectory)
+    else:
+        Until=int(Until)
     try:
         ndx = read_ndx(ndx)
         dynamic_select=False
@@ -230,18 +236,45 @@ def Analyze(args: List[str]) -> None:
     """Main entry point for Analyzer tool"""
     parser = argparse.ArgumentParser(description="Calculate the curvature of a membrane",
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    # Replay:
+    parser.add_argument("--replay", help="Load args from replay file")
+    parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
+    # File and Resource Management:
+    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
+    parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
+    # Real scientific parameters:
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file")
     parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file")
     parser.add_argument('-n','--index',type=str,help="Specify the path to an index file containing the monolayers. To consider both monolayers, they need to be named 'Upper' and 'Lower'. Alternatively provide a selection for a dynamic calculation of the monolayers, i.e. 'name PO4'")
     parser.add_argument('-o','--out',type=str,help="Specify a path to a folder to which all calculated numpy arrays are saved")
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here")
-    parser.add_argument('-U','--Until',default=None,type=int,help="Discard all frames in the trajectory after to the frame supplied here")
+    parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here")
     parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here")
-    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
-    parser.add_argument('-c','--clear',default=False,action='store_true',help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
-    
+
+    pre=argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--replay")
+    pre_ns, remaining = pre.parse_known_args(args)
+
     args = parser.parse_args(args)
     logging.basicConfig(level=logging.INFO)
+
+    
+    replayed: list[str] = []
+    if pre_ns.replay:
+        replay_path = Path(pre_ns.replay)
+        for line in replay_path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            replayed.extend(shlex.split(s))
+
+    # User-provided args should have priority -> they must appear LAST
+    combined_argv = replayed + remaining
+    args=parser.parse_args(combined_argv)
+
+    replay_path = args.out_replay or arg_helper.default_replay_name(args.out)
+    arg_helper.write_replay_file(replay_path, parser, args)
 
     if not os.path.exists(args.out):
         os.makedirs(args.out)
@@ -256,8 +289,10 @@ def Analyze(args: List[str]) -> None:
                     print(f"Error deleting {file_path}: {e}")
 
     try:
+        structure=Path(args.structure)
+        trajectory=Path(args.trajectory)
         start=time.perf_counter()
-        universe=mda.Universe(args.structure,args.trajectory)
+        universe=mda.Universe(structure,trajectory)
         calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
