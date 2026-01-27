@@ -237,12 +237,7 @@ def Analyze(args: List[str]) -> None:
     parser = argparse.ArgumentParser(description="Calculate the curvature of a membrane",
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    # Replay:
-    parser.add_argument("--replay", help="Load args from replay file")
-    parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
-    # File and Resource Management:
-    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
-    parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
+   
     # Real scientific parameters:
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file")
     parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file")
@@ -251,6 +246,12 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here")
     parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here")
     parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here")
+    # Replay:
+    parser.add_argument("--replay", help="Load args from replay file")
+    parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
+    # File and Resource Management:
+    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
+    parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
 
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
