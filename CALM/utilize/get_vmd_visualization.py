@@ -1,57 +1,55 @@
 import MDAnalysis as mda
-from MDAnalysis.lib.distances import distance_array
 import numpy as np
-from tqdm import tqdm
-import argparse
-import logging
-from typing import List, Optional, Sequence, Dict
-import networkx as nx
-import glob
-import os
-
-logger = logging.getLogger(__name__)
-
-
-def build(dir=directory):
-    n_atoms=1000
-    box=np.load(f"{dir}/dimensions.npy")
-    X, Y = get_XY(box[:3])
-
-    for Layer in ["Upper","Lower","Middle"]:
-        files = glob.glob(f"{dir}/*_Z_fitted_{Layer}.npy")
-
-        files_sorted = sorted(files,key=lambda f: int(os.path.basename(f).split("_", 1)[0]))
-
-        with mda.coordinates.XTC.XTCWriter(f"{dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=n_atoms) as writer:
-            First=True
-            for t,file in enumerate(files_sorted):
-                Z_fitted=np.load(file)
-                coordinates = np.vstack([X.flatten(), Y.flatten(), Z_fitted.flatten()]).T
-                pseudo_universe = mda.Universe.empty(n_atoms=coordinates.shape[0], trajectory=True)
-                pseudo_universe.atoms.positions = coordinates
-                pseudo_universe.dimensions = box
-            if First:
-                pseudo_universe.atoms.write(f"{dir}/pseudo_universe_{Layer}.gro")
-                First=False
-
-            writer.write(pseudo_universe.atoms)
-    
 
 
 
-def build_visualization(args: List[str]) -> None:
-    """Main entry point for Domain Placer tool"""
-    parser = argparse.ArgumentParser(description="Write visualization files for the surfaces, gro and xtc from a previously run CALM analyze",
-                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-d','--directory',type=str,help="Curvature Directory written by CALM analyze")
-    
-    
-    args = parser.parse_args(args)
-    logging.basicConfig(level=logging.INFO)
 
-    try:
-        build(dir=args.directory)
+z_values = np.load("curvature_directory/00100_Z_fitted.npy")          
+box_size = np.loadtxt("curvature_directory/dimensions.csv",delimiter=",", skiprows=1, max_rows=1, usecols=(1,2,3))  
+print(box_size)
 
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        raise
+#Convert nm→Å
+box_size*=10
+z_values*=10
+
+n_layers,Nx,Ny =z_values.shape 
+print(z_values.shape)
+
+dx = box_size[0] / Nx
+dy = box_size[1] / Ny
+
+x = np.linspace(-box_size[0]/2 + dx/2, box_size[0]/2 - dx/2, Nx)
+y = np.linspace(-box_size[1]/2 + dy/2, box_size[1]/2 - dy/2, Ny)
+X, Y = np.meshgrid(x, y, indexing="ij")
+
+
+coords = []
+for l in range(n_layers):
+    layer_coords=np.column_stack([X.flatten(),Y.flatten(),z_values[l].flatten()])
+    coords.append(layer_coords)
+
+coords=np.vstack(coords)
+n_atoms=coords.shape[0]
+print(n_atoms)
+
+resindices = np.repeat(np.arange(n_layers), Nx*Ny)  # 0,1,2
+n_residues=n_layers
+
+u=mda.Universe.empty(n_atoms=n_atoms,n_residues=n_residues,atom_resindex=resindices,trajectory=True)
+
+for attr in ["name","resname","resid"]:
+    u.add_TopologyAttr(attr)
+
+u.atoms.names = ["C"]*n_atoms
+u.residues.resnames = ["upper","middle","lower"]
+u.residues.resids = [1,2,3]
+
+u.atoms.positions=coords
+u.dimensions=[*box_size, 90, 90, 90]
+
+u.atoms.write("00100_pseudo_universe.gro")
+
+
+
+
+#with mda.coordinates.XTC.XTCWriter(f"{out_dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=n_atoms) as writer:
