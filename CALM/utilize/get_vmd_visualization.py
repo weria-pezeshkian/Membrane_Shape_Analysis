@@ -1,112 +1,116 @@
-#import MDAnalysis as mda
-#import numpy as np
-#
-#
-#z_values=np.load("curvature_directory/01000_Z_fitted.npy")          
-#box_size=np.loadtxt("curvature_directory/dimensions.csv",delimiter=",", skiprows=1, max_rows=1, usecols=(1,2,3))  
-#
-#Convert nm→Å
-#box_size=box_size*10
-#z_values=z_values*10
-#
-#print(box_size)
-#
-#n_layers,Nx,Ny =z_values.shape 
-#print(z_values.shape)
-#
-#dx = box_size[0] / Nx
-#dy = box_size[1] / Ny
-#
-#x = -box_size[0]/2 + (np.arange(Nx) + 0.5) * dx
-#y = -box_size[1]/2 + (np.arange(Ny) + 0.5) * dy
-#
-#X, Y = np.meshgrid(x, y, indexing="ij")
-#
-#print(x[0] - dx/2, x[-1] + dx/2)
-#print(y[0] - dy/2, y[-1] + dy/2)
-#
-#
-#coords = []
-#for l in range(n_layers):
-#    layer_coords=np.column_stack([X.flatten(),Y.flatten(),z_values[l].flatten()])
-#    coords.append(layer_coords)
-#
-#coords=np.vstack(coords)
-#n_atoms=coords.shape[0]
-#print(n_atoms)
-#
-#resindices = np.repeat(np.arange(n_layers), Nx*Ny)  # 0,1,2
-#n_residues=n_layers
-#
-#u=mda.Universe.empty(n_atoms=n_atoms,n_residues=n_residues,atom_resindex=resindices,trajectory=True)
-#
-#for attr in ["name","resname","resid"]:
-#    u.add_TopologyAttr(attr)
-#
-#u.atoms.names = ["C"]*n_atoms
-#u.residues.resnames = ["upper","middle","lower"]
-#u.residues.resids = [1,2,3]
-#
-#u.atoms.positions=coords
-#u.dimensions=[*box_size, 90, 90, 90]
-#
-#u.atoms.write("01000_pseudo_universe.gro")
-
-
-
-
-#with mda.coordinates.XTC.XTCWriter(f"{out_dir}/fourier_curvature_fitting_{Layer}.xtc", n_atoms=n_atoms) as writer:
-
-
-
+import argparse
+import os
 import MDAnalysis as mda
 import numpy as np
+import glob
 
-# Load Z-values (already in nm)
-z_values = np.load("curvature_directory/01000_Z_fitted.npy")  
-z_values=z_values*10
+def get_vmd_visualisation(curvature_dir: str, out_dir: str):
+    """Build pseudo-universe from Z_fitted_*.npy files,
+    write GRO (first frame), XTC trajectory, and average GRO."""
 
-# Load box size in nm
-box_size = np.loadtxt("curvature_directory/dimensions.csv", delimiter=",", skiprows=1, max_rows=1, usecols=(1,2,3))  
+    # --- Load box size ---
+    dim_file = os.path.join(curvature_dir, "dimensions.csv")
+    box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1,
+                          max_rows=1, usecols=(1, 2, 3))
 
-n_layers, Nx, Ny = z_values.shape
+    # --- Find all Z_fitted files ---
+    z_files = sorted(glob.glob(os.path.join(curvature_dir, "*_Z_fitted.npy")))
+    if not z_files:
+        raise FileNotFoundError(
+            f"No *_Z_fitted*.npy files found in {curvature_dir}"
+        )
 
-# X/Y grid (nm)
-x = np.linspace(0, box_size[0], Nx, endpoint=False)
-y = np.linspace(0, box_size[1], Ny, endpoint=False)
-X, Y = np.meshgrid(x, y, indexing="ij")
+    print(f"Found {len(z_files)} frames.")
 
-# Reorder layers: upper, middle, lower
-z_values_correct_order = np.stack([
-    z_values[0],  # Upper
-    z_values[2],  # Middle
-    z_values[1],  # Lower
-], axis=0)
+    # --- Initialize from first frame ---
+    z_values = np.load(z_files[0]) * 10
+    n_layers, Nx, Ny = z_values.shape
 
-coords = np.vstack([
-    np.column_stack([X.flatten(), Y.flatten(), z_values_correct_order[l].flatten()])
-    for l in range(n_layers)
-])
+    x = np.linspace(0, box_size[0], Nx, endpoint=False)
+    y = np.linspace(0, box_size[1], Ny, endpoint=False)
+    X, Y = np.meshgrid(x, y, indexing="ij")
 
-# Shift Z to center
-Lz = box_size[2]
-z_mid = (coords[:,2].min() + coords[:,2].max()) / 2
-coords[:,2] += Lz/2 - z_mid
+    def build_coords(z_array):
+        return np.vstack([
+            np.column_stack([X.flatten(),
+                             Y.flatten(),
+                             z_array[l].flatten()])
+            for l in range(n_layers)
+        ])
 
-# Build pseudo-universe
-resindices = np.repeat(np.arange(n_layers), Nx*Ny)
-u = mda.Universe.empty(n_atoms=coords.shape[0], n_residues=n_layers,
-                        atom_resindex=resindices, trajectory=True)
-for attr in ["name", "resname", "resid"]:
-    u.add_TopologyAttr(attr)
+    coords = build_coords(z_values)
 
-u.atoms.names = ["C"]*coords.shape[0]
-u.residues.resnames = ["upper", "middle", "lower"]
-u.residues.resids = [1, 2, 3]
+    resindices = np.repeat(np.arange(n_layers), Nx * Ny)
+    u = mda.Universe.empty(
+        n_atoms=coords.shape[0],
+        n_residues=n_layers,
+        atom_resindex=resindices,
+        trajectory=True
+    )
 
-u.atoms.positions = coords  # in nm
-u.dimensions = [*box_size, 90.0, 90.0, 90.0]  # nm
+    for attr in ["name", "resname", "resid"]:
+        u.add_TopologyAttr(attr)
 
-u.atoms.write("01000_pseudo_universe.gro")
+    u.atoms.names = ["C"] * coords.shape[0]
+    u.residues.resnames = ["upper", "lower", "middle"][:n_layers]
+    u.residues.resids = list(range(1, n_layers + 1))
+    u.dimensions = [*box_size, 90.0, 90.0, 90.0]
+
+    # Output paths
+    gro_path = os.path.join(out_dir, "first_frame.gro")
+    xtc_path = os.path.join(out_dir, "trajectory.xtc")
+    avg_gro_path = os.path.join(out_dir, "average_structure.gro")
+
+    # Write first frame GRO
+    u.atoms.positions = coords
+    u.atoms.write(gro_path)
+
+
+    # --- Trajectory + averaging ---
+    avg_z = np.zeros_like(z_values)
+
+    with mda.coordinates.XTC.XTCWriter(
+            xtc_path, n_atoms=u.atoms.n_atoms) as writer:
+
+        for z_file in z_files:
+            z_values = np.load(z_file) *10
+            avg_z += z_values
+
+            u.atoms.positions = build_coords(z_values)
+            writer.write(u.atoms)
+
+
+    # --- Average structure ---
+    avg_z /= len(z_files)
+    u.atoms.positions = build_coords(avg_z)
+    u.atoms.write(avg_gro_path)
+
+
+def visualize():
+    parser = argparse.ArgumentParser(
+        description="Create pseudo-universe GRO + XTC from Z_fitted.npy files"
+)
+    parser.add_argument(
+        "-i", "--input",
+        required=True,
+        help="Folder containing *_Z_fitted.npy and dimensions.csv"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        required=True,
+        help="Folder to store generated GRO and XTC files"
+    )
+
+    args = parser.parse_args()
+    os.makedirs(args.output, exist_ok=True)
+
+    get_vmd_visualisation(args.input, args.output)
+
+
+if __name__ == "__main__":
+    visualize()
+
+
+
 
 

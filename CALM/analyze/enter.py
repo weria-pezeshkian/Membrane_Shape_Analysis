@@ -37,7 +37,7 @@ def read_ndx(filename):
                 groups[group_name].extend(map(int, line.split()))
     return groups
 
-def fourier_by_layer(layer_group, box_size, Nx=2, Ny=2):
+def fourier_by_layer(layer_group, box_size, Nx=3, Ny=3):
     Lx = box_size[0]
     Ly = box_size[1]
     data_3m = layer_group.positions.T
@@ -112,7 +112,7 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
         layer_group = ts.atoms[[x - 1 for x in upper_index]]
         layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
 
-    Nx, Ny = 2, 2
+    Nx, Ny = 3, 
     fourier1 = fourier_by_layer(layer_group, box_size)
     fourier2 = fourier_by_layer(layer_group_2, box_size)
     fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
@@ -167,8 +167,14 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
 
     Z_fitted_middle = thickness_map
     #np.save(f"{out_dir}/{frame}_Z_fitted_Middle.npy", Z_fitted_middle/10)
- 
-    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_middle,], axis=0)
+    
+    #print("Means:")
+    #print("Z_fitted_1:", Z_fitted_1.mean())
+    #print("Z_fitted_2:", Z_fitted_2.mean())
+    #print("Z_fitted_middle:", Z_fitted_middle.mean())
+
+
+    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0)
     np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
 
     #for fourier,layer in zip([fourier1,fourier2,fouriermiddle],["Upper","Lower","Middle"]):
