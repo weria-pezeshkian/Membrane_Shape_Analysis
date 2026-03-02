@@ -36,6 +36,7 @@ def _theta_from_OP_box(O_box, P_box, Lx, Ly):
     O = np.asarray(O_box, float); P = np.asarray(P_box, float)
     side = np.array([Lx/2.0, Ly], float)
     ba = P - O
+    ba=ba-np.array([Lx, Ly]) * np.round(ba / np.array([Lx, Ly]))#FS: making sure the vector is not built across pbc
     bc = side - O
     denom = np.linalg.norm(ba) * np.linalg.norm(bc)
     if denom == 0: return 0.0
@@ -264,8 +265,10 @@ def _scatter_protein(ax, pts, origin_idx, p2_idx):
 # ====================== COM helpers (optional selection files) ======================
 
 def _try_load_selection_indices(dirpath):
-    fO = os.path.join(dirpath, "rotation_origin_indices.npy")
-    fP = os.path.join(dirpath, "rotation_p2_indices.npy")
+    #fO = os.path.join(dirpath, "rotation_origin_indices.npy")
+    #fP = os.path.join(dirpath, "rotation_p2_indices.npy")
+    fO = os.path.join(dirpath, "highlight_p1.npy")
+    fP = os.path.join(dirpath, "highlight_p2.npy")
     O_idx = np.load(fO) if os.path.exists(fO) else None
     P_idx = np.load(fP) if os.path.exists(fP) else None
     # allow either 1D or 2D; keep as list of ints
@@ -322,31 +325,37 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     """
     
     logging.info("=== curv: plot_curvature ===")
-
+    
     # Box + vectors + protein
     Lx, Ly = _load_box(Dir)
     logging.info(f"Box (Lx, Ly) = ({Lx}, {Ly})")
     o_all, p_all, prot_all_box = _load_vectors_and_protein(Dir)
     F = len(o_all)
+    i_rep = F // 2
     logging.info(f"Frames loaded: {F}")
-
     # Optional selection indices → COM markers
-    O_idx, P_idx = _try_load_selection_indices(Dir)
+    O_idx, P_idx = _try_load_selection_indices(Dir) #TODO how would these dirs be created and where?
     if O_idx is not None or P_idx is not None:
         logging.info("Found selection index files; red/green markers will be COMs of those selections.")
 
-    # Load raw stacks - THIS LOGIC WILL NEED TO BE CHANGES WHEN ZFIT WORKS
+    # Load raw stacks - THIS LOGIC WILL NEED TO BE CHANGES WHEN ZFIT WORKS #TODO what is the state of this comment, what needs to work?
     layers = {"Zfit": "Both", "Upper": "Upper", "Lower": "Lower", "Both": "Both"}
     stacks_raw = {k: _load_field_stack(Dir, v, k) for k, v in layers.items()}
 
     # Color scale from rotated stacks
     logging.info("Computing color scale from rotated stacks …")
-    all_rot_vals = []
+    all_rot_vals = [] #TODO: this list append is something we need to remove. too expensive for nothing.
     for key in ("Upper", "Lower", "Both"):
         raw = stacks_raw[key]
         vals = []
+        theta=[]
         for i in tqdm(range(F), desc=f"Scan {key}", unit="frame"):
-            rec_i, theta_i, *_ = _calc_frame_recenter_and_theta(raw[i], o_all[i], p_all[i], Lx, Ly)
+            o_all[i], p_all[i]=np.mod(o_all[i],[Lx,Ly]), np.mod(p_all[i],[Lx,Ly])#FS: making sure that nothing is wrapped out by accident in a differrent pbc image
+            if i == i_rep:
+                rec_i, theta_i, dx_box, dy_box = _calc_frame_recenter_and_theta(raw[i], o_all[i], p_all[i], Lx, Ly)
+            else:
+                rec_i, theta_i, *_ = _calc_frame_recenter_and_theta(raw[i], o_all[i], p_all[i], Lx, Ly)
+            theta.append(theta_i)
             vals.append(_rotate_image(rec_i, -theta_i))  # membrane uses -θ
         all_rot_vals.append(np.stack(vals, 0))
     all_vals = np.concatenate([x.ravel() for x in all_rot_vals])
@@ -421,6 +430,7 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
             theta_rep = thetas[len(thetas)//2]
             dx_box, dy_box = shifts[len(shifts)//2]
             prot_rep = _protein_for_frame(prot_all_box, i_rep)  # (N,2)
+            prot_rep = np.mod(prot_rep, [Lx, Ly]) #FS: another, just to be sure everything is in the same pbc image
 
             # overlays → recenter (+ rotate on right)
             center = np.array([Lx/2.0, Ly/2.0], float)
@@ -479,23 +489,24 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     # -------- static 2×2 means --------
     logging.info("Producing 2×2 mean images (no video).")
 
-    def _mean_rotated(raw_stack):
+    def _mean_rotated(raw_stack): #TODO: This is a copy paste of lines 346+. Why do we recalculate what we have already calculated above
         vals = []
         for i in range(F):
             rec_i, theta_i, *_ = _calc_frame_recenter_and_theta(raw_stack[i], o_all[i], p_all[i], Lx, Ly)
+            #rot = np.where(np.abs(rot) < 0.05, 0.0, rot)
             vals.append(_rotate_image(rec_i, -theta_i))
         return np.nanmean(np.stack(vals,0), axis=0)
 
     mean_Z = _mean_rotated(stacks_raw["Zfit"])
-    mean_U = _mean_rotated(stacks_raw["Upper"])
-    mean_L = _mean_rotated(stacks_raw["Lower"])
-    mean_B = _mean_rotated(stacks_raw["Both"])
+    mean_U = np.nanmean(all_rot_vals[0], axis=0)#_mean_rotated(stacks_raw["Upper"])
+    mean_L = np.nanmean(all_rot_vals[1], axis=0)#_mean_rotated(stacks_raw["Lower"])
+    mean_B = np.nanmean(all_rot_vals[2], axis=0)#_mean_rotated(stacks_raw["Both"])
 
-    vmin2 = min(map(np.nanmin, (mean_U, mean_L, mean_B)))
-    vmax2 = max(map(np.nanmax, (mean_U, mean_L, mean_B)))
+    vmin2 = np.nanmin(np.stack([mean_U, mean_L, mean_B], axis=0))
+    vmax2 = np.nanmax(np.stack([mean_U, mean_L, mean_B], axis=0))
     vmin_plot, vmax_plot = float(vmin2), float(vmax2)
 
-    vmin_plot, vmax_plot = -0.15, 0.15
+    #vmin_plot, vmax_plot = -0.15, 0.15 #TODO: This line looks like a forgotten testing line
 
     fig, axes = plt.subplots(2,2, figsize=(16,16))
     fig.patch.set_facecolor('white')
@@ -509,14 +520,16 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
     mask2 = _inscribed_disk_mask(mean_U.shape, 0.5)
 
     # pick a representative frame for overlays
-    i_rep = F // 2
-    rec_i, theta_i, dx_box, dy_box = _calc_frame_recenter_and_theta(
-        stacks_raw["Upper"][i_rep], o_all[i_rep], p_all[i_rep], Lx, Ly
-    )
+    
+    #rec_i, theta_i, dx_box, dy_box = _calc_frame_recenter_and_theta(
+    #    stacks_raw["Upper"][i_rep], o_all[i_rep], p_all[i_rep], Lx, Ly
+    #)
     prot_rep = _protein_for_frame(prot_all_box, i_rep)[:, :2]
     center = np.array([Lx/2.0, Ly/2.0], float)
     prot_recent = prot_rep + np.array([dx_box, dy_box], float)
-    prot_rot = _rotate_points_about_center(prot_recent, theta_i, center)
+
+    #prot_rot = _rotate_points_about_center(prot_recent, theta_i, center)
+    prot_rot = _rotate_points_about_center(prot_recent, np.mean(theta), center)
 
     for ax, title, arr in zip(axes, titles, arrays):
         _set_axes_style(ax, Lx, Ly)
@@ -684,8 +697,8 @@ def Map(argv):
                         help="Stop before this frame index (exclusive); None = end")
     p.add_argument('-S','--Step', default=1, type=int,
                         help="Stride between frames")
-    p.add_argument("--np-dir", default="", type=str,
-                        help="Directory containing curvature numpys (default: current dir)")
+    # p.add_argument("--np-dir", default="", type=str,
+    #                     help="Directory containing curvature numpys (default: current dir)")
     p.add_argument('-p1','--selection1', type=str, required=True,
                         help="Atom selection for reference point 1 (O)")
     p.add_argument('-p2','--selection2', type=str, required=True,
@@ -696,24 +709,20 @@ def Map(argv):
     logging.basicConfig(level=logging.INFO)
 
 
-    try:
-        u = mda.Universe(ns.structure, ns.trajectory)
-        get_rotation_and_protein(
-            out_dir=ns.np_dir or "./",
-            u=u, From=ns.From, Until=ns.Until, Step=ns.Step,
-            sele1=ns.selection1, sele2=ns.selection2,
-        )
+    u = mda.Universe(ns.structure, ns.trajectory)
+    get_rotation_and_protein(
+        out_dir=ns.numpys_directory or "./",
+        u=u, From=ns.From, Until=ns.Until, Step=ns.Step,
+        sele1=ns.selection1, sele2=ns.selection2,
+    )
 
-        u.trajectory[ns.From]
-        lx = float(u.trajectory.ts.dimensions[0])
-        ly = float(u.trajectory.ts.dimensions[1])
-        box_path = os.path.join(ns.np_dir or "./", "boxsize.npy")
-        np.save(box_path, np.array([lx, ly], float))
-        logging.info(f"Wrote boxsize.npy: Lx={lx}, Ly={ly}")
+    u.trajectory[ns.From]
+    lx = float(u.trajectory.ts.dimensions[0])
+    ly = float(u.trajectory.ts.dimensions[1])
+    box_path = os.path.join(ns.numpys_directory or "./", "boxsize.npy")
+    np.save(box_path, np.array([lx, ly], float))#TODO: we need to check, this effectivly overwrites a file created by analyze. ALARM
+    logging.info(f"Wrote boxsize.npy: Lx={lx}, Ly={ly}")
         
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        raise
 
 
     try:

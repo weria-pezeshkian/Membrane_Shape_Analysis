@@ -11,12 +11,11 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
-def _rel_indices_within_protein(protein_ag: mda.core.groups.AtomGroup,
-                                target_ag: mda.core.groups.AtomGroup) -> np.ndarray:
-    """
-    Return indices of `target_ag` atoms relative to the ordering of `protein_ag`.
-    If a target atom is not part of `protein_ag`, it is ignored.
-    """
+def _rel_indices_within_protein(protein_ag: mda.core.groups.AtomGroup,target_ag: mda.core.groups.AtomGroup) -> np.ndarray:
+   
+    '''Return indices of `target_ag` atoms relative to the ordering of `protein_ag`.
+    If a target atom is not part of `protein_ag`, it is ignored.'''
+
     prot_idx = protein_ag.atoms.indices  # global atom indices (1D)
     tgt_idx = target_ag.atoms.indices
     rel = np.nonzero(np.in1d(prot_idx, tgt_idx))[0].astype(np.int32)
@@ -30,6 +29,7 @@ def get_rotation_and_protein(out_dir: str,
                              Step: int,
                              sele1: str,
                              sele2: str) -> None:
+                                 
     """
     Collect per-frame O/P vectors (XY COMs) and per-frame protein atom positions.
 
@@ -42,12 +42,13 @@ def get_rotation_and_protein(out_dir: str,
       - protein_atom_indices.npy               (N,)   [global atom indices of protein selection]
       - selections.json                        (metadata: selections + slice)
     """
+
     os.makedirs(out_dir, exist_ok=True)
 
     # Build selections once (AtomGroups update positions with trajectory)
     sel_O = u.select_atoms(sele1)
     sel_P = u.select_atoms(sele2)
-    sel_prot = u.select_atoms("protein")
+    sel_prot = u.select_atoms("protein")# TODO: "name protein" is too special to be universal. what if the user does not have a protein but something else. 
 
     if sel_O.n_atoms == 0:
         raise ValueError(f"Selection1 is empty: {sele1}")
@@ -73,8 +74,8 @@ def get_rotation_and_protein(out_dir: str,
 
     for _ in tqdm(traj_slice, desc="Sampling trajectory"):
         # per-frame COMs (XY)
-        o_list.append(sel_O.center_of_mass()[:2])
-        p_list.append(sel_P.center_of_mass()[:2])
+        o_list.append(sel_O.center_of_geometry(pbc=True)[:2])#TODO: Append is very slow. as we know that actual size from traj_slice, we can initialize and make it quiker
+        p_list.append(sel_P.center_of_geometry(pbc=True)[:2])#TODO: PBC was neglected with center of mass calculation making it very weird.
         # per-frame protein coords
         prot_frames.append(sel_prot.positions.copy())
 
@@ -120,7 +121,7 @@ def get_rotation_and_protein(out_dir: str,
     )
 
 
-def calc_vectors(args: List[str]) -> None:
+def calc_vectors(args: List[str]) -> None: #TODO: As this is not callable from CLI directly, this might be more confusing than useful. But who knows.
     """CLI entry: compute O/P vectors, per-frame protein positions, and highlight indices."""
     parser = argparse.ArgumentParser(
         description="Compute per-frame rotation vectors, protein atom positions, and highlight indices",
