@@ -1,4 +1,5 @@
 from CALM.utilize.write_ndx import write_ndx
+from .get_vmd_visualization import write_xtc
 import sys
 import logging
 import argparse
@@ -11,19 +12,23 @@ def run_module(module_name, args):
     """
     run the specified python module with given arguments.
     """
+    
+    module_name=module_name.lower()
     if module_name == 'write_ndx':
         write_ndx(args)
+    elif module_name == 'write_xtc':
+        write_xtc(args) 
     #elif module_name == '<new module>': # remember to import module function up top
     #    plot_height(args)
     else:
         print(f"Unknown module: {module_name}")
 
-def main(args=""):
+def Link(args):
     """
     main entry point for the CALM link command-line interface.
     """
 
-    modules=['write_ndx']
+    modules=['write_ndx','write_xtc']
 
     sys.argv=[""]+args
     # call the right subroutine based on the module type
@@ -59,9 +64,8 @@ def main(args=""):
     args = parser.parse_args()
 
     # call the right subroutine based on the module type
-
     run_module(args.module, args.args)
 
 
 if __name__ == '__main__':
-    main()
+    pass

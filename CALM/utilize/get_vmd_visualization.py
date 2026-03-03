@@ -3,6 +3,7 @@ import os
 import MDAnalysis as mda
 import numpy as np
 import glob
+from typing import List, Optional, Sequence, Dict
 
 def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     """Build pseudo-universe from Z_fitted_*.npy files,
@@ -28,7 +29,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
 
     x = np.linspace(0, box_size[0], Nx, endpoint=False)
     y = np.linspace(0, box_size[1], Ny, endpoint=False)
-    X, Y = np.meshgrid(x, y, indexing="ij")
+    X, Y = np.meshgrid(x, y)
 
     def build_coords(z_array):
         return np.vstack([
@@ -86,29 +87,21 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     u.atoms.write(avg_gro_path)
 
 
-def visualize():
+def write_xtc(args: List[str]) -> None:
+
     parser = argparse.ArgumentParser(
-        description="Create pseudo-universe GRO + XTC from Z_fitted.npy files"
-)
-    parser.add_argument(
-        "-i", "--input",
-        required=True,
-        help="Folder containing *_Z_fitted.npy and dimensions.csv"
-    )
-    parser.add_argument(
-        "-o", "--output",
-        required=True,
-        help="Folder to store generated GRO and XTC files"
-    )
+        description="Create pseudo-universe GRO + XTC from Z_fitted.npy files",formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-i", "--input",help="Folder containing *_Z_fitted.npy and dimensions.csv")
+    parser.add_argument("-o", "--output",help="Folder to store generated GRO and XTC files")
+    args = parser.parse_args(args)
 
-    args = parser.parse_args()
     os.makedirs(args.output, exist_ok=True)
-
+    # use pathlib for the paths (import pathlib or so)
     get_vmd_visualisation(args.input, args.output)
 
 
 if __name__ == "__main__":
-    visualize()
+    pass
 
 
 

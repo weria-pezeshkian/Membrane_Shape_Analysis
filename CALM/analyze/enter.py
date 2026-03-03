@@ -19,8 +19,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 def get_XY(box_size):
-    x = np.linspace(0, box_size[0], 100)
-    y = np.linspace(0, box_size[1], 100)
+    x = np.linspace(0, box_size[0], 100, endpoint=False)
+    y = np.linspace(0, box_size[1], 100, endpoint=False)
     X, Y = np.meshgrid(x, y)
     return X, Y
 
@@ -65,6 +65,25 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
 
     return np.abs(t)
+
+#def intersect_surface(Z_func, t_sign, x0, y0, z0, nvec):
+#    t = t_sign
+#    max_iter = 200
+#    tol = 1e-8
+#
+#    for _ in range(max_iter):
+#        diff = h(t, Z_func, x0, y0, z0, nvec)
+#
+#        if abs(diff) < tol:
+#            return abs(t)
+#
+#        t -= diff * 0.5  # damped step
+#
+#    # If we get here → no convergence
+#    return np.nan
+#
+#
+#    return np.nan
 
 def get_absolute_distances(ref,grid,mask=None,dimensions=None):
     ref = np.asarray(ref, dtype=float)
@@ -112,81 +131,76 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
         layer_group = ts.atoms[[x - 1 for x in upper_index]]
         layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
 
-    Nx, Ny = 3, 
+    Nx, Ny = 3,3 
     fourier1 = fourier_by_layer(layer_group, box_size)
     fourier2 = fourier_by_layer(layer_group_2, box_size)
     fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
     fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
 
-
+    #Upper
     Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    #np.save(f"{out_dir}/{frame}_Z_fitted_Upper.npy", Z_fitted_1/10)
+    #Lower
     Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    #np.save(f"{out_dir}/{frame}_Z_fitted_Lower.npy", Z_fitted_2/10)
-
-    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2  #Mid-plane coordinates
+    #Middle
+    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2 
     
-
     #Interpolators for leaflet surfaces z=f(x,y)
-    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)
-    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)
+    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)  # x, y
+    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)  # x, y
     
 
-    ### Normal–intersection thickness calculation ###
+    ### Thickness calculation ###
 
-    #Compute grid spacing of surface in AA based on the shape of X Y already defined above. 
+    #Compute grid spacing of surface in AA.
     dx = box_size[0] / (X.shape[1] - 1)
     dy = box_size[1] / (Y.shape[0] - 1) 
 
-    #Construct the surface normal vectors from fitted mid plane Z(x,y). Take fitted surafce, construct and normalize local normal vector. (Z_fitted_vmd gives surface height at each (x,y))
-    dz_dx, dz_dy = np.gradient(Z_fitted_vmd, dx, dy)    #Computes partial derivatives, slopes along x and y-axis and gives 2D arrays with local surface slopes. 
-    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so that they point "up".
+    #Construct the surface normal vectors from fitted mid plane Z(x,y). Take fitted surafce, construct and normalize local normal vector. 
+    dz_dy, dz_dx = np.gradient(Z_fitted_vmd, dy, dx) 
+    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so that they point "up". ??????
 
-    Nz_arr = np.ones_like(Z_fitted_vmd)   #Sets all values on Z_fitted_vmd to 1
-    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)    #Stack the 3 components into a vector at every grid point → shape (Nx, Ny, 3).
-    N /= np.linalg.norm(N, axis=-1, keepdims=True)     #Divide by its length so every normal is a unit vector. (Normalises to unit normal vector)
+    Nz_arr = np.ones_like(Z_fitted_vmd)
+    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
+    N /= np.linalg.norm(N, axis=-1, keepdims=True)     #Normalises to unit normal vector
 
-    thickness_map = np.zeros_like(Z_fitted_vmd)        #Creates thickness_map, makes it the size of Z_fitted_vmd and fills it with zeros. 
+    thickness_map = np.zeros_like(Z_fitted_vmd)        
     l1_map = np.zeros_like(Z_fitted_vmd)
     l2_map = np.zeros_like(Z_fitted_vmd)
 
 
-    for i in range(X.shape[0]):        #Takes all the x coordinates of my surface, iterates over all rows (i). 
-        for j in range(X.shape[1]):    #Iterates over all columns (j)
-            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]    #Extracts coordinates, 3D-point of the surface. 
-            nvec = N[i, j]    #Get the normal vector that grid point. N is a 3D array containing the unit normal vector at every grid point. nvec is the direction perpendicular to the surface at that point. 
+    for i in range(X.shape[0]):        
+        for j in range(X.shape[1]): 
+            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
+            nvec = N[i, j]    #Creates N with the unit normal vectors in each point. 
 
             #Intersection function, finds intersect between a ray starting at the surface point and going along nvec to another surface (a spline) defined as z=f(x,y). 
                     #Returns the distance along the normal. 
             l1 = intersect_surface(interp_upper, 5.0,x0,y0,z0,nvec)   #upwards
             l2 = intersect_surface(interp_lower, -5.0,x0,y0,z0,nvec)  #downwards
-            
+
             l1_map[i,j]=l1
             l2_map[i,j]=l2
             thickness_map[i, j] = l1 + l2          
 
+    #Save thickness map 
     Z_fitted_middle = thickness_map
-    #np.save(f"{out_dir}/{frame}_Z_fitted_Middle.npy", Z_fitted_middle/10)
-    
-    #print("Means:")
-    #print("Z_fitted_1:", Z_fitted_1.mean())
-    #print("Z_fitted_2:", Z_fitted_2.mean())
-    #print("Z_fitted_middle:", Z_fitted_middle.mean())
+    ## Multiply with the 0 and 1 grid so that protein is removed. 
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", Z_fitted_middle/10)
 
-
+    #Save the Z_fitted
     Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0)
+    ## Multiply with the 0 and 1 grid so that protein is removed. 
     np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
 
-    #for fourier,layer in zip([fourier1,fourier2,fouriermiddle],["Upper","Lower","Middle"]):
-    #    curvature = fourier.Curv(X, Y)
-    #    np.save(f"{out_dir}/{frame}_curvature_frame_{layer}.npy", curvature*10)
+    #Save curvature data
     curvature_all = np.stack([fourier1.Curv(X,Y),fourier2.Curv(X,Y),fouriermiddle.Curv(X,Y),], axis=0)
+    ## Multiply with the 0 and 1 grid so that protein is removed. 
     np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy", curvature_all*10)
 
 def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     n_atoms=10000
 
-    print(Until)
+
     if Until is None:
         Until = len(u.trajectory)
     else:
@@ -230,8 +244,6 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
         # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
         for x in range(From,Until,Step):
             ex.submit(fn,x)      
-
-        #####End of true normal–intersection calculation 
 
 
 
