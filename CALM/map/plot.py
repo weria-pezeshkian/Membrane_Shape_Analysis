@@ -138,13 +138,16 @@ def draw(Dir, layer1="Upper", layer2="Lower", layer3="Middle",
     fig.colorbar(contour1, cax=cbar_ax)
     cbar_ax.set_ylabel("Thickness (nm)", fontsize=fontsize)
     cbar_ax.tick_params(labelsize=fontsize)
+    cbar_ax.yaxis.set_ticks_position('left')
+    cbar_ax.yaxis.set_label_position('left')
 
     cbar_ax2 = fig.add_axes([0.9, 0.15, 0.02, 0.7])
     fig.colorbar(contour2, cax=cbar_ax2)
     cbar_ax2.set_ylabel("Curvature (nm$^{-1}$)", fontsize=fontsize)
     cbar_ax2.tick_params(labelsize=fontsize)
 
-    plt.tight_layout(rect=[0.1, 0, .9, 1])
+    offset=.0125
+    plt.tight_layout(rect=[0.1+offset, 0, .9-offset, 1])
 
 
     if filename == "":
