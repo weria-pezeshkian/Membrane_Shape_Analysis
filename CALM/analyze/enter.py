@@ -15,6 +15,8 @@ from functools import partial
 import time
 import shlex
 from pathlib import Path
+from scipy.ndimage import binary_dilation
+
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
     return np.abs(t)
 
+
 #def intersect_surface(Z_func, t_sign, x0, y0, z0, nvec):
 #    t = t_sign
 #    max_iter = 200
@@ -81,9 +84,83 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 #
 #    # If we get here → no convergence
 #    return np.nan
+
+
+#def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size, thickness_map, curvature_all):
+#    mem_atoms=layer_group+layer_group_2
+#    protein_atoms=universe.atoms.difference(mem_atoms)
+#    protein_xy=protein_atoms.positions[:, :2]
 #
+#    #Grid spacing
+#    dx=box_size[0]/X.shape[1]
+#    dy=box_size[1]/Y.shape[0]
 #
-#    return np.nan
+#    #Indices
+#    xi = np.floor(protein_xy[:,0] / dx).astype(int)
+#    yi = np.floor(protein_xy[:,1] / dy).astype(int)
+#    
+#    xi = np.clip(xi,0,X.shape[1]-1)
+#    yi = np.clip(yi,0,X.shape[0]-1)
+#
+#    #create mask
+#    mask=np.ones(X.shape, dtype=float)
+#    mask[yi,xi]=0
+#
+#    thickness_map=thickness_map * mask
+#    curvature_all=curvature_all * mask
+#
+#    return thickness_map, curvature_all, mask
+
+def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size, thickness_map, curvature_all, radius=1):
+    mem_atoms = layer_group + layer_group_2
+    sel_layer_group=None
+    for item in map(str,layer_group.atoms.indices):
+        sel1=universe.select_atoms(f"same residue as index {item}")
+        if not sel_layer_group:
+            sel_layer_group=sel1
+        else:
+            sel_layer_group=sel_layer_group+sel1
+    sel_layer_group_2=None
+    for item in map(str,layer_group_2.atoms.indices):
+        sel1=universe.select_atoms(f"same residue as index {item}")
+        if not sel_layer_group_2:
+            sel_layer_group_2=sel1
+        else:
+            sel_layer_group_2=sel_layer_group_2+sel1
+
+    print("--------")
+    print(sel_layer_group.atoms.n_atoms)
+    print(sel_layer_group_2.atoms.n_atoms)
+    protein=universe.atoms.difference(sel_layer_group+sel_layer_group_2)
+    print(protein.intersection(sel_layer_group).atoms.n_atoms)
+    print("--------")
+    exit()
+    protein_atoms = universe.atoms.difference(mem_atoms)
+    protein_xy = protein_atoms.positions[:, :2]  # shape (N_protein, 2)
+
+    # Grid spacing
+    dx = box_size[0] / X.shape[1]
+    dy = box_size[1] / Y.shape[0]
+
+    # Create meshgrid of bin centers
+    xv = (np.arange(X.shape[1]) + 0.1) * dx
+    yv = (np.arange(Y.shape[0]) + 0.1) * dy
+    X_grid, Y_grid = np.meshgrid(xv, yv)
+
+    # Start with mask of ones
+    mask = np.ones_like(X, dtype=float)
+
+    # For each protein atom, mask nearby bins
+    for px, py in protein_xy:
+        dist2 = (X_grid - px)**2 + (Y_grid - py)**2
+        mask[dist2 <= radius**2] = 0
+
+    # Apply mask
+    thickness_map = thickness_map * mask
+    curvature_all = curvature_all * mask
+
+    return thickness_map, curvature_all, mask
+
 
 def get_absolute_distances(ref,grid,mask=None,dimensions=None):
     ref = np.asarray(ref, dtype=float)
@@ -117,8 +194,9 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
             min_dists[i] = np.min(dists)
     return min_dists,mask
 
+
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection,universe,until):
+              dynamic_select, dynamic_selection,universe,until,remove_protein=False):
     num_digits = len(str(abs(until)))
     dimensions=universe.trajectory[frame].dimensions
     box_size = dimensions[:3]
@@ -181,23 +259,21 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
             l1_map[i,j]=l1
             l2_map[i,j]=l2
             thickness_map[i, j] = l1 + l2          
-
+        
     #Save thickness map 
     Z_fitted_middle = thickness_map
-    ## Multiply with the 0 and 1 grid so that protein is removed. 
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", Z_fitted_middle/10)
 
-    #Save the Z_fitted
-    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0)
-    ## Multiply with the 0 and 1 grid so that protein is removed. 
+    curvature_all = np.stack([fourier1.Curv(X,Y),fourier2.Curv(X,Y),fouriermiddle.Curv(X,Y),], axis=0)
+    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0) 
+
+    if remove_protein:
+        thickness_map, curvature_all, mask = remove_prot(universe,layer_group,layer_group_2,X,Y,box_size,thickness_map,curvature_all)
+
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy", curvature_all*10)
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map/10)
     np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
 
-    #Save curvature data
-    curvature_all = np.stack([fourier1.Curv(X,Y),fourier2.Curv(X,Y),fouriermiddle.Curv(X,Y),], axis=0)
-    ## Multiply with the 0 and 1 grid so that protein is removed. 
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy", curvature_all*10)
-
-def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
+def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=False):
     n_atoms=10000
 
 
@@ -236,16 +312,26 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1):
     dynamic_select=dynamic_select,
     dynamic_selection=dynamic_selection,
     universe=u,
-    until=Until
+    until=Until,
+    remove_protein=remove_protein
     )
 
+    #with ProcessPoolExecutor(max_workers=Workers) as ex:
+    #    # map yields results in the same order as the input iterable.
+    #    # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
+    #    for x in range(From,Until,Step):
+    #        ex.submit(fn,x)      
+
+    futures = []
     with ProcessPoolExecutor(max_workers=Workers) as ex:
-        # map yields results in the same order as the input iterable.
-        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-        for x in range(From,Until,Step):
-            ex.submit(fn,x)      
+        for x in range(From, Until, Step):
+            futures.append(ex.submit(fn, x))
 
-
+    for f in futures:
+        try:
+            f.result()  # This will raise any exceptions from the worker
+        except Exception as e:
+            print("Worker failed:", e)
 
 
 
@@ -270,6 +356,8 @@ def Analyze(args: List[str]) -> None:
     # File and Resource Management:
     parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
     parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
+    # Remove protein area
+    parser.add_argument('-R','--Remove',action="store_true",help="Remove data from where the protein is located")
 
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
@@ -312,7 +400,7 @@ def Analyze(args: List[str]) -> None:
         trajectory=Path(args.trajectory)
         start=time.perf_counter()
         universe=mda.Universe(structure,trajectory)
-        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
+        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers,remove_protein=args.Remove)
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
     except Exception as e:

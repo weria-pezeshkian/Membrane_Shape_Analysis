@@ -45,7 +45,7 @@ def draw(Dir, layer1="Upper", layer2="Lower", layer3="Middle",
         raise FileNotFoundError("No *_mean_curvature.npy files found.")
 
     curvature_frames = np.asarray(curvature_frames)
-    curvature_mean = np.mean(curvature_frames, axis=0)
+    curvature_mean = np.nanmean(curvature_frames, axis=0)
     # shape: (3, Nx, Ny)
 
     curvature_data1 = curvature_mean[0]
@@ -61,7 +61,7 @@ def draw(Dir, layer1="Upper", layer2="Lower", layer3="Middle",
         raise FileNotFoundError("No *_thickness.npy files found.")
 
     thickness_frames = np.asarray(thickness_frames)
-    thickness_mean = np.mean(thickness_frames, axis=0)
+    thickness_mean = np.nanmean(thickness_frames, axis=0)
     # shape: (Nx, Ny)
 
     # --- Create X,Y grid from data shape ---
@@ -73,14 +73,31 @@ def draw(Dir, layer1="Upper", layer2="Lower", layer3="Middle",
     # --- Global curvature min/max ---
     catted = [curvature_data1, curvature_data2, curvature_data3]
 
+    #if minmax is None:
+    #    Minimum = np.nanmin([np.nanmin(x) for x in catted])
+    #    Maximum = np.nanmax([np.nanmax(x) for x in catted])
+    #else:
+    #    Minimum, Maximum = minmax
+
+    catted = [curvature_data1, curvature_data2, curvature_data3]
+
     if minmax is None:
-        Minimum = np.min([np.min(x) for x in catted])
-        Maximum = np.max([np.max(x) for x in catted])
+        all_vals = np.concatenate([x.flatten() for x in catted])
+        all_vals = all_vals[~np.isnan(all_vals)]   # remove NaNs
+    
+        if len(all_vals) == 0:
+            raise ValueError("All curvature values are NaN after masking.")
+    
+        Minimum = np.min(all_vals)
+        Maximum = np.max(all_vals)
+    
+        if Minimum == Maximum:
+            Maximum = Minimum + 1e-6
     else:
         Minimum, Maximum = minmax
 
     # --- Plot ---
-    fig, axes = plt.subplots(2, 2, figsize=(24, 28))
+    fig, axes = plt.subplots(2, 2, figsize=(28, 28))
     axes = axes.flatten()
 
     for ax in axes:

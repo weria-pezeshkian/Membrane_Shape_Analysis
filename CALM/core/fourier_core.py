@@ -61,7 +61,7 @@ class Fourier_Series_Function:
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
-                gxx += - self.Anm[idx_i, idx_j] * self.q0 ** 2 * i ** 2 * (     ###Added a - here for debugging
+                gxx += self.Anm[idx_i, idx_j] * self.q0 ** 2 * i ** 2 * ( 
                     np.cos(self.q0 * i * x + self.p0 * j * y) +  # Vectorized
                     np.sin(self.q0 * i * x + self.p0 * j * y)    # Vectorized
                 )
@@ -73,7 +73,7 @@ class Fourier_Series_Function:
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
-                gyy += - self.Anm[idx_i, idx_j] * self.p0 ** 2 * j ** 2 * (      ###Added a - here for debugging
+                gyy += self.Anm[idx_i, idx_j] * self.p0 ** 2 * j ** 2 * ( 
                     np.cos(self.q0 * i * x + self.p0 * j * y) +  # Vectorized
                     np.sin(self.q0 * i * x + self.p0 * j * y)    # Vectorized
                 )
@@ -85,7 +85,7 @@ class Fourier_Series_Function:
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
-                gxy += - self.Anm[idx_i, idx_j] * self.q0 * self.p0 * i * j * (     ###Added a - here for debugging
+                gxy += self.Anm[idx_i, idx_j] * self.q0 * self.p0 * i * j * (  
                     np.cos(self.q0 * i * x + self.p0 * j * y) +  # Vectorized
                     np.sin(self.q0 * i * x + self.p0 * j * y)    # Vectorized
                 )
@@ -94,16 +94,16 @@ class Fourier_Series_Function:
     def Curv(self, x, y):
         fx = self.Zx(x, y)
         fy = self.Zy(x, y)
-        fxx = self.Zxx(x, y)
-        fyy = self.Zyy(x, y)
-        fxy = self.Zxy(x, y)
+        fxx = - self.Zxx(x, y)
+        fyy = - self.Zyy(x, y)
+        fxy = - self.Zxy(x, y)
 
         # Mean curvature equation
         numerator = (1 + fx**2) * fyy - 2 * fx * fy * fxy + (1 + fy**2) * fxx
         denominator = (1 + fx**2 + fy**2)**(3/2)
     
         C =numerator / (2*denominator)
-        return C        ####Removed - for debugging      
+        return -C        ####Removed - for debugging      
 
     def Update_coff(self, coff1,coff2):
          self.Anm = 0.5*(coff1+coff2)
