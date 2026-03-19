@@ -18,6 +18,7 @@ from pathlib import Path
 from scipy.ndimage import binary_dilation
 
 
+
 logger = logging.getLogger(__name__)
 
 def get_XY(box_size):
@@ -51,7 +52,7 @@ def h(t,Z_func,x0,y0,z0,nvec):
     x_t = x0 + t * nvec[0]             #Compute the candicate point on the ray at parameter t. 
     y_t = y0 + t * nvec[1]
     z_t = z0 + t * nvec[2]
-    z_surf = Z_func(x_t, y_t)[0, 0]   #Evaluate the surface height at the projected (x_t,y_t). Z_func is my RectBiva...Slpine interpolator. calling it with scalar x_t, y_t returns a 2D array with shape (1,1), hence the [0,0] to get the scalar value
+    z_surf = Z_func(x_t, y_t)[0, 0]   #Evaluate the surface height at the projected (x_t,y_t). 
     diff = z_t - z_surf
 
     return diff
@@ -68,98 +69,57 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
     return np.abs(t)
 
-
-#def intersect_surface(Z_func, t_sign, x0, y0, z0, nvec):
-#    t = t_sign
-#    max_iter = 200
-#    tol = 1e-8
-#
-#    for _ in range(max_iter):
-#        diff = h(t, Z_func, x0, y0, z0, nvec)
-#
-#        if abs(diff) < tol:
-#            return abs(t)
-#
-#        t -= diff * 0.5  # damped step
-#
-#    # If we get here → no convergence
-#    return np.nan
-
-
 #def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size, thickness_map, curvature_all):
-#    mem_atoms=layer_group+layer_group_2
-#    protein_atoms=universe.atoms.difference(mem_atoms)
-#    protein_xy=protein_atoms.positions[:, :2]
+#    mem_atoms = (layer_group + layer_group_2).unique
+#    mem_residues = mem_atoms.residues
+#    protein_atoms = universe.atoms.difference(mem_residues.atoms)
+#    protein_xy = protein_atoms.positions[:, :2]
 #
 #    #Grid spacing
-#    dx=box_size[0]/X.shape[1]
-#    dy=box_size[1]/Y.shape[0]
+#    dx = box_size[0] / X.shape[1]
+#    dy = box_size[1] / Y.shape[0]
 #
 #    #Indices
 #    xi = np.floor(protein_xy[:,0] / dx).astype(int)
 #    yi = np.floor(protein_xy[:,1] / dy).astype(int)
 #    
-#    xi = np.clip(xi,0,X.shape[1]-1)
-#    yi = np.clip(yi,0,X.shape[0]-1)
+#    xi = np.clip(xi, 0, X.shape[1]-1)
+#    yi = np.clip(yi, 0, X.shape[0]-1)
 #
-#    #create mask
-#    mask=np.ones(X.shape, dtype=float)
-#    mask[yi,xi]=0
+#    #Create mask with NaN
+#    mask = np.zeros(X.shape, dtype=bool)
+#    mask[yi, xi] = True
+#    mask = binary_dilation(mask, iterations=4)
+#    mask = np.where(mask, np.nan, 1.0)
 #
-#    thickness_map=thickness_map * mask
-#    curvature_all=curvature_all * mask
+#    #Apply mask
+#    thickness_map = np.where(np.isnan(mask), np.nan, thickness_map)
+#    curvature_all = np.where(np.isnan(mask), np.nan, curvature_all)
 #
 #    return thickness_map, curvature_all, mask
 
-def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size, thickness_map, curvature_all, radius=1):
-    mem_atoms = layer_group + layer_group_2
-    sel_layer_group=None
-    for item in map(str,layer_group.atoms.indices):
-        sel1=universe.select_atoms(f"same residue as index {item}")
-        if not sel_layer_group:
-            sel_layer_group=sel1
-        else:
-            sel_layer_group=sel_layer_group+sel1
-    sel_layer_group_2=None
-    for item in map(str,layer_group_2.atoms.indices):
-        sel1=universe.select_atoms(f"same residue as index {item}")
-        if not sel_layer_group_2:
-            sel_layer_group_2=sel1
-        else:
-            sel_layer_group_2=sel_layer_group_2+sel1
 
-    print("--------")
-    print(sel_layer_group.atoms.n_atoms)
-    print(sel_layer_group_2.atoms.n_atoms)
-    protein=universe.atoms.difference(sel_layer_group+sel_layer_group_2)
-    print(protein.intersection(sel_layer_group).atoms.n_atoms)
-    print("--------")
-    exit()
-    protein_atoms = universe.atoms.difference(mem_atoms)
-    protein_xy = protein_atoms.positions[:, :2]  # shape (N_protein, 2)
 
-    # Grid spacing
+def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size):
+    mem_atoms = (layer_group + layer_group_2).unique
+    mem_residues = mem_atoms.residues
+    protein_atoms = universe.atoms.difference(mem_residues.atoms)
+    protein_xy = protein_atoms.positions[:, :2]
+
     dx = box_size[0] / X.shape[1]
     dy = box_size[1] / Y.shape[0]
 
-    # Create meshgrid of bin centers
-    xv = (np.arange(X.shape[1]) + 0.1) * dx
-    yv = (np.arange(Y.shape[0]) + 0.1) * dy
-    X_grid, Y_grid = np.meshgrid(xv, yv)
+    xi = np.floor(protein_xy[:, 0] / dx).astype(int)
+    yi = np.floor(protein_xy[:, 1] / dy).astype(int)
 
-    # Start with mask of ones
-    mask = np.ones_like(X, dtype=float)
+    xi = np.clip(xi, 0, X.shape[1] - 1)
+    yi = np.clip(yi, 0, X.shape[0] - 1)
 
-    # For each protein atom, mask nearby bins
-    for px, py in protein_xy:
-        dist2 = (X_grid - px)**2 + (Y_grid - py)**2
-        mask[dist2 <= radius**2] = 0
+    mask = np.zeros(X.shape, dtype=bool)
+    mask[yi, xi] = True
+    mask = binary_dilation(mask, iterations=4)
 
-    # Apply mask
-    thickness_map = thickness_map * mask
-    curvature_all = curvature_all * mask
-
-    return thickness_map, curvature_all, mask
+    return mask
 
 
 def get_absolute_distances(ref,grid,mask=None,dimensions=None):
@@ -195,83 +155,210 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
     return min_dists,mask
 
 
+##### Testing new calculation method ######
+
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection,universe,until,remove_protein=False):
+              dynamic_select, dynamic_selection, universe, until, remove_protein=False):
+
     num_digits = len(str(abs(until)))
-    dimensions=universe.trajectory[frame].dimensions
+    ts = universe.trajectory[frame]
+    dimensions = ts.dimensions
     box_size = dimensions[:3]
-    ts=universe.trajectory[frame]
-    with open(f"{out_dir}/dimensions.csv","a",encoding="UTF8") as dims:
-        dims.write(f"{frame},{','.join(map(str,box_size))}\n")
+
+    # Save box dimensions
+    with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
+        dims.write(f"{frame},{','.join(map(str, box_size))}\n")
+
+    # XY grid
     X, Y = get_XY(box_size)
+
+    # Dynamic selection if requested
     if dynamic_select:
-        _,upper_index,lower_index=write(ts,dynamic_selection,write=False)
+        _, upper_index, lower_index = write(ts, dynamic_selection, write=False)
         layer_group = ts.atoms[[x - 1 for x in upper_index]]
         layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
 
-    Nx, Ny = 3,3 
-    fourier1 = fourier_by_layer(layer_group, box_size)
-    fourier2 = fourier_by_layer(layer_group_2, box_size)
+    Nx, Ny = 3, 3
+    # Fourier fits
+    fourier1 = fourier_by_layer(layer_group, box_size, Nx, Ny)
+    fourier2 = fourier_by_layer(layer_group_2, box_size, Nx, Ny)
     fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
     fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
 
-    #Upper
+    # Evaluate surfaces
     Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    #Lower
     Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    #Middle
-    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2 
-    
-    #Interpolators for leaflet surfaces z=f(x,y)
-    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)  # x, y
-    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)  # x, y
-    
+    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
 
-    ### Thickness calculation ###
+    # Interpolators for intersections
+    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)
+    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)
 
-    #Compute grid spacing of surface in AA.
+    # ---- Thickness calculation ---- #
     dx = box_size[0] / (X.shape[1] - 1)
-    dy = box_size[1] / (Y.shape[0] - 1) 
-
-    #Construct the surface normal vectors from fitted mid plane Z(x,y). Take fitted surafce, construct and normalize local normal vector. 
-    dz_dy, dz_dx = np.gradient(Z_fitted_vmd, dy, dx) 
-    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so that they point "up". ??????
-
+    dy = box_size[1] / (Y.shape[0] - 1)
+    dz_dy, dz_dx = np.gradient(Z_fitted_vmd, dy, dx)
+    Nx_arr, Ny_arr = -dz_dx, -dz_dy
     Nz_arr = np.ones_like(Z_fitted_vmd)
     N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
-    N /= np.linalg.norm(N, axis=-1, keepdims=True)     #Normalises to unit normal vector
+    N /= np.linalg.norm(N, axis=-1, keepdims=True)
 
-    thickness_map = np.zeros_like(Z_fitted_vmd)        
+    thickness_map = np.zeros_like(Z_fitted_vmd)
     l1_map = np.zeros_like(Z_fitted_vmd)
     l2_map = np.zeros_like(Z_fitted_vmd)
 
-
-    for i in range(X.shape[0]):        
-        for j in range(X.shape[1]): 
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
             x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
-            nvec = N[i, j]    #Creates N with the unit normal vectors in each point. 
+            nvec = N[i, j]
 
-            #Intersection function, finds intersect between a ray starting at the surface point and going along nvec to another surface (a spline) defined as z=f(x,y). 
-                    #Returns the distance along the normal. 
-            l1 = intersect_surface(interp_upper, 5.0,x0,y0,z0,nvec)   #upwards
-            l2 = intersect_surface(interp_lower, -5.0,x0,y0,z0,nvec)  #downwards
+            l1 = intersect_surface(interp_upper, 5.0, x0, y0, z0, nvec)
+            l2 = intersect_surface(interp_lower, -5.0, x0, y0, z0, nvec)
 
-            l1_map[i,j]=l1
-            l2_map[i,j]=l2
-            thickness_map[i, j] = l1 + l2          
-        
-    #Save thickness map 
+            l1_map[i, j] = l1
+            l2_map[i, j] = l2
+            thickness_map[i, j] = l1 + l2
+
     Z_fitted_middle = thickness_map
 
-    curvature_all = np.stack([fourier1.Curv(X,Y),fourier2.Curv(X,Y),fouriermiddle.Curv(X,Y),], axis=0)
-    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0) 
+    # ---- Curvature calculations using shape operator ---- #
+    # Upper leaflet
+    H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = fourier1.ShapeOperatorCurvatures(X, Y)
+    # Lower leaflet
+    H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = fourier2.ShapeOperatorCurvatures(X, Y)
+    # Middle surface
+    Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = fouriermiddle.ShapeOperatorCurvatures(X, Y)
 
+    # ---- Apply protein mask if requested ---- #
     if remove_protein:
-        thickness_map, curvature_all, mask = remove_prot(universe,layer_group,layer_group_2,X,Y,box_size,thickness_map,curvature_all)
+        mask = remove_prot(universe, layer_group, layer_group_2, X, Y, box_size)
 
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy", curvature_all*10)
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map/10)
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
+        # Thickness
+        thickness_map = np.where(mask, np.nan, thickness_map)
+
+        # Mean curvature
+        H1   = np.where(mask, np.nan, H1)
+        H2   = np.where(mask, np.nan, H2)
+        Hmid = np.where(mask, np.nan, Hmid)
+
+        # Gaussian curvature
+        K1   = np.where(mask, np.nan, K1)
+        K2   = np.where(mask, np.nan, K2)
+        Kmid = np.where(mask, np.nan, Kmid)
+
+        # Principal curvatures
+        k1_1   = np.where(mask, np.nan, k1_1)
+        k2_1   = np.where(mask, np.nan, k2_1)
+        k1_2   = np.where(mask, np.nan, k1_2)
+        k2_2   = np.where(mask, np.nan, k2_2)
+        k1_mid = np.where(mask, np.nan, k1_mid)
+        k2_mid = np.where(mask, np.nan, k2_mid)
+
+        # Principal directions (need broadcasting)
+        dirs1_1   = np.where(mask[:, :, None], np.nan, dirs1_1)
+        dirs2_1   = np.where(mask[:, :, None], np.nan, dirs2_1)
+        dirs1_2   = np.where(mask[:, :, None], np.nan, dirs1_2)
+        dirs2_2   = np.where(mask[:, :, None], np.nan, dirs2_2)
+        dirs1_mid = np.where(mask[:, :, None], np.nan, dirs1_mid)
+        dirs2_mid = np.where(mask[:, :, None], np.nan, dirs2_mid)
+
+    # ---- Save results in separate numpy files ---- #
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy", np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0) / 10)
+
+    # Mean curvature
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy",
+            np.stack([H1, H2, Hmid], axis=0) * 10)
+    # Gaussian curvature
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_gaussian_curvature.npy",
+            np.stack([K1, K2, Kmid], axis=0) * 10)
+    # Principal curvatures
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_curvatures.npy",
+            np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10)
+    # Principal directions
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_dirs.npy",
+            np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
+
+
+## --------------------------------- ######
+
+
+
+#def one_frame(frame, *, layer_group, layer_group_2, out_dir,
+#              dynamic_select, dynamic_selection,universe,until,remove_protein=False):
+#    num_digits = len(str(abs(until)))
+#    dimensions=universe.trajectory[frame].dimensions
+#    box_size = dimensions[:3]
+#    ts=universe.trajectory[frame]
+#    with open(f"{out_dir}/dimensions.csv","a",encoding="UTF8") as dims:
+#        dims.write(f"{frame},{','.join(map(str,box_size))}\n")
+#    X, Y = get_XY(box_size)
+#    if dynamic_select:
+#        _,upper_index,lower_index=write(ts,dynamic_selection,write=False)
+#        layer_group = ts.atoms[[x - 1 for x in upper_index]]
+#        layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
+#
+#    Nx, Ny = 3,3 
+#    fourier1 = fourier_by_layer(layer_group, box_size)
+#    fourier2 = fourier_by_layer(layer_group_2, box_size)
+#    fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
+#    fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
+#
+#    #Upper
+#    Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
+#    #Lower
+#    Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
+#    #Middle
+#    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2 
+#    
+#    #Interpolators for leaflet surfaces z=f(x,y)
+#    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)  # x, y
+#    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)  # x, y
+#
+#    #-----Thickness calculation-----#
+#
+#    #Compute grid spacing of surface in AA.
+#    dx = box_size[0] / (X.shape[1] - 1)
+#    dy = box_size[1] / (Y.shape[0] - 1) 
+#
+#    #Construct the surface normal vectors from fitted mid plane Z(x,y).
+#    dz_dy, dz_dx = np.gradient(Z_fitted_vmd, dy, dx) 
+#    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so normals point pos Z-direction.
+#    Nz_arr = np.ones_like(Z_fitted_vmd)
+#    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
+#    N /= np.linalg.norm(N, axis=-1, keepdims=True) 
+#
+#    #Thickness map 
+#    thickness_map = np.zeros_like(Z_fitted_vmd)        
+#    l1_map = np.zeros_like(Z_fitted_vmd)
+#    l2_map = np.zeros_like(Z_fitted_vmd)
+#
+#    #Intersection function, returns the distance along the normal. 
+#    for i in range(X.shape[0]):        
+#        for j in range(X.shape[1]): 
+#            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
+#            nvec = N[i, j]    #Creates N with the unit normal vectors in each point. 
+#
+#            
+#            l1 = intersect_surface(interp_upper, 5.0,x0,y0,z0,nvec)   #upwards
+#            l2 = intersect_surface(interp_lower, -5.0,x0,y0,z0,nvec)  #downwards
+#
+#            l1_map[i,j]=l1
+#            l2_map[i,j]=l2
+#            thickness_map[i, j] = l1 + l2          
+#        
+#    #Save thickness map 
+#    Z_fitted_middle = thickness_map
+#    curvature_all = np.stack([fourier1.Curv(X,Y),fourier2.Curv(X,Y),fouriermiddle.Curv(X,Y),], axis=0)
+#
+#    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0) 
+#
+#    if remove_protein:
+#        thickness_map, curvature_all, mask = remove_prot(universe,layer_group,layer_group_2,X,Y,box_size,thickness_map,curvature_all)
+#
+#    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy", curvature_all*10)
+#    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map/10)
+#    np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
 
 def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=False):
     n_atoms=10000
@@ -304,44 +391,31 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=F
         layer_group, layer_group_2=None,None
 
 
-    fn = partial(
-    one_frame,
-    layer_group=layer_group,
-    layer_group_2=layer_group_2,
-    out_dir=out_dir,
-    dynamic_select=dynamic_select,
-    dynamic_selection=dynamic_selection,
-    universe=u,
-    until=Until,
-    remove_protein=remove_protein
-    )
+    fn = partial(one_frame,layer_group=layer_group,layer_group_2=layer_group_2,out_dir=out_dir,dynamic_select=dynamic_select,dynamic_selection=dynamic_selection,universe=u,until=Until,remove_protein=remove_protein)
 
-    #with ProcessPoolExecutor(max_workers=Workers) as ex:
-    #    # map yields results in the same order as the input iterable.
-    #    # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-    #    for x in range(From,Until,Step):
-    #        ex.submit(fn,x)      
 
-    futures = []
+
     with ProcessPoolExecutor(max_workers=Workers) as ex:
-        for x in range(From, Until, Step):
-            futures.append(ex.submit(fn, x))
-
-    for f in futures:
-        try:
-            f.result()  # This will raise any exceptions from the worker
-        except Exception as e:
-            print("Worker failed:", e)
+        # map yields results in the same order as the input iterable.
+        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
+        for x in range(From,Until,Step):
+            ex.submit(fn,x)      
 
 
-
+#    with ProcessPoolExecutor(max_workers=Workers) as ex:
+#        futures = [ex.submit(fn, x) for x in range(From, Until, Step)]
+#
+#        for f in tqdm(futures):
+#            try:
+#                f.result()
+#            except Exception as e:
+#                print("Worker failed:")
+#                raise e
 
 def Analyze(args: List[str]) -> None:
     """Main entry point for Analyzer tool"""
-    parser = argparse.ArgumentParser(description="Calculate the curvature of a membrane",
-                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description="Calculate the curvature of a Lipid Bilayer",formatter_class=argparse.RawDescriptionHelpFormatter)
 
-   
     # Real scientific parameters:
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file")
     parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file")

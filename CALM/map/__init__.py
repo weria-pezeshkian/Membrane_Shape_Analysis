@@ -6,6 +6,7 @@
 #from .dir_visualizer import VIS
 #from .libmaker import library_file_preparer
 from .enter import Map
+from .plot import draw
 
 #__all__ = ["DOP", "DAI", "INU","VIS","library_file_preparer", "Map"]
 __all__ = ["Map"]

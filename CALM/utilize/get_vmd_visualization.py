@@ -89,14 +89,12 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
 
 def write_xtc(args: List[str]) -> None:
 
-    parser = argparse.ArgumentParser(
-        description="Create pseudo-universe GRO + XTC from Z_fitted.npy files",formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description="Create GRO + XTC of fitting from CALM analyze output files",formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-i", "--input",help="Folder containing *_Z_fitted.npy and dimensions.csv")
     parser.add_argument("-o", "--output",help="Folder to store generated GRO and XTC files")
     args = parser.parse_args(args)
 
     os.makedirs(args.output, exist_ok=True)
-    # use pathlib for the paths (import pathlib or so)
     get_vmd_visualisation(args.input, args.output)
 
 
