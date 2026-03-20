@@ -148,7 +148,7 @@ class Fourier_Series_Function:
                 S = np.array([[S11[i,j], S12[i,j]],
                               [S21[i,j], S22[i,j]]])
                 vals, vecs = np.linalg.eigh(S)
-                k1[i,j], k2[i,j] = vals[1], vals[0]  # convention k1 >= k2
+                k1[i,j], k2[i,j] = vals[1], vals[0]  # convention k1 >= k2   ???????
                 dirs1[i,j,:] = vecs[:,1]  # direction of k1 in tangent plane
                 dirs2[i,j,:] = vecs[:,0]  # direction of k2 in tangent plane
 

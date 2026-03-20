@@ -212,5 +212,4 @@ def plot(args: List[str]) -> None:
     draw(Dir=args.numpys_directory, mode=args.mode, minmax=minmax, filename=args.outfile, show_vectors=args.vectors)
 
 if __name__ == "__main__":
-    import sys
-    plot(sys.argv[1:])
+    pass
