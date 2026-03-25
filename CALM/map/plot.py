@@ -200,11 +200,11 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
 def plot(args: List[str]) -> None:
     parser = argparse.ArgumentParser(description="Plot membrane curvature")
     parser.add_argument('-i', '--numpys_directory', type=str)
-    parser.add_argument('--mode', choices=["mean", "gaussian", "principal"], default="mean")
-    parser.add_argument('-o', '--outfile', type=str, default="")
-    parser.add_argument('--minimum', type=float, default=None)
-    parser.add_argument('--maximum', type=float, default=None)
-    parser.add_argument('--vectors', action="store_true", help="Show principal direction vectors")
+    parser.add_argument('--mode', choices=["mean", "gaussian", "principal"], default="mean", help="Choose which curvature to plot, default=mean")
+    parser.add_argument('-o', '--outfile', type=str, default="mean.png")
+    parser.add_argument('--minimum', type=float, default=None, help="Choose maximum, default=None")
+    parser.add_argument('--maximum', type=float, default=None, help="Choose minimum, default=None")
+    parser.add_argument('--vectors', action="store_true", help="Show principal direction vectors, default=False", default=False)
 
     args = parser.parse_args(args)
     minmax = [args.minimum, args.maximum] if args.minimum is not None and args.maximum is not None else None

@@ -416,21 +416,21 @@ def Analyze(args: List[str]) -> None:
     parser = argparse.ArgumentParser(description="Calculate the curvature of a Lipid Bilayer",formatter_class=argparse.RawDescriptionHelpFormatter)
 
     # Real scientific parameters:
-    parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file")
-    parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file")
+    parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file (.xtc) ")
+    parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file (.tpr)")
     parser.add_argument('-n','--index',type=str,help="Specify the path to an index file containing the monolayers. To consider both monolayers, they need to be named 'Upper' and 'Lower'. Alternatively provide a selection for a dynamic calculation of the monolayers, i.e. 'name PO4'")
     parser.add_argument('-o','--out',type=str,help="Specify a path to a folder to which all calculated numpy arrays are saved")
-    parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here")
-    parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here")
-    parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here")
+    parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here, default=0")
+    parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here, default=None")
+    parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here, default=1")
     # Replay:
     parser.add_argument("--replay", help="Load args from replay file")
     parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
     # File and Resource Management:
-    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing")
+    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")
     parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
     # Remove protein area
-    parser.add_argument('-R','--Remove',action="store_true",help="Remove data from where the protein is located")
+    parser.add_argument('-R','--Remove',default=False, action="store_true",help="Remove data from where the protein is located, default=False")
 
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
