@@ -199,7 +199,7 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
 
 def plot(args: List[str]) -> None:
     parser = argparse.ArgumentParser(description="Plot membrane curvature")
-    parser.add_argument('-d', '--numpys_directory', type=str)
+    parser.add_argument('-i', '--numpys_directory', type=str)
     parser.add_argument('--mode', choices=["mean", "gaussian", "principal"], default="mean")
     parser.add_argument('-o', '--outfile', type=str, default="")
     parser.add_argument('--minimum', type=float, default=None)

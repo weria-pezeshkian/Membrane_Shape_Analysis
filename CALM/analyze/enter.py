@@ -154,7 +154,6 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
             min_dists[i] = np.min(dists)
     return min_dists,mask
 
-
 ##### Testing new calculation method ######
 
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
@@ -480,3 +479,6 @@ def Analyze(args: List[str]) -> None:
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
+
+
+
