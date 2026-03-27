@@ -221,8 +221,8 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
             l1 = brentq(f,0.0,t_max,args=(interp_upper, x0,y0,z0, nvecx, nvecy, nvecz))
             l2 = brentq(f,-t_max,0.0,args=(interp_lower, x0,y0,z0, nvecx, nvecy, nvecz))
 
-            l1_map[i, j] = l1
-            l2_map[i, j] = l2
+            #l1_map[i, j] = l1
+            #l2_map[i, j] = l2
             thickness_map[i, j] = l1 - l2
 
     Z_fitted_middle = thickness_map
@@ -374,6 +374,8 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=F
         Until = len(u.trajectory)
     else:
         Until=int(Until)
+    if ndx is None:
+        exit("An index selection or file has to be supplied. Exiting.")
     try:
         ndx = read_ndx(ndx)
         dynamic_select=False
@@ -460,11 +462,11 @@ def Analyze(args: List[str]) -> None:
     combined_argv = replayed + remaining
     args=parser.parse_args(combined_argv)
 
-    replay_path = args.out_replay or arg_helper.default_replay_name(args.out)
-    arg_helper.write_replay_file(replay_path, parser, args)
-
     if not os.path.exists(args.out):
         os.makedirs(args.out)
+
+    replay_path = args.out_replay or arg_helper.default_replay_name(args.out)
+    arg_helper.write_replay_file(replay_path, parser, args)
 
     if args.clear:
         for filename in os.listdir(args.out):
