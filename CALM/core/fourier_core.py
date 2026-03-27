@@ -155,7 +155,7 @@ class Fourier_Series_Function:
         H = 0.5*(k1 + k2)
         K = k1 * k2
 
-        return -H, K, k1, k2, dirs1, dirs2
+        return H, K, k1, k2, dirs1, dirs2
 
     def Update_coff(self, coff1,coff2):
          self.Anm = 0.5*(coff1+coff2)
