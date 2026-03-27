@@ -157,11 +157,30 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
 
 ##### Testing new calculation method ######
 
-def f(t, interp, mx, my, mz, nx, ny, nz):
+def f(t, interp, mx, my, mz, nx, ny, nz,Lx,Ly):
     xq = mx + t * nx
     yq = my + t * ny
     zq = mz + t * nz
+
+    xq = np.mod(xq, Lx)
+    yq = np.mod(yq, Ly)
+
     return zq - interp(yq, xq, grid=False)[()]
+
+def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
+    # dZ/dx: axis 1
+    if periodic_x:
+        dz_dx = (np.roll(Z, -1, axis=1) - np.roll(Z, 1, axis=1)) / (2 * dx)
+    else:
+        dz_dx = np.gradient(Z, dx, axis=1)
+
+    # dZ/dy: axis 0
+    if periodic_y:
+        dz_dy = (np.roll(Z, -1, axis=0) - np.roll(Z, 1, axis=0)) / (2 * dy)
+    else:
+        dz_dy = np.gradient(Z, dy, axis=0)
+
+    return dz_dy, dz_dx
 
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
               dynamic_select, dynamic_selection, universe, until, remove_protein=False):
@@ -203,7 +222,8 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
     # ---- Thickness calculation ---- #
     dx = box_size[0] / (X.shape[1] - 1)
     dy = box_size[1] / (Y.shape[0] - 1)
-    dz_dy, dz_dx = np.gradient(Z_fitted_vmd, dy, dx)
+    dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
+
     Nx_arr, Ny_arr = -dz_dx, -dz_dy
     Nz_arr = np.ones_like(Z_fitted_vmd)
     N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
@@ -218,8 +238,8 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
             x0, y0, z0 = X[i,j], Y[i,j], Z_fitted_vmd[i, j]
             nvecx,nvecy, nvecz = N[i,j]
 
-            l1 = brentq(f,0.0,t_max,args=(interp_upper, x0,y0,z0, nvecx, nvecy, nvecz))
-            l2 = brentq(f,-t_max,0.0,args=(interp_lower, x0,y0,z0, nvecx, nvecy, nvecz))
+            l1 = brentq(f,0.0,t_max,args=(interp_upper, x0,y0,z0, nvecx, nvecy, nvecz,box_size[0],box_size[1]))
+            l2 = brentq(f,-t_max,0.0,args=(interp_lower, x0,y0,z0, nvecx, nvecy, nvecz,box_size[0],box_size[1]))
 
             #l1_map[i, j] = l1
             #l2_map[i, j] = l2
