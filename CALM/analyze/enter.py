@@ -5,6 +5,7 @@ import argparse
 import logging
 from typing import List
 from scipy.interpolate import RectBivariateSpline
+from scipy.optimize import brentq
 from ..core.fourier_core import Fourier_Series_Function
 from ..core import argument_parser as arg_helper
 import os
@@ -156,6 +157,12 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
 
 ##### Testing new calculation method ######
 
+def f(t, interp, mx, my, mz, nx, ny, nz):
+    xq = mx + t * nx
+    yq = my + t * ny
+    zq = mz + t * nz
+    return zq - interp(yq, xq, grid=False)[()]
+
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
               dynamic_select, dynamic_selection, universe, until, remove_protein=False):
 
@@ -190,8 +197,8 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
     Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
 
     # Interpolators for intersections
-    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)
-    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)
+    interp_upper = RectBivariateSpline(Y[:, 0], X[0, :],  Z_fitted_1)
+    interp_lower = RectBivariateSpline(Y[:, 0], X[0, :],  Z_fitted_2)
 
     # ---- Thickness calculation ---- #
     dx = box_size[0] / (X.shape[1] - 1)
@@ -202,21 +209,21 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
     N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
     N /= np.linalg.norm(N, axis=-1, keepdims=True)
 
-    thickness_map = np.zeros_like(Z_fitted_vmd)
+    thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
     l1_map = np.zeros_like(Z_fitted_vmd)
     l2_map = np.zeros_like(Z_fitted_vmd)
-
+    t_max=np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
     for i in range(X.shape[0]):
         for j in range(X.shape[1]):
-            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
-            nvec = N[i, j]
+            x0, y0, z0 = X[i,j], Y[i,j], Z_fitted_vmd[i, j]
+            nvecx,nvecy, nvecz = N[i,j]
 
-            l1 = intersect_surface(interp_upper, 5.0, x0, y0, z0, nvec)
-            l2 = intersect_surface(interp_lower, -5.0, x0, y0, z0, nvec)
+            l1 = brentq(f,0.0,t_max,args=(interp_upper, x0,y0,z0, nvecx, nvecy, nvecz))
+            l2 = brentq(f,-t_max,0.0,args=(interp_lower, x0,y0,z0, nvecx, nvecy, nvecz))
 
             l1_map[i, j] = l1
             l2_map[i, j] = l2
-            thickness_map[i, j] = l1 + l2
+            thickness_map[i, j] = l1 - l2
 
     Z_fitted_middle = thickness_map
 
