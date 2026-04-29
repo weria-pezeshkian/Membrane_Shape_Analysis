@@ -4,4 +4,4 @@ from .utilize.enter import Link
 
 
 __all__ = ["Analyze","Map","Link"]
-__version__ = "2.0"
+__version__ = "1.0"

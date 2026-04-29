@@ -1,5 +1,6 @@
 from CALM.utilize.write_ndx import write_ndx
 from .get_vmd_visualization import write_xtc
+from .write_noprot import write_noprot
 import sys
 import logging
 import argparse
@@ -17,7 +18,9 @@ def run_module(module_name, args):
     if module_name == 'write_ndx':
         write_ndx(args)
     elif module_name == 'write_xtc':
-        write_xtc(args) 
+        write_xtc(args)
+    elif module_name == 'write_noprot':
+        write_noprot(args)  
     #elif module_name == '<new module>': # remember to import module function up top
     #    plot_height(args)
     else:
@@ -28,7 +31,7 @@ def Link(args):
     main entry point for the CALM link command-line interface.
     """
 
-    modules=['write_ndx','write_xtc']
+    modules=['write_ndx','write_xtc','write_noprot']
 
     sys.argv=[""]+args
     # call the right subroutine based on the module type
@@ -45,8 +48,8 @@ def Link(args):
     choices=modules,
     help='choice of which module to run, run CALM link <module> -h for detailed help\n\
     <write_ndx> prepares an index file\n\
-    <calculate> calculates the curvature\n\
-    <plot> plots the curvature data based on a directory with the files from curvature'
+    <write_xtc> writes an XTC file of fitted surface\n\
+    <write_noprot> writes a version of the data without protein contributions'
     )
 
     parser.add_argument(

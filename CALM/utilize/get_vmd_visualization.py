@@ -53,7 +53,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
         u.add_TopologyAttr(attr)
 
     u.atoms.names = ["C"] * coords.shape[0]
-    u.residues.resnames = ["upper", "lower", "middle"][:n_layers]
+    u.residues.resnames = ["up", "low", "mid"][:n_layers]
     u.residues.resids = list(range(1, n_layers + 1))
     u.dimensions = [*box_size, 90.0, 90.0, 90.0]
 
