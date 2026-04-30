@@ -1,3 +1,5 @@
+from itertools import count
+
 import MDAnalysis as mda
 import numpy as np
 from tqdm import tqdm
@@ -16,8 +18,6 @@ from functools import partial
 import time
 import shlex
 from pathlib import Path
-from scipy.ndimage import binary_dilation
-
 
 
 logger = logging.getLogger(__name__)
@@ -70,57 +70,6 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
     return np.abs(t)
 
-#def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size, thickness_map, curvature_all):
-#    mem_atoms = (layer_group + layer_group_2).unique
-#    mem_residues = mem_atoms.residues
-#    protein_atoms = universe.atoms.difference(mem_residues.atoms)
-#    protein_xy = protein_atoms.positions[:, :2]
-#
-#    #Grid spacing
-#    dx = box_size[0] / X.shape[1]
-#    dy = box_size[1] / Y.shape[0]
-#
-#    #Indices
-#    xi = np.floor(protein_xy[:,0] / dx).astype(int)
-#    yi = np.floor(protein_xy[:,1] / dy).astype(int)
-#    
-#    xi = np.clip(xi, 0, X.shape[1]-1)
-#    yi = np.clip(yi, 0, X.shape[0]-1)
-#
-#    #Create mask with NaN
-#    mask = np.zeros(X.shape, dtype=bool)
-#    mask[yi, xi] = True
-#    mask = binary_dilation(mask, iterations=4)
-#    mask = np.where(mask, np.nan, 1.0)
-#
-#    #Apply mask
-#    thickness_map = np.where(np.isnan(mask), np.nan, thickness_map)
-#    curvature_all = np.where(np.isnan(mask), np.nan, curvature_all)
-#
-#    return thickness_map, curvature_all, mask
-
-
-
-def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size):
-    mem_atoms = (layer_group + layer_group_2).unique
-    mem_residues = mem_atoms.residues
-    protein_atoms = universe.atoms.difference(mem_residues.atoms)
-    protein_xy = protein_atoms.positions[:, :2]
-
-    dx = box_size[0] / X.shape[1]
-    dy = box_size[1] / Y.shape[0]
-
-    xi = np.floor(protein_xy[:, 0] / dx).astype(int)
-    yi = np.floor(protein_xy[:, 1] / dy).astype(int)
-
-    xi = np.clip(xi, 0, X.shape[1] - 1)
-    yi = np.clip(yi, 0, X.shape[0] - 1)
-
-    mask = np.zeros(X.shape, dtype=bool)
-    mask[yi, xi] = True
-    mask = binary_dilation(mask, iterations=4)
-
-    return mask
 
 
 def get_absolute_distances(ref,grid,mask=None,dimensions=None):
@@ -183,7 +132,7 @@ def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
     return dz_dy, dz_dx
 
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection, universe, until, remove_protein=False):
+              dynamic_select, dynamic_selection, universe, until):
 
     num_digits = len(str(abs(until)))
     ts = universe.trajectory[frame]
@@ -248,66 +197,29 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
     Z_fitted_middle = thickness_map
 
     # ---- Curvature calculations using shape operator ---- #
-    # Upper leaflet
+    #Upper leaflet
     H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = fourier1.ShapeOperatorCurvatures(X, Y)
-    # Lower leaflet
+    #Lower leaflet
     H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = fourier2.ShapeOperatorCurvatures(X, Y)
-    # Middle surface
+    #Middle surface
     Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = fouriermiddle.ShapeOperatorCurvatures(X, Y)
-
-    # ---- Apply protein mask if requested ---- #
-    if remove_protein:
-        mask = remove_prot(universe, layer_group, layer_group_2, X, Y, box_size)
-
-        # Thickness
-        thickness_map = np.where(mask, np.nan, thickness_map)
-
-        # Mean curvature
-        H1   = np.where(mask, np.nan, H1)
-        H2   = np.where(mask, np.nan, H2)
-        Hmid = np.where(mask, np.nan, Hmid)
-
-        # Gaussian curvature
-        K1   = np.where(mask, np.nan, K1)
-        K2   = np.where(mask, np.nan, K2)
-        Kmid = np.where(mask, np.nan, Kmid)
-
-        # Principal curvatures
-        k1_1   = np.where(mask, np.nan, k1_1)
-        k2_1   = np.where(mask, np.nan, k2_1)
-        k1_2   = np.where(mask, np.nan, k1_2)
-        k2_2   = np.where(mask, np.nan, k2_2)
-        k1_mid = np.where(mask, np.nan, k1_mid)
-        k2_mid = np.where(mask, np.nan, k2_mid)
-
-        # Principal directions (need broadcasting)
-        dirs1_1   = np.where(mask[:, :, None], np.nan, dirs1_1)
-        dirs2_1   = np.where(mask[:, :, None], np.nan, dirs2_1)
-        dirs1_2   = np.where(mask[:, :, None], np.nan, dirs1_2)
-        dirs2_2   = np.where(mask[:, :, None], np.nan, dirs2_2)
-        dirs1_mid = np.where(mask[:, :, None], np.nan, dirs1_mid)
-        dirs2_mid = np.where(mask[:, :, None], np.nan, dirs2_mid)
 
     # ---- Save results in separate numpy files ---- #
     np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
     np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy", np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0) / 10)
 
-    # Mean curvature
+    #Mean curvature
     np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy",
             np.stack([H1, H2, Hmid], axis=0) * 10)
-    # Gaussian curvature
+    #Gaussian curvature
     np.save(f"{out_dir}/{frame:0{num_digits}d}_gaussian_curvature.npy",
             np.stack([K1, K2, Kmid], axis=0) * 10)
-    # Principal curvatures
+    #Principal curvatures
     np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_curvatures.npy",
             np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10)
-    # Principal directions
+    #Principal directions
     np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_dirs.npy",
             np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
-
-
-## --------------------------------- ######
-
 
 
 #def one_frame(frame, *, layer_group, layer_group_2, out_dir,
@@ -419,15 +331,15 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=F
         layer_group, layer_group_2=None,None
 
 
-    fn = partial(one_frame,layer_group=layer_group,layer_group_2=layer_group_2,out_dir=out_dir,dynamic_select=dynamic_select,dynamic_selection=dynamic_selection,universe=u,until=Until,remove_protein=remove_protein)
+    fn = partial(one_frame,layer_group=layer_group,layer_group_2=layer_group_2,out_dir=out_dir,dynamic_select=dynamic_select,dynamic_selection=dynamic_selection,universe=u,until=Until)
 
 
 
     with ProcessPoolExecutor(max_workers=Workers) as ex:
         # map yields results in the same order as the input iterable.
         # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-        for x in range(From,Until,Step):
-            ex.submit(fn,x)      
+        for x in range(From,Until,Step): 
+            ex.submit(fn,x)             
 
 
 #    with ProcessPoolExecutor(max_workers=Workers) as ex:
@@ -458,8 +370,6 @@ def Analyze(args: List[str]) -> None:
     # File and Resource Management:
     parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")
     parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
-    # Remove protein area
-    parser.add_argument('-R','--Remove',default=False, action="store_true",help="Remove data from where the protein is located, default=False")
 
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
@@ -502,7 +412,7 @@ def Analyze(args: List[str]) -> None:
         trajectory=Path(args.trajectory)
         start=time.perf_counter()
         universe=mda.Universe(structure,trajectory)
-        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers,remove_protein=args.Remove)
+        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
     except Exception as e:

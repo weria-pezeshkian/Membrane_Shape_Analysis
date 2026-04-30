@@ -9,21 +9,19 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     """Build pseudo-universe from Z_fitted_*.npy files,
     write GRO (first frame), XTC trajectory, and average GRO."""
 
-    # --- Load box size ---
+    #Load box size
     dim_file = os.path.join(curvature_dir, "dimensions.csv")
     box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1,
                           max_rows=1, usecols=(1, 2, 3))
 
-    # --- Find all Z_fitted files ---
+    #Find all Z_fitted files
     z_files = sorted(glob.glob(os.path.join(curvature_dir, "*_Z_fitted.npy")))
     if not z_files:
         raise FileNotFoundError(
             f"No *_Z_fitted*.npy files found in {curvature_dir}"
         )
 
-    print(f"Found {len(z_files)} frames.")
-
-    # --- Initialize from first frame ---
+    #Initialize from first frame
     z_values = np.load(z_files[0]) * 10
     n_layers, Nx, Ny = z_values.shape
 
@@ -42,12 +40,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     coords = build_coords(z_values)
 
     resindices = np.repeat(np.arange(n_layers), Nx * Ny)
-    u = mda.Universe.empty(
-        n_atoms=coords.shape[0],
-        n_residues=n_layers,
-        atom_resindex=resindices,
-        trajectory=True
-    )
+    u = mda.Universe.empty(n_atoms=coords.shape[0],n_residues=n_layers,atom_resindex=resindices,trajectory=True)
 
     for attr in ["name", "resname", "resid"]:
         u.add_TopologyAttr(attr)
@@ -57,7 +50,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     u.residues.resids = list(range(1, n_layers + 1))
     u.dimensions = [*box_size, 90.0, 90.0, 90.0]
 
-    # Output paths
+    #Output paths
     gro_path = os.path.join(out_dir, "first_frame.gro")
     xtc_path = os.path.join(out_dir, "trajectory.xtc")
     avg_gro_path = os.path.join(out_dir, "average_structure.gro")
@@ -67,7 +60,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     u.atoms.write(gro_path)
 
 
-    # --- Trajectory + averaging ---
+    #Trajectory + averaging
     avg_z = np.zeros_like(z_values)
 
     with mda.coordinates.XTC.XTCWriter(
@@ -81,7 +74,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
             writer.write(u.atoms)
 
 
-    # --- Average structure ---
+    #Average structure
     avg_z /= len(z_files)
     u.atoms.positions = build_coords(avg_z)
     u.atoms.write(avg_gro_path)
