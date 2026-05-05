@@ -66,7 +66,8 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     with mda.coordinates.XTC.XTCWriter(
             xtc_path, n_atoms=u.atoms.n_atoms) as writer:
 
-        for z_file in z_files:
+        frame_ids = [int(os.path.basename(f).split("_")[0]) for f in z_files]
+        for z_file, frame in zip(z_files, frame_ids):
             z_values = np.load(z_file) *10
             avg_z += z_values
 
