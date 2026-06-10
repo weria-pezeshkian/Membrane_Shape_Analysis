@@ -1,6 +1,7 @@
 from CALM.utilize.write_ndx import write_ndx
 from .get_vmd_visualization import write_xtc
 from .write_noprot import write_noprot
+from .avg_curv import avg_curv
 import sys
 import logging
 import argparse
@@ -20,7 +21,9 @@ def run_module(module_name, args):
     elif module_name == 'write_xtc':
         write_xtc(args)
     elif module_name == 'write_noprot':
-        write_noprot(args)  
+        write_noprot(args) 
+    elif module_name ==  'avg_curv':
+        avg_curv(args)
     #elif module_name == '<new module>': # remember to import module function up top
     #    plot_height(args)
     else:
@@ -31,7 +34,7 @@ def Link(args):
     main entry point for the CALM link command-line interface.
     """
 
-    modules=['write_ndx','write_xtc','write_noprot']
+    modules=['write_ndx','write_xtc','write_noprot','avg_curv']
 
     sys.argv=[""]+args
     # call the right subroutine based on the module type

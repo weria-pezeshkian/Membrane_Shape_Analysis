@@ -41,13 +41,33 @@ def read_ndx(filename):
                 groups[group_name].extend(map(int, line.split()))
     return groups
 
-def fourier_by_layer(layer_group, box_size, Nx=3, Ny=3):
+def fourier_by_layer(layer_group, box_size, Nx, Ny):
     Lx = box_size[0]
     Ly = box_size[1]
     data_3m = layer_group.positions.T
     fourier = Fourier_Series_Function(Lx, Ly, Nx, Ny)
     fourier.Fit(data_3m)
     return fourier
+
+def get_fourier_modes(box_size, lambda_x=None, lambda_y=None):
+    Lx, Ly = box_size[:2]
+
+    if lambda_x is None:
+        Nx = 3
+    else:
+        lambda_x_A=lambda_x*10
+        Nx = max(3, int(Lx / lambda_x_A))
+
+    if lambda_y is None:
+        Ny = 3
+    else:
+        lambda_y_A=lambda_y*10
+        Ny = max(3, int(Ly / lambda_y_A))
+    
+    print(f"Nx = {Nx}")
+    print(f"Ny = {Ny}")
+
+    return Nx, Ny
 
 def h(t,Z_func,x0,y0,z0,nvec):
     x_t = x0 + t * nvec[0]             #Compute the candicate point on the ray at parameter t. 
@@ -104,7 +124,6 @@ def get_absolute_distances(ref,grid,mask=None,dimensions=None):
             min_dists[i] = np.min(dists)
     return min_dists,mask
 
-##### Testing new calculation method ######
 
 def f(t, interp, mx, my, mz, nx, ny, nz,Lx,Ly):
     xq = mx + t * nx
@@ -131,8 +150,7 @@ def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
 
     return dz_dy, dz_dx
 
-def one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection, universe, until):
+def one_frame(frame, *, layer_group, layer_group_2, out_dir,dynamic_select, dynamic_selection, universe, until,lambda_x=None, lambda_y=None):
 
     num_digits = len(str(abs(until)))
     ts = universe.trajectory[frame]
@@ -152,7 +170,9 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
         layer_group = ts.atoms[[x - 1 for x in upper_index]]
         layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
 
-    Nx, Ny = 3, 3
+    #Nx, Ny = 3, 3
+    Nx, Ny = get_fourier_modes(box_size,lambda_x=lambda_x,lambda_y=lambda_y)
+
     # Fourier fits
     fourier1 = fourier_by_layer(layer_group, box_size, Nx, Ny)
     fourier2 = fourier_by_layer(layer_group_2, box_size, Nx, Ny)
@@ -207,19 +227,11 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
     # ---- Save results in separate numpy files ---- #
     np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
     np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy", np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0) / 10)
-
-    #Mean curvature
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy",
-            np.stack([H1, H2, Hmid], axis=0) * 10)
-    #Gaussian curvature
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_gaussian_curvature.npy",
-            np.stack([K1, K2, Kmid], axis=0) * 10)
-    #Principal curvatures
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_curvatures.npy",
-            np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10)
-    #Principal directions
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_dirs.npy",
-            np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy",np.stack([H1, H2, Hmid], axis=0) * 10)
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_gaussian_curvature.npy",np.stack([K1, K2, Kmid], axis=0) * 10)
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_curvatures.npy",np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10)
+    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_dirs.npy",np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
+    
 
 
 #def one_frame(frame, *, layer_group, layer_group_2, out_dir,
@@ -298,9 +310,8 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
 #    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map/10)
 #    np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
 
-def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=False):
+def calc(out_dir, u, ndx, From=0, Until=None, Step=1, Workers=1,lambda_x=None, lambda_y=None, remove_protein=False):
     n_atoms=10000
-
 
     if Until is None:
         Until = len(u.trajectory)
@@ -331,32 +342,20 @@ def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=F
         layer_group, layer_group_2=None,None
 
 
-    fn = partial(one_frame,layer_group=layer_group,layer_group_2=layer_group_2,out_dir=out_dir,dynamic_select=dynamic_select,dynamic_selection=dynamic_selection,universe=u,until=Until)
-
-
+    fn = partial(one_frame,layer_group=layer_group,layer_group_2=layer_group_2,out_dir=out_dir,dynamic_select=dynamic_select,dynamic_selection=dynamic_selection,universe=u,until=Until,lambda_x=lambda_x,lambda_y=lambda_y)
 
     with ProcessPoolExecutor(max_workers=Workers) as ex:
-        # map yields results in the same order as the input iterable.
-        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
+#        # map yields results in the same order as the input iterable.
+#        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
         for x in range(From,Until,Step): 
             ex.submit(fn,x)             
 
-
-#    with ProcessPoolExecutor(max_workers=Workers) as ex:
-#        futures = [ex.submit(fn, x) for x in range(From, Until, Step)]
-#
-#        for f in tqdm(futures):
-#            try:
-#                f.result()
-#            except Exception as e:
-#                print("Worker failed:")
-#                raise e
 
 def Analyze(args: List[str]) -> None:
     """Main entry point for Analyzer tool"""
     parser = argparse.ArgumentParser(description="Calculate the curvature of a Lipid Bilayer",formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    # Real scientific parameters:
+    #Real scientific parameters:
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file (.xtc) ")
     parser.add_argument('-s','--structure',type=str,help="Specify the path to the structure file (.tpr)")
     parser.add_argument('-n','--index',type=str,help="Specify the path to an index file containing the monolayers. To consider both monolayers, they need to be named 'Upper' and 'Lower'. Alternatively provide a selection for a dynamic calculation of the monolayers, i.e. 'name PO4'")
@@ -364,12 +363,15 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here, default=0")
     parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here, default=None")
     parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here, default=1")
+    parser.add_argument('--lambda_x', type=float, default=3,help="Fourier wavelength scale in x-direction")
+    parser.add_argument('--lambda_y', type=float, default=3,help="Fourier wavelength scale in y-direction")
     # Replay:
     parser.add_argument("--replay", help="Load args from replay file")
     parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
     # File and Resource Management:
     parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")
     parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
+
 
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
@@ -412,7 +414,7 @@ def Analyze(args: List[str]) -> None:
         trajectory=Path(args.trajectory)
         start=time.perf_counter()
         universe=mda.Universe(structure,trajectory)
-        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers)
+        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers,lambda_x=args.lambda_x,lambda_y=args.lambda_y)
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
     except Exception as e:

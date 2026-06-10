@@ -160,6 +160,7 @@ class Fourier_Series_Function:
     def Update_coff(self, coff1,coff2):
          self.Anm = 0.5*(coff1+coff2)
 
+
     def Fit(self, Data_3M):
         if Data_3M.shape[0] != 3:
             raise ValueError("Data_3M must have shape (3, M).")
