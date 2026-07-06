@@ -7,6 +7,7 @@ from typing import List
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
 from ..core.fourier_core import Fourier_Series_Function
+from ..core.fourier_sft import SFT
 from ..core import argument_parser as arg_helper
 import os
 from ..utilize.write_ndx import write
@@ -181,7 +182,7 @@ def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
         dz_dy = np.gradient(Z, dy, axis=0)
 
     return dz_dy, dz_dx
-
+"""
 def one_frame(frame, *, layer_group, layer_group_2, out_dir,
               dynamic_select, dynamic_selection, universe, until, remove_protein=False):
 
@@ -304,141 +305,7 @@ def one_frame(frame, *, layer_group, layer_group_2, out_dir,
     # Principal directions
     np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_dirs.npy",
             np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
-
-
-## --------------------------------- ######
-
-
-
-#def one_frame(frame, *, layer_group, layer_group_2, out_dir,
-#              dynamic_select, dynamic_selection,universe,until,remove_protein=False):
-#    num_digits = len(str(abs(until)))
-#    dimensions=universe.trajectory[frame].dimensions
-#    box_size = dimensions[:3]
-#    ts=universe.trajectory[frame]
-#    with open(f"{out_dir}/dimensions.csv","a",encoding="UTF8") as dims:
-#        dims.write(f"{frame},{','.join(map(str,box_size))}\n")
-#    X, Y = get_XY(box_size)
-#    if dynamic_select:
-#        _,upper_index,lower_index=write(ts,dynamic_selection,write=False)
-#        layer_group = ts.atoms[[x - 1 for x in upper_index]]
-#        layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
-#
-#    Nx, Ny = 3,3 
-#    fourier1 = fourier_by_layer(layer_group, box_size)
-#    fourier2 = fourier_by_layer(layer_group_2, box_size)
-#    fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
-#    fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
-#
-#    #Upper
-#    Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-#    #Lower
-#    Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-#    #Middle
-#    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2 
-#    
-#    #Interpolators for leaflet surfaces z=f(x,y)
-#    interp_upper = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_1)  # x, y
-#    interp_lower = RectBivariateSpline(X[0, :], Y[:, 0], Z_fitted_2)  # x, y
-#
-#    #-----Thickness calculation-----#
-#
-#    #Compute grid spacing of surface in AA.
-#    dx = box_size[0] / (X.shape[1] - 1)
-#    dy = box_size[1] / (Y.shape[0] - 1) 
-#
-#    #Construct the surface normal vectors from fitted mid plane Z(x,y).
-#    dz_dy, dz_dx = np.gradient(Z_fitted_vmd, dy, dx) 
-#    Nx_arr,Ny_arr = -dz_dx,-dz_dy    #Flip signs so normals point pos Z-direction.
-#    Nz_arr = np.ones_like(Z_fitted_vmd)
-#    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
-#    N /= np.linalg.norm(N, axis=-1, keepdims=True) 
-#
-#    #Thickness map 
-#    thickness_map = np.zeros_like(Z_fitted_vmd)        
-#    l1_map = np.zeros_like(Z_fitted_vmd)
-#    l2_map = np.zeros_like(Z_fitted_vmd)
-#
-#    #Intersection function, returns the distance along the normal. 
-#    for i in range(X.shape[0]):        
-#        for j in range(X.shape[1]): 
-#            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
-#            nvec = N[i, j]    #Creates N with the unit normal vectors in each point. 
-#
-#            
-#            l1 = intersect_surface(interp_upper, 5.0,x0,y0,z0,nvec)   #upwards
-#            l2 = intersect_surface(interp_lower, -5.0,x0,y0,z0,nvec)  #downwards
-#
-#            l1_map[i,j]=l1
-#            l2_map[i,j]=l2
-#            thickness_map[i, j] = l1 + l2          
-#        
-#    #Save thickness map 
-#    Z_fitted_middle = thickness_map
-#    curvature_all = np.stack([fourier1.Curv(X,Y),fourier2.Curv(X,Y),fouriermiddle.Curv(X,Y),], axis=0)
-#
-#    Z_fitted_all=np.stack([Z_fitted_1,Z_fitted_2,Z_fitted_vmd,], axis=0) 
-#
-#    if remove_protein:
-#        thickness_map, curvature_all, mask = remove_prot(universe,layer_group,layer_group_2,X,Y,box_size,thickness_map,curvature_all)
-#
-#    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy", curvature_all*10)
-#    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map/10)
-#    np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy",Z_fitted_all/10)
-
-def calc(out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=False):
-    n_atoms=10000
-
-
-    if Until is None:
-        Until = len(u.trajectory)
-    else:
-        Until=int(Until)
-    if ndx is None:
-        exit("An index selection or file has to be supplied. Exiting.")
-    try:
-        ndx = read_ndx(ndx)
-        dynamic_select=False
-        dynamic_selection=None
-    except FileNotFoundError:
-        print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
-        dynamic_select=True
-        dynamic_selection=ndx
-
-    LayerList = ["Upper", "Lower", "Middle"]
-
-    dimensions=u.trajectory[0].dimensions
-    with open(f"{out_dir}/dimensions.csv","w",encoding="UTF8") as dims:
-        dims.write(f"#Box Parameters: {' '.join(map(str,dimensions[3:]))}\n")
-
-
-    if not dynamic_select:
-        layer_group = u.atoms[[x - 1 for x in ndx["Upper"]]]
-        layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
-    else:
-        layer_group, layer_group_2=None,None
-
-
-    fn = partial(one_frame,layer_group=layer_group,layer_group_2=layer_group_2,out_dir=out_dir,dynamic_select=dynamic_select,dynamic_selection=dynamic_selection,universe=u,until=Until,remove_protein=remove_protein)
-
-
-
-    with ProcessPoolExecutor(max_workers=Workers) as ex:
-        # map yields results in the same order as the input iterable.
-        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-        for x in range(From,Until,Step):
-            ex.submit(fn,x)      
-
-
-#    with ProcessPoolExecutor(max_workers=Workers) as ex:
-#        futures = [ex.submit(fn, x) for x in range(From, Until, Step)]
-#
-#        for f in tqdm(futures):
-#            try:
-#                f.result()
-#            except Exception as e:
-#                print("Worker failed:")
-#                raise e
+"""
 
 def Analyze(args: List[str]) -> None:
     """Main entry point for Analyzer tool"""
@@ -452,6 +319,9 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here, default=0")
     parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here, default=None")
     parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here, default=1")
+    parser.add_argument('--Nx',default=3,type=int,help="Maximum Fourier mode index in the x direction")
+    parser.add_argument('--Ny',default=3,type=int,help="Maximum Fourier mode index in the y direction")
+    parser.add_argument('--gridsize',default=100,help="Squareroot of the actual grid size number. Default is 100, which would put 100 points in x, 100 points in y direction, resulting in 10000 gridpoints")
     # Replay:
     parser.add_argument("--replay", help="Load args from replay file")
     parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
@@ -460,7 +330,7 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
     # Remove protein area
     parser.add_argument('-R','--Remove',default=False, action="store_true",help="Remove data from where the protein is located, default=False")
-
+    
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
     pre_ns, remaining = pre.parse_known_args(args)
@@ -502,7 +372,9 @@ def Analyze(args: List[str]) -> None:
         trajectory=Path(args.trajectory)
         start=time.perf_counter()
         universe=mda.Universe(structure,trajectory)
-        calc(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers,remove_protein=args.Remove)
+        sft=SFT()
+        sft.build(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers,remove_protein=args.Remove,Nx=args.Nx,Ny=args.Ny,sqrt_n_atoms=args.gridsize)
+        sft.write(f"{args.out}/complete")
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
     except Exception as e:
