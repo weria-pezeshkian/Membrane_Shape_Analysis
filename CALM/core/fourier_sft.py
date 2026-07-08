@@ -1,6 +1,6 @@
 import numpy as np
 from pathlib import Path
-from .fourier_build import calc
+from .fourier_build import calc_fourier
 
 class SFT:
     def __init__(self):
@@ -34,10 +34,10 @@ class SFT:
         np.save(arr=self.A_mn,file=file_path_Amn)
         np.save(arr=self.q_mn,file=file_path_qmn)
 
-    def build(self,out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, remove_protein=False, Nx=2,Ny=2,sqrt_n_atoms=100):
-        calc(out_dir, u, ndx, From, Until, Step,Workers, remove_protein, Nx,Ny,sqrt_n_atoms)
-        self.A_mn=self.read_raw(out_dir,"A_mn")
-        self.q_mn=self.read_raw(out_dir,"q_mn")
+    def build(self,args,universe):
+        calc_fourier(args,universe)
+        self.A_mn=self.read_raw(args.out,"A_mn")
+        self.q_mn=self.read_raw(args.out,"q_mn")
 
 if __name__=="__main__":
     pass

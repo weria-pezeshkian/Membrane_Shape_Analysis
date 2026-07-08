@@ -322,20 +322,36 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('--Nx',default=3,type=int,help="Maximum Fourier mode index in the x direction")
     parser.add_argument('--Ny',default=3,type=int,help="Maximum Fourier mode index in the y direction")
     parser.add_argument('--gridsize',default=100,help="Squareroot of the actual grid size number. Default is 100, which would put 100 points in x, 100 points in y direction, resulting in 10000 gridpoints")
+    # Manipulation flags:
+    parser.add_argument('-R','--Remove',default=False, action="store_true",help="Remove data from where the protein is located, default=False")
+    parser.add_argument('-C','--center',default=None,type=str,help="MDAnalysis selection syntax to choose what should be centered")
+    parser.add_argument('--rotate',default=False, action="store_true", help="Rotation alignment of each frame")
+    parser.add_argument('--rotation-direction',default=None, type=str,help="An MDAnalysis selection (syntax). The center of geometry will be used for the rotation.")
+
     # Replay:
     parser.add_argument("--replay", help="Load args from replay file")
     parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
     # File and Resource Management:
     parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")
     parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
-    # Remove protein area
-    parser.add_argument('-R','--Remove',default=False, action="store_true",help="Remove data from where the protein is located, default=False")
-    
+
     pre=argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
     pre_ns, remaining = pre.parse_known_args(args)
 
     args = parser.parse_args(args)
+
+
+    if args.center is None:
+        if args.rotate:
+            parser.error("--rotate requires --center")
+
+        if args.rotation_direction is not None:
+            parser.error("--rotation-direction requires --center")
+
+    if args.rotation_direction is not None and not args.rotate:
+        parser.error("--rotation-direction requires --rotate")
+
     logging.basicConfig(level=logging.INFO)
 
     
@@ -373,7 +389,7 @@ def Analyze(args: List[str]) -> None:
         start=time.perf_counter()
         universe=mda.Universe(structure,trajectory)
         sft=SFT()
-        sft.build(out_dir=args.out,u=universe,ndx=args.index,From=args.From,Until=args.Until,Step=args.Step,Workers=args.Workers,remove_protein=args.Remove,Nx=args.Nx,Ny=args.Ny,sqrt_n_atoms=args.gridsize)
+        sft.build(args,universe)
         sft.write(f"{args.out}/complete")
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
