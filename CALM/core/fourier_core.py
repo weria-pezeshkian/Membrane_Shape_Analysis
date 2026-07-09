@@ -1,6 +1,27 @@
 import numpy as np
 
 
+def get_fourier_modes(box_size, lambda_x=None, lambda_y=None):
+    Lx, Ly = box_size[:2]
+    
+    if lambda_x is None:
+        Nx = 3
+    else:
+        lambda_x_A=lambda_x*10
+        Nx=int(Lx / lambda_x_A)
+        if Nx==0:
+            Nx=1
+            print("WARNING: lambda_x is too large, leading to an Nx of 0, corrected to Nx = 1")
+
+    if lambda_y is None:
+        Ny = 3
+    else:
+        lambda_y_A=lambda_y*10
+        Ny=int(Lx / lambda_y_A)
+        if Ny==0:
+            Ny=1
+            print("WARNING: lambda_y is too large, leading to an Nx of 0, corrected to Nx = 1")
+    return Nx, Ny
 
 class Fourier_Series_Function:
     def __init__(self, Lx, Ly, Nx, Ny):
@@ -14,10 +35,8 @@ class Fourier_Series_Function:
         # Fourier coefficients initialized to zeros
         self.Anm = np.zeros((2 * Nx + 1, 2 * Ny + 1))
     
-    def getAnm(self):
-        if self.Anm is None:
-            raise ValueError("Fourier coefficients (Anm) have not been initialized. Call Fit first.")
-        return self.Anm
+    def setAnm(self,Anm):
+        self.Anm=Anm
 
     def Z(self, x, y):
         g = 0
@@ -183,6 +202,39 @@ class Fourier_Series_Function:
         
         coeffs, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
         
+        self.Anm = coeffs.reshape((2 * self.Nx + 1, 2 * self.Ny + 1))
+
+    def Fit_Remove(self, Data_3M, Data_fit=None, weights=None):
+        if Data_3M.shape[0] != 3:
+            raise ValueError("Data_3M must have shape (3, M).")
+
+        if Data_fit is None:
+            Data_fit = Data_3M
+
+        M = Data_fit.shape[1]
+        Length = (2 * self.Nx + 1) * (2 * self.Ny + 1)
+
+        A = np.zeros((M, Length))
+        b = Data_fit[2, :]
+
+        index = 0
+        for i in range(-self.Nx, self.Nx + 1):
+            for j in range(-self.Ny, self.Ny + 1):
+                for k in range(M):
+                    x, y = Data_fit[0, k], Data_fit[1, k]
+                    A[k, index] = (
+                        np.cos(self.q0 * i * x + self.p0 * j * y)
+                        + np.sin(self.q0 * i * x + self.p0 * j * y)
+                    )
+                index += 1
+
+        if weights is not None:
+            sqrt_weights = np.sqrt(weights)
+            A = A * sqrt_weights[:, None]
+            b = b * sqrt_weights
+
+        coeffs, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+
         self.Anm = coeffs.reshape((2 * self.Nx + 1, 2 * self.Ny + 1))
 
 

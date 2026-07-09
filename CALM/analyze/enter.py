@@ -9,6 +9,7 @@ from scipy.optimize import brentq
 from ..core.fourier_core import Fourier_Series_Function
 from ..core.fourier_sft import SFT
 from ..core import argument_parser as arg_helper
+from ..analyze.analyze import analysis
 import os
 from ..utilize.write_ndx import write
 from MDAnalysis.lib.distances import distance_array
@@ -70,36 +71,6 @@ def intersect_surface(Z_func, t_sign,x0,y0,z0,nvec):
 
 
     return np.abs(t)
-
-#def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size, thickness_map, curvature_all):
-#    mem_atoms = (layer_group + layer_group_2).unique
-#    mem_residues = mem_atoms.residues
-#    protein_atoms = universe.atoms.difference(mem_residues.atoms)
-#    protein_xy = protein_atoms.positions[:, :2]
-#
-#    #Grid spacing
-#    dx = box_size[0] / X.shape[1]
-#    dy = box_size[1] / Y.shape[0]
-#
-#    #Indices
-#    xi = np.floor(protein_xy[:,0] / dx).astype(int)
-#    yi = np.floor(protein_xy[:,1] / dy).astype(int)
-#    
-#    xi = np.clip(xi, 0, X.shape[1]-1)
-#    yi = np.clip(yi, 0, X.shape[0]-1)
-#
-#    #Create mask with NaN
-#    mask = np.zeros(X.shape, dtype=bool)
-#    mask[yi, xi] = True
-#    mask = binary_dilation(mask, iterations=4)
-#    mask = np.where(mask, np.nan, 1.0)
-#
-#    #Apply mask
-#    thickness_map = np.where(np.isnan(mask), np.nan, thickness_map)
-#    curvature_all = np.where(np.isnan(mask), np.nan, curvature_all)
-#
-#    return thickness_map, curvature_all, mask
-
 
 
 def remove_prot(universe, layer_group, layer_group_2, X, Y, box_size):
@@ -182,134 +153,20 @@ def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
         dz_dy = np.gradient(Z, dy, axis=0)
 
     return dz_dy, dz_dx
-"""
-def one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection, universe, until, remove_protein=False):
 
-    num_digits = len(str(abs(until)))
-    ts = universe.trajectory[frame]
-    dimensions = ts.dimensions
-    box_size = dimensions[:3]
-
-    # Save box dimensions
-    with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
-        dims.write(f"{frame},{','.join(map(str, box_size))}\n")
-
-    # XY grid
-    X, Y = get_XY(box_size)
-
-    # Dynamic selection if requested
-    if dynamic_select:
-        _, upper_index, lower_index = write(ts, dynamic_selection, write=False)
-        layer_group = ts.atoms[[x - 1 for x in upper_index]]
-        layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
-
-    Nx, Ny = 3, 3
-    # Fourier fits
-    fourier1 = fourier_by_layer(layer_group, box_size, Nx, Ny)
-    fourier2 = fourier_by_layer(layer_group_2, box_size, Nx, Ny)
-    fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
-    fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
-
-    # Evaluate surfaces
-    Z_fitted_1 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    Z_fitted_2 = np.array([fourier2.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-    Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
-
-    # Interpolators for intersections
-    interp_upper = RectBivariateSpline(Y[:, 0], X[0, :],  Z_fitted_1)
-    interp_lower = RectBivariateSpline(Y[:, 0], X[0, :],  Z_fitted_2)
-
-    # ---- Thickness calculation ---- #
-    dx = box_size[0] / (X.shape[1] - 1)
-    dy = box_size[1] / (Y.shape[0] - 1)
-    dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
-
-    Nx_arr, Ny_arr = -dz_dx, -dz_dy
-    Nz_arr = np.ones_like(Z_fitted_vmd)
-    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
-    N /= np.linalg.norm(N, axis=-1, keepdims=True)
-
-    thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
-    l1_map = np.zeros_like(Z_fitted_vmd)
-    l2_map = np.zeros_like(Z_fitted_vmd)
-    t_max=np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            x0, y0, z0 = X[i,j], Y[i,j], Z_fitted_vmd[i, j]
-            nvecx,nvecy, nvecz = N[i,j]
-
-            l1 = brentq(f,0.0,t_max,args=(interp_upper, x0,y0,z0, nvecx, nvecy, nvecz,box_size[0],box_size[1]))
-            l2 = brentq(f,-t_max,0.0,args=(interp_lower, x0,y0,z0, nvecx, nvecy, nvecz,box_size[0],box_size[1]))
-
-            #l1_map[i, j] = l1
-            #l2_map[i, j] = l2
-            thickness_map[i, j] = l1 - l2
-
-    Z_fitted_middle = thickness_map
-
-    # ---- Curvature calculations using shape operator ---- #
-    # Upper leaflet
-    H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = fourier1.ShapeOperatorCurvatures(X, Y)
-    # Lower leaflet
-    H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = fourier2.ShapeOperatorCurvatures(X, Y)
-    # Middle surface
-    Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = fouriermiddle.ShapeOperatorCurvatures(X, Y)
-
-    # ---- Apply protein mask if requested ---- #
-    if remove_protein:
-        mask = remove_prot(universe, layer_group, layer_group_2, X, Y, box_size)
-
-        # Thickness
-        thickness_map = np.where(mask, np.nan, thickness_map)
-
-        # Mean curvature
-        H1   = np.where(mask, np.nan, H1)
-        H2   = np.where(mask, np.nan, H2)
-        Hmid = np.where(mask, np.nan, Hmid)
-
-        # Gaussian curvature
-        K1   = np.where(mask, np.nan, K1)
-        K2   = np.where(mask, np.nan, K2)
-        Kmid = np.where(mask, np.nan, Kmid)
-
-        # Principal curvatures
-        k1_1   = np.where(mask, np.nan, k1_1)
-        k2_1   = np.where(mask, np.nan, k2_1)
-        k1_2   = np.where(mask, np.nan, k1_2)
-        k2_2   = np.where(mask, np.nan, k2_2)
-        k1_mid = np.where(mask, np.nan, k1_mid)
-        k2_mid = np.where(mask, np.nan, k2_mid)
-
-        # Principal directions (need broadcasting)
-        dirs1_1   = np.where(mask[:, :, None], np.nan, dirs1_1)
-        dirs2_1   = np.where(mask[:, :, None], np.nan, dirs2_1)
-        dirs1_2   = np.where(mask[:, :, None], np.nan, dirs1_2)
-        dirs2_2   = np.where(mask[:, :, None], np.nan, dirs2_2)
-        dirs1_mid = np.where(mask[:, :, None], np.nan, dirs1_mid)
-        dirs2_mid = np.where(mask[:, :, None], np.nan, dirs2_mid)
-
-    # ---- Save results in separate numpy files ---- #
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_Z_fitted.npy", np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0) / 10)
-
-    # Mean curvature
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_mean_curvature.npy",
-            np.stack([H1, H2, Hmid], axis=0) * 10)
-    # Gaussian curvature
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_gaussian_curvature.npy",
-            np.stack([K1, K2, Kmid], axis=0) * 10)
-    # Principal curvatures
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_curvatures.npy",
-            np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10)
-    # Principal directions
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_principal_dirs.npy",
-            np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
-"""
 
 def Analyze(args: List[str]) -> None:
     """Main entry point for Analyzer tool"""
     parser = argparse.ArgumentParser(description="Calculate the curvature of a Lipid Bilayer",formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    METHODS = (
+        "thickness",
+        "Z_fitted",
+        "mean",
+        "gaussian",
+        "principal",
+        "principal_directions",
+    )
 
     # Real scientific parameters:
     parser.add_argument('-f','--trajectory',type=str,help="Specify the path to the trajectory file (.xtc) ")
@@ -319,14 +176,23 @@ def Analyze(args: List[str]) -> None:
     parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here, default=0")
     parser.add_argument('-U','--Until',default=None,type=arg_helper.none_or_int,help="Discard all frames in the trajectory after to the frame supplied here, default=None")
     parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here, default=1")
-    parser.add_argument('--Nx',default=3,type=int,help="Maximum Fourier mode index in the x direction")
-    parser.add_argument('--Ny',default=3,type=int,help="Maximum Fourier mode index in the y direction")
+    parser.add_argument('--lambda_x', type=float, default=None,help="Fourier wavelength scale in x-direction (nm)")
+    parser.add_argument('--lambda_y', type=float, default=None,help="Fourier wavelength scale in y-direction (nm)")
     parser.add_argument('--gridsize',default=100,help="Squareroot of the actual grid size number. Default is 100, which would put 100 points in x, 100 points in y direction, resulting in 10000 gridpoints")
     # Manipulation flags:
-    parser.add_argument('-R','--Remove',default=False, action="store_true",help="Remove data from where the protein is located, default=False")
     parser.add_argument('-C','--center',default=None,type=str,help="MDAnalysis selection syntax to choose what should be centered")
     parser.add_argument('--rotate',default=False, action="store_true", help="Rotation alignment of each frame")
     parser.add_argument('--rotation-direction',default=None, type=str,help="An MDAnalysis selection (syntax). The center of geometry will be used for the rotation.")
+    parser.add_argument('--Remove',default=False, action="store_true",help="Attempts to remove the transmembrane domain.")
+    #Early exit and subsequent analysis
+    parser.add_argument('--early-abort',default=False,action="store_true",help="exit out after writing A_mn and q_mn, no further analysis")
+    parser.add_argument(
+        "--method",
+        nargs="+",
+        choices=METHODS,
+        default=None,
+        help="Analysis method(s) to run. If omitted, all methods are run.",
+    )
 
     # Replay:
     parser.add_argument("--replay", help="Load args from replay file")
@@ -391,6 +257,12 @@ def Analyze(args: List[str]) -> None:
         sft=SFT()
         sft.build(args,universe)
         sft.write(f"{args.out}/complete")
+        if args.early_abort:
+            print("Early abort active: Finishing after writing Amn and qmn")
+        else:
+            active_methods = METHODS if args.method is None else tuple(args.method)
+            analysis(universe,sft,active_methods,args)
+
         print(f"Execution with {args.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
 
     except Exception as e:

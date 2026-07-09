@@ -6,7 +6,7 @@ import logging
 from typing import List
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
-from ..core.fourier_core import Fourier_Series_Function
+from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
 from ..core import argument_parser as arg_helper
 import os
 from ..utilize.write_ndx import write
@@ -32,7 +32,7 @@ class Rotation_and_Center_tracker:
 
         self._center()
         if self.rotate:
-            _get_vec()
+            self._get_vec()
             
 
     def _get_vec(self,base=True):
@@ -129,7 +129,6 @@ class Rotation_and_Center_tracker:
             self.current_vector = np.array([vector[0], vector[1], 0.0])
 
 
-
 def _read_ndx(filename): #TODO: Weria said, there is an mda plugin for this now. Must be confirmed and if it exists put in here.
     groups = {}
     with open(filename) as f:
@@ -143,12 +142,15 @@ def _read_ndx(filename): #TODO: Weria said, there is an mda plugin for this now.
                 groups[group_name].extend(map(int, line.split()))
     return groups
 
-def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3):
+def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3,Remove=False):
     Lx = box_size[0]
     Ly = box_size[1]
     data_3m = layer_group.positions.T
     fourier = Fourier_Series_Function(Lx, Ly, Nx, Ny)
-    fourier.Fit(data_3m)
+    if Remove:
+        fourier.Fit_Remove(data_3m)
+    else:
+        fourier.Fit(data_3m)
 
     M=fourier.Anm.shape[0]
     N=fourier.Anm.shape[1]
@@ -165,32 +167,27 @@ def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3):
     q = np.meshgrid(qx, qy, indexing="ij")
     return fourier,q
 
-def _get_XY(box_size,sqrt_n_atoms):
-    x = np.linspace(0, box_size[0], sqrt_n_atoms, endpoint=False)
-    y = np.linspace(0, box_size[1], sqrt_n_atoms, endpoint=False)
-    X, Y = np.meshgrid(x, y)
-    return X, Y
-
 def _one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection, universe, until, rotation_and_center=None,Nx=2,Ny=2,sqrt_n_atoms=100):
+              dynamic_select, dynamic_selection, universe, until, rotation_and_center=None,Nx=3,Ny=3,sqrt_n_atoms=100,Remove=False):
 
     num_digits = len(str(abs(until)))
     ts = universe.trajectory[frame]
     dimensions = ts.dimensions
-    box_size = dimensions[:3]
+    x = np.linspace(0, dimensions[:3][0], sqrt_n_atoms, endpoint=False)
+    y = np.linspace(0, dimensions[:3][1], sqrt_n_atoms, endpoint=False)
+    X, Y = np.meshgrid(x, y)
 
     # Save box dimensions
     with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
-        dims.write(f"{frame},{','.join(map(str, box_size))}\n")
-
-    # XY grid
-    X, Y = _get_XY(box_size,sqrt_n_atoms)
+        dims.write(f"{frame},{','.join(map(str, dimensions[:3]))}\n")
 
     # Dynamic selection if requested
     if dynamic_select:
         _, upper_index, lower_index = write(ts, dynamic_selection, write=False)
         layer_group = ts.atoms[[x - 1 for x in upper_index]]
         layer_group_2 = ts.atoms[[x - 1 for x in lower_index]]
+
+    Nx, Ny = get_fourier_modes(dimensions[:3],lambda_x=Nx,lambda_y=Ny)
     
     if rotation_and_center is not None:
         rotation_and_center._center()
@@ -199,15 +196,21 @@ def _one_frame(frame, *, layer_group, layer_group_2, out_dir,
             rotation_and_center._rotate()
 
     # Fourier fits
-    fourier1,q = _fourier_by_layer(layer_group, box_size, Nx, Ny)
-    fourier2,_ = _fourier_by_layer(layer_group_2, box_size, Nx, Ny)
-    fouriermiddle = Fourier_Series_Function(box_size[0], box_size[1], Nx, Ny)
-    fouriermiddle.Update_coff(fourier1.getAnm(), fourier2.getAnm())
+    fourier1,q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny,Remove)
+    fourier2,_ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny,Remove)
+    fouriermiddle = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+    fouriermiddle.Update_coff(fourier1.Anm, fourier2.Anm)
     
     SFT_A_mn = np.asarray(np.stack((fourier1.Anm,fourier2.Anm,fouriermiddle.Anm),axis=0),dtype=np.float32)
 
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_A_mn.npy", SFT_A_mn)
-    np.save(f"{out_dir}/{frame:0{num_digits}d}_q_mn.npy", q)
+    raw_dir = Path(out_dir) / "raw_sft"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    fileAmn = raw_dir / f"{frame:0{num_digits}d}_A_mn.npy"
+    fileqmn= raw_dir / f"{frame:0{num_digits}d}_q_mn.npy"
+
+    np.save(fileAmn, SFT_A_mn)
+    np.save(fileqmn, q)
 
 
 def calc_fourier(args,u):
@@ -230,8 +233,6 @@ def calc_fourier(args,u):
         print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
         dynamic_select=True
         dynamic_selection=ndx
-
-    LayerList = ["Upper", "Lower", "Middle"]
 
     dimensions=u.trajectory[0].dimensions
     with open(f"{args.out}/dimensions.csv","w",encoding="UTF8") as dims:
@@ -257,9 +258,10 @@ def calc_fourier(args,u):
                 universe=u,
                 until=Until,
                 rotation_and_center=ract,
-                Nx=args.Nx,
-                Ny=args.Ny,
-                sqrt_n_atoms=args.gridsize
+                Nx=args.lambda_x,
+                Ny=args.lambda_y,
+                sqrt_n_atoms=args.gridsize,
+                Remove=args.Remove
                 )
 
 
