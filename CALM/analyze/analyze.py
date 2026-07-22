@@ -7,10 +7,15 @@ from ..core.curvature import shape_operator_curvatures
 from ..core.rotation import recover_rotation_angle
 
 def circle_cutter(arr, dimensions):
+    """NaN-mask arr outside the largest circle centered on the box that fits
+    within it. Spatial axes are always axes 1 and 2 (arr.shape[1:3]); axis 0
+    is a layer/component axis (e.g. upper/lower/middle), and any further
+    trailing axes (e.g. the 2 vector components of principal_dirs) are left
+    untouched by the mask."""
     Lx, Ly = dimensions[:2]
 
-    if arr.ndim == 3:
-        n, m = arr.shape[1:]
+    if arr.ndim >= 3:
+        n, m = arr.shape[1:3]
     else:
         n, m = arr.shape
 
@@ -22,7 +27,7 @@ def circle_cutter(arr, dimensions):
     radius = min(Lx, Ly) / 2.0
     mask = X**2 + Y**2 <= radius**2
 
-    if arr.ndim == 3:
+    if arr.ndim >= 3:
         arr[:, ~mask] = np.nan
     else:
         arr[~mask] = np.nan
@@ -192,16 +197,28 @@ def analysis(universe, sft, methods, args=None):
                 dirs2_mid = _rotate_direction_vectors(dirs2_mid, theta)
 
             if "mean" in methods:
-                np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy",np.stack([H1, H2, Hmid], axis=0) * 10)
+                mean_curvature = np.stack([H1, H2, Hmid], axis=0) * 10
+                if rotated:
+                    mean_curvature = circle_cutter(mean_curvature, dimensions)
+                np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy", mean_curvature)
 
             if "gaussian" in methods:
-                np.save(f"{args.out}/{frame:0{num_digits}d}_gaussian_curvature.npy",np.stack([K1, K2, Kmid], axis=0) * 10)
+                gaussian_curvature = np.stack([K1, K2, Kmid], axis=0) * 10
+                if rotated:
+                    gaussian_curvature = circle_cutter(gaussian_curvature, dimensions)
+                np.save(f"{args.out}/{frame:0{num_digits}d}_gaussian_curvature.npy", gaussian_curvature)
 
             if "principal" in methods:
-                np.save(f"{args.out}/{frame:0{num_digits}d}_principal_curvatures.npy",np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10)
+                principal_curvatures = np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10
+                if rotated:
+                    principal_curvatures = circle_cutter(principal_curvatures, dimensions)
+                np.save(f"{args.out}/{frame:0{num_digits}d}_principal_curvatures.npy", principal_curvatures)
 
             if "principal_directions" in methods:
-                np.save(f"{args.out}/{frame:0{num_digits}d}_principal_dirs.npy",np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0))
+                principal_dirs = np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0)
+                if rotated:
+                    principal_dirs = circle_cutter(principal_dirs, dimensions)
+                np.save(f"{args.out}/{frame:0{num_digits}d}_principal_dirs.npy", principal_dirs)
 
 
 

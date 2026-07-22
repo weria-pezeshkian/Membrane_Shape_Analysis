@@ -31,5 +31,42 @@ def recover_rotation_angle(q_mn_frame, Lx, Ly, Nx, Ny):
     )
 
 
+# radians; distinguishes "q_mn present but --rotate wasn't used" (theta == 0.0 exactly) from a real rotation
+ROTATION_ANGLE_TOLERANCE = 1e-9
+
+
+def recover_all_rotation_angles(sft):
+    """recover_rotation_angle for every frame in an SFT (q_mn/dimensions
+    already loaded, e.g. via SFT.from_directory)."""
+    n_frames, _, M, N = sft.q_mn.shape
+    Nx = (M - 1) // 2
+    Ny = (N - 1) // 2
+    return np.array([
+        recover_rotation_angle(sft.q_mn[i], sft.dimensions[i, 0], sft.dimensions[i, 1], Nx, Ny)
+        for i in range(n_frames)
+    ])
+
+
+def rotation_was_used(sft, tolerance=ROTATION_ANGLE_TOLERANCE):
+    """Whether --rotate was actually used to build this SFT. q_mn is always
+    saved (see core/fourier_build.py::_one_frame) whether or not --rotate was
+    given, so file presence alone isn't a reliable signal; this checks
+    whether the recovered angle is genuinely nonzero for at least one frame.
+    Frame 0 alone is not a reliable check even when rotation was used, since
+    it's the reference frame (its own recovered angle is always ~0) - so
+    every frame is checked."""
+    return bool(np.any(np.abs(recover_all_rotation_angles(sft)) > tolerance))
+
+
+def fixed_circle_radius(sft):
+    """The radius (in sft.dimensions' units) of the largest same-centered
+    circle that fits inside every frame's box - see analyze/analyze.py's
+    circle_cutter. Box size can drift per frame (NPT), and circle_cutter's
+    per-frame radius is min(Lx,Ly)/2 of that frame's own box; since all these
+    circles share the same center, the region valid across every frame is
+    simply the smallest of these radii."""
+    return float(np.min(np.minimum(sft.dimensions[:, 0], sft.dimensions[:, 1])) / 2.0)
+
+
 if __name__ == "__main__":
     pass
