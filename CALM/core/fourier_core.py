@@ -3,7 +3,7 @@ import numpy as np
 
 def get_fourier_modes(box_size, lambda_x=None, lambda_y=None):
     Lx, Ly = box_size[:2]
-    
+
     if lambda_x is None:
         Nx = 3
     else:
@@ -17,7 +17,7 @@ def get_fourier_modes(box_size, lambda_x=None, lambda_y=None):
         Ny = 3
     else:
         lambda_y_A=lambda_y*10
-        Ny=int(Lx / lambda_y_A)
+        Ny=int(Ly / lambda_y_A)
         if Ny==0:
             Ny=1
             print("WARNING: lambda_y is too large, leading to an Nx of 0, corrected to Nx = 1")
@@ -31,10 +31,10 @@ class Fourier_Series_Function:
         self.Ny = Ny
         self.q0 = 2 * np.pi / Lx  # Fundamental frequency in x
         self.p0 = 2 * np.pi / Ly  # Fundamental frequency in y
-        
+
         # Fourier coefficients initialized to zeros
         self.Anm = np.zeros((2 * Nx + 1, 2 * Ny + 1))
-    
+
     def setAnm(self,Anm):
         self.Anm=Anm
 
@@ -57,7 +57,7 @@ class Fourier_Series_Function:
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
                 gx += self.Anm[idx_i, idx_j] * self.q0 * i * (
-                    np.cos(self.q0 * i * x + self.p0 * j * y) - 
+                    np.cos(self.q0 * i * x + self.p0 * j * y) -
                     np.sin(self.q0 * i * x + self.p0 * j * y)
                 )
         return gx
@@ -80,7 +80,7 @@ class Fourier_Series_Function:
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
-                gxx -= self.Anm[idx_i, idx_j] * self.q0 ** 2 * i ** 2 * ( 
+                gxx -= self.Anm[idx_i, idx_j] * self.q0 ** 2 * i ** 2 * (
                     np.cos(self.q0 * i * x + self.p0 * j * y) +  # Vectorized
                     np.sin(self.q0 * i * x + self.p0 * j * y)    # Vectorized
                 )
@@ -92,7 +92,7 @@ class Fourier_Series_Function:
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
-                gyy -= self.Anm[idx_i, idx_j] * self.p0 ** 2 * j ** 2 * ( 
+                gyy -= self.Anm[idx_i, idx_j] * self.p0 ** 2 * j ** 2 * (
                     np.cos(self.q0 * i * x + self.p0 * j * y) +  # Vectorized
                     np.sin(self.q0 * i * x + self.p0 * j * y)    # Vectorized
                 )
@@ -104,139 +104,16 @@ class Fourier_Series_Function:
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx
                 idx_j = j + self.Ny
-                gxy -= self.Anm[idx_i, idx_j] * self.q0 * self.p0 * i * j * (  
+                gxy -= self.Anm[idx_i, idx_j] * self.q0 * self.p0 * i * j * (
                     np.cos(self.q0 * i * x + self.p0 * j * y) +  # Vectorized
                     np.sin(self.q0 * i * x + self.p0 * j * y)    # Vectorized
                 )
         return gxy
 
-    def Curv(self, x, y):
-        fx = self.Zx(x, y)
-        fy = self.Zy(x, y)
-        fxx = self.Zxx(x, y)
-        fyy = self.Zyy(x, y)
-        fxy = self.Zxy(x, y)
 
-        # Mean curvature equation
-        numerator = (1 + fx**2) * fyy - 2 * fx * fy * fxy + (1 + fy**2) * fxx
-        denominator = (1 + fx**2 + fy**2)**(3/2)
-    
-        C = - numerator / (2*denominator)
-        return C       
-
-    # --- New: Full curvature calculation via shape operator ---
-    def ShapeOperatorCurvatures(self, X, Y):
-        """
-        Returns:
-            H: mean curvature
-            K: gaussian curvature
-            k1, k2: principal curvatures
-            dirs1, dirs2: principal directions as 2D vectors in tangent plane
-        """
-        fx = self.Zx(X,Y)
-        fy = self.Zy(X,Y)
-        fxx = self.Zxx(X,Y)
-        fyy = self.Zyy(X,Y)
-        fxy = self.Zxy(X,Y)
-
-        # Metric tensor components
-        E = 1 + fx**2
-        F = fx*fy
-        G = 1 + fy**2
-        # Second fundamental form
-        L = fxx / np.sqrt(1 + fx**2 + fy**2)
-        M = fxy / np.sqrt(1 + fx**2 + fy**2)
-        N = fyy / np.sqrt(1 + fx**2 + fy**2)
-
-        # Shape operator (2x2)
-        det = E*G - F**2
-        S11 = (G*L - F*M)/det
-        S12 = (G*M - F*N)/det
-        S21 = (-F*L + E*M)/det
-        S22 = (-F*M + E*N)/det
-
-        # Initialize arrays
-        k1 = np.zeros_like(X)
-        k2 = np.zeros_like(X)
-        dirs1 = np.zeros(X.shape + (2,))
-        dirs2 = np.zeros(X.shape + (2,))
-
-        # Compute eigenvalues and eigenvectors per point
-        for i in range(X.shape[0]):
-            for j in range(X.shape[1]):
-                S = np.array([[S11[i,j], S12[i,j]],
-                              [S21[i,j], S22[i,j]]])
-                vals, vecs = np.linalg.eigh(S)
-                k1[i,j], k2[i,j] = vals[1], vals[0]  # convention k1 >= k2   ???????
-                dirs1[i,j,:] = vecs[:,1]  # direction of k1 in tangent plane
-                dirs2[i,j,:] = vecs[:,0]  # direction of k2 in tangent plane
-
-        H = 0.5*(k1 + k2)
-        K = k1 * k2
-
-        return H, K, k1, k2, dirs1, dirs2
-
-    def Update_coff(self, coff1,coff2):
-         self.Anm = 0.5*(coff1+coff2)
-
-    def Fit(self, Data_3M):
-        if Data_3M.shape[0] != 3:
-            raise ValueError("Data_3M must have shape (3, M).")
-
-        M = Data_3M.shape[1]
-        Length = (2 * self.Nx + 1) * (2 * self.Ny + 1)
-        
-        A = np.zeros((M, Length))
-        b = Data_3M[2, :]
-        
-        index = 0
-        for i in range(-self.Nx, self.Nx + 1):
-            for j in range(-self.Ny, self.Ny + 1):
-                for k in range(M):
-                    x, y = Data_3M[0, k], Data_3M[1, k]
-                    A[k, index] = (
-                        np.cos(self.q0 * i * x + self.p0 * j * y) +
-                        np.sin(self.q0 * i * x + self.p0 * j * y)
-                    )
-                index += 1
-        
-        coeffs, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-        
-        self.Anm = coeffs.reshape((2 * self.Nx + 1, 2 * self.Ny + 1))
-
-    def Fit_Remove(self, Data_3M, Data_fit=None, weights=None):
-        if Data_3M.shape[0] != 3:
-            raise ValueError("Data_3M must have shape (3, M).")
-
-        if Data_fit is None:
-            Data_fit = Data_3M
-
-        M = Data_fit.shape[1]
-        Length = (2 * self.Nx + 1) * (2 * self.Ny + 1)
-
-        A = np.zeros((M, Length))
-        b = Data_fit[2, :]
-
-        index = 0
-        for i in range(-self.Nx, self.Nx + 1):
-            for j in range(-self.Ny, self.Ny + 1):
-                for k in range(M):
-                    x, y = Data_fit[0, k], Data_fit[1, k]
-                    A[k, index] = (
-                        np.cos(self.q0 * i * x + self.p0 * j * y)
-                        + np.sin(self.q0 * i * x + self.p0 * j * y)
-                    )
-                index += 1
-
-        if weights is not None:
-            sqrt_weights = np.sqrt(weights)
-            A = A * sqrt_weights[:, None]
-            b = b * sqrt_weights
-
-        coeffs, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-
-        self.Anm = coeffs.reshape((2 * self.Nx + 1, 2 * self.Ny + 1))
-
+def average_coefficients(coff1, coff2):
+    """Combine two leaflets' Anm coefficients into a middle-surface Anm."""
+    return 0.5 * (coff1 + coff2)
 
 
 if __name__=="__main__":

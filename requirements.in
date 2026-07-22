@@ -1,6 +1,10 @@
 libmaker==0.1
+matplotlib==3.11.1
 mdanalysis==2.9.0
+networkx==3.5
 numpy==2.3.3
+pillow==12.3.0
 scipy==1.16.2
 setuptools==78.1.0
+threadpoolctl==3.6.0
 tqdm==4.67.1

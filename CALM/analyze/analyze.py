@@ -3,6 +3,7 @@ from tqdm import tqdm
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
+from ..core.curvature import shape_operator_curvatures
 
 def circle_cutter(arr, dimensions):
     Lx, Ly = dimensions[:2]
@@ -57,12 +58,16 @@ def analysis(universe, sft, methods, args=None):
 
 
     for i,frame in tqdm(enumerate(sft.frame_indices),total=len(sft.frame_indices)):
-        try:
-            universe.trajectory[frame]
-        except IndexError:
-            universe.trajectory[i]
-
-        dimensions = universe.dimensions
+        if universe is not None:
+            try:
+                universe.trajectory[frame]
+            except IndexError:
+                universe.trajectory[i]
+            dimensions = universe.dimensions[:3]
+        else:
+            # No trajectory available (SFT was loaded via --sft): use the box
+            # size captured per-frame at build time instead.
+            dimensions = sft.dimensions[i]
         x = np.linspace(0, dimensions[:3][0], args.gridsize, endpoint=False)
         y = np.linspace(0, dimensions[:3][1], args.gridsize, endpoint=False)
         X, Y = np.meshgrid(x, y)
@@ -77,8 +82,11 @@ def analysis(universe, sft, methods, args=None):
         fourier2.setAnm(sft.A_mn[i,2])
 
         if "Z_fitted" in methods or "thickness" in methods:
-            Z_fitted_1 = np.array([fourier0.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
-            Z_fitted_2 = np.array([fourier1.Z(xi, yi) for xi, yi in zip(X.flatten(), Y.flatten())]).reshape(X.shape)
+            # Z() is already vectorized over its (x, y) arguments (it loops over
+            # Fourier modes, not grid points) - call it once on the full grid
+            # instead of once per point. ~100x faster, identical result.
+            Z_fitted_1 = fourier0.Z(X, Y)
+            Z_fitted_2 = fourier1.Z(X, Y)
             Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
             Z_fitted=np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0)
 
@@ -128,11 +136,11 @@ def analysis(universe, sft, methods, args=None):
 
         if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
             #Upper leaflet
-            H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = fourier0.ShapeOperatorCurvatures(X, Y)
+            H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = shape_operator_curvatures(fourier0, X, Y)
             #Lower leaflet
-            H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = fourier1.ShapeOperatorCurvatures(X, Y)
+            H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = shape_operator_curvatures(fourier1, X, Y)
             #Middle surface
-            Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = fourier2.ShapeOperatorCurvatures(X, Y)
+            Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = shape_operator_curvatures(fourier2, X, Y)
 
             if "mean" in methods:
                 np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy",np.stack([H1, H2, Hmid], axis=0) * 10)

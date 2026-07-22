@@ -1,12 +1,14 @@
 import MDAnalysis as mda
 import numpy as np
+import threadpoolctl
 from tqdm import tqdm
 import argparse
 import logging
 from typing import List
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
-from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
+from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes, average_coefficients
+from ..core.fourier_fit import fit_coefficients
 from ..core import argument_parser as arg_helper
 import os
 from ..utilize.write_ndx import write
@@ -53,6 +55,8 @@ class Rotation_and_Center_tracker:
 
         self.u.atoms.translate(shift)
         self.u.atoms.wrap(compound="atoms")
+
+        self.sel_center = box_center.copy()
 
     def _rotate(self):
         angle = np.arctan2(
@@ -128,6 +132,14 @@ class Rotation_and_Center_tracker:
         else:
             self.current_vector = np.array([vector[0], vector[1], 0.0])
 
+    def _get_rotation_angle(self):
+        return np.arctan2(
+            self.current_vector[0] * self.base_rot_vector[1]
+            - self.current_vector[1] * self.base_rot_vector[0],
+            self.current_vector[0] * self.base_rot_vector[0]
+            + self.current_vector[1] * self.base_rot_vector[1],
+        )
+
 
 def _read_ndx(filename): #TODO: Weria said, there is an mda plugin for this now. Must be confirmed and if it exists put in here.
     groups = {}
@@ -142,15 +154,23 @@ def _read_ndx(filename): #TODO: Weria said, there is an mda plugin for this now.
                 groups[group_name].extend(map(int, line.split()))
     return groups
 
-def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3,Remove=False):
+def _rotate_q(q, angle):
+    qx, qy = q
+
+    cos_a = np.cos(angle)
+    sin_a = np.sin(angle)
+
+    qx_rot = cos_a * qx - sin_a * qy
+    qy_rot = sin_a * qx + cos_a * qy
+
+    return np.asarray((qx_rot, qy_rot), dtype=np.float32)
+
+def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3):
     Lx = box_size[0]
     Ly = box_size[1]
     data_3m = layer_group.positions.T
     fourier = Fourier_Series_Function(Lx, Ly, Nx, Ny)
-    if Remove:
-        fourier.Fit_Remove(data_3m)
-    else:
-        fourier.Fit(data_3m)
+    fourier.setAnm(fit_coefficients(data_3m, Lx, Ly, Nx, Ny))
 
     M=fourier.Anm.shape[0]
     N=fourier.Anm.shape[1]
@@ -167,8 +187,51 @@ def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3,Remove=False):
     q = np.meshgrid(qx, qy, indexing="ij")
     return fourier,q
 
-def _one_frame(frame, *, layer_group, layer_group_2, out_dir,
-              dynamic_select, dynamic_selection, universe, until, rotation_and_center=None,Nx=3,Ny=3,sqrt_n_atoms=100,Remove=False):
+# Per-worker-process state (populated once by _init_worker, not once per
+# frame). Keeping the Universe/AtomGroups/Rotation_and_Center_tracker out of
+# _one_frame's arguments means ProcessPoolExecutor never has to pickle them -
+# each worker opens its own Universe exactly once instead of re-opening it
+# (via unpickling) on every single submitted frame.
+_worker_state = {}
+
+
+def _init_worker(structure, trajectory, ndx_groups, dynamic_select, center, rotation_direction, rotate):
+    """ProcessPoolExecutor(initializer=...) target: runs once per worker
+    process at pool startup.
+
+    Also caps this worker's BLAS thread pool (OpenBLAS/MKL/etc.) to 1: we're
+    already parallel at the process level (one worker per frame), so each
+    worker's own numpy/scipy calls trying to *also* use every CPU core would
+    massively oversubscribe the machine - N workers x all-cores-per-worker
+    fights over the same physical cores and ends up slower than 1 worker.
+    Confirmed empirically: this single change took a 200-frame benchmark
+    from 70s (8 workers, uncapped) to 3s (8 workers, capped).
+    """
+    threadpoolctl.threadpool_limits(1)
+
+    u = mda.Universe(structure, trajectory)
+
+    if not dynamic_select:
+        layer_group = u.atoms[[x - 1 for x in ndx_groups["Upper"]]]
+        layer_group_2 = u.atoms[[x - 1 for x in ndx_groups["Lower"]]]
+    else:
+        layer_group, layer_group_2 = None, None
+
+    ract = None
+    if center is not None:
+        ract = Rotation_and_Center_tracker(u, center, rotation_direction, rotate)
+
+    _worker_state["universe"] = u
+    _worker_state["layer_group"] = layer_group
+    _worker_state["layer_group_2"] = layer_group_2
+    _worker_state["rotation_and_center"] = ract
+
+
+def _one_frame(frame, *, out_dir, dynamic_select, dynamic_selection, until,Nx=3,Ny=3,sqrt_n_atoms=100):
+    universe = _worker_state["universe"]
+    layer_group = _worker_state["layer_group"]
+    layer_group_2 = _worker_state["layer_group_2"]
+    rotation_and_center = _worker_state["rotation_and_center"]
 
     num_digits = len(str(abs(until)))
     ts = universe.trajectory[frame]
@@ -189,17 +252,27 @@ def _one_frame(frame, *, layer_group, layer_group_2, out_dir,
 
     Nx, Ny = get_fourier_modes(dimensions[:3],lambda_x=Nx,lambda_y=Ny)
     
+    q_angle = None
+
     if rotation_and_center is not None:
         rotation_and_center._center()
+
         if rotation_and_center.rotate:
             rotation_and_center._get_vec(base=False)
-            rotation_and_center._rotate()
+            q_angle = rotation_and_center._get_rotation_angle()
 
     # Fourier fits
-    fourier1,q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny,Remove)
-    fourier2,_ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny,Remove)
+    fourier1,q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny)
+    fourier2,_ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny)
     fouriermiddle = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
-    fouriermiddle.Update_coff(fourier1.Anm, fourier2.Anm)
+    fouriermiddle.setAnm(average_coefficients(fourier1.Anm, fourier2.Anm))
+
+
+    if q_angle is not None:
+        q = _rotate_q(q, q_angle)
+    else:
+        q = np.asarray(q, dtype=np.float32)
+
     
     SFT_A_mn = np.asarray(np.stack((fourier1.Anm,fourier2.Anm,fouriermiddle.Anm),axis=0),dtype=np.float32)
 
@@ -208,14 +281,14 @@ def _one_frame(frame, *, layer_group, layer_group_2, out_dir,
 
     fileAmn = raw_dir / f"{frame:0{num_digits}d}_A_mn.npy"
     fileqmn= raw_dir / f"{frame:0{num_digits}d}_q_mn.npy"
+    filedimensions = raw_dir / f"{frame:0{num_digits}d}_dimensions.npy"
 
     np.save(fileAmn, SFT_A_mn)
     np.save(fileqmn, q)
+    np.save(filedimensions, np.asarray(dimensions[:3], dtype=np.float64))
 
 
 def calc_fourier(args,u):
-    #out_dir, u, ndx, From=0, Until=None, Step=1,Workers=1, centering_and_rotating=None, Nx=2,Ny=2,sqrt_n_atoms=100):
-    n_atoms=args.gridsize**2
     Until=args.Until
     ndx=args.index
 
@@ -226,50 +299,37 @@ def calc_fourier(args,u):
     if ndx is None:
         exit("An index selection or file has to be supplied. Exiting.")
     try:
-        ndx = _read_ndx(ndx)
+        ndx_groups = _read_ndx(ndx)
         dynamic_select=False
         dynamic_selection=None
     except FileNotFoundError:
         print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
         dynamic_select=True
         dynamic_selection=ndx
+        ndx_groups=None
 
     dimensions=u.trajectory[0].dimensions
     with open(f"{args.out}/dimensions.csv","w",encoding="UTF8") as dims:
         dims.write(f"#Box Parameters: {' '.join(map(str,dimensions[3:]))}\n")
 
-
-    if not dynamic_select:
-        layer_group = u.atoms[[x - 1 for x in ndx["Upper"]]]
-        layer_group_2 = u.atoms[[x - 1 for x in ndx["Lower"]]]
-    else:
-        layer_group, layer_group_2=None,None
-
-    ract=None
-    if args.center is not None:
-        ract=Rotation_and_Center_tracker(u,args.center,args.rotation_direction,args.rotate)
-
     fn = partial(_one_frame,
-                layer_group=layer_group,
-                layer_group_2=layer_group_2,
                 out_dir=args.out,
                 dynamic_select=dynamic_select,
                 dynamic_selection=dynamic_selection,
-                universe=u,
                 until=Until,
-                rotation_and_center=ract,
                 Nx=args.lambda_x,
                 Ny=args.lambda_y,
                 sqrt_n_atoms=args.gridsize,
-                Remove=args.Remove
                 )
 
-
-    with ProcessPoolExecutor(max_workers=args.Workers) as ex:
-        # map yields results in the same order as the input iterable.
-        # You don't return anything, but you MUST exhaust the iterator to execute and surface exceptions.
-        for x in range(args.From,Until,args.Step):
-            ex.submit(fn,x)
+    with ProcessPoolExecutor(
+        max_workers=args.Workers,
+        initializer=_init_worker,
+        initargs=(args.structure, args.trajectory, ndx_groups, dynamic_select, args.center, args.rotation_direction, args.rotate),
+    ) as ex:
+        futures = [ex.submit(fn, x) for x in range(args.From, Until, args.Step)]
+        for future in futures:
+            future.result()  # surfaces exceptions raised in worker processes
 
 
 if __name__=="__main__":

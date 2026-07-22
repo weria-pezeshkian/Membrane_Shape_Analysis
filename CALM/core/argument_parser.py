@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import argparse
+import logging
 import shlex
 from pathlib import Path
 from typing import Iterable
@@ -101,11 +102,17 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
 
         # Multi-value options
         if action.nargs in ("+", "*") or isinstance(cur, (list, tuple)):
-            parts = [opt] + [str(x) for x in (cur or [])]
+            if cur is None:
+                out.append(f"# {opt} is None (unset) — omitted, an empty '{opt}' would not replay (nargs requires a value)")
+                continue
+            parts = [opt] + [str(x) for x in cur]
             out.append(" ".join(shlex.quote(p) for p in parts))
             continue
 
         # Single value options
+        if cur is None:
+            out.append(f"# {opt} is None (unset) — omitted so replay doesn't pass the literal string 'None'")
+            continue
         out.append(" ".join(shlex.quote(p) for p in (opt, str(cur))))
 
     # ----- Write positionals (in order) -----
@@ -123,6 +130,85 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
                 out.append(shlex.quote(str(cur)))
 
     Path(path).write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def add_build_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the CLI arguments shared by 'CALM analyze sft' and 'CALM analyze full'
+    for building the per-frame Fourier coefficient stack (SFT) from a trajectory.
+
+    --trajectory/--structure are left optional here (default=None): 'sft' always
+    requires them, 'full' only requires them when --sft isn't supplied. Each
+    caller enforces that with its own parser.error(...) after parsing.
+    """
+    parser.add_argument('-f','--trajectory',type=str,default=None,help="Specify the path to the trajectory file (.xtc)")
+    parser.add_argument('-s','--structure',type=str,default=None,help="Specify the path to the structure file (.tpr)")
+    parser.add_argument('-n','--index',type=str,help="Specify the path to an index file containing the monolayers. To consider both monolayers, they need to be named 'Upper' and 'Lower'. Alternatively provide a selection for a dynamic calculation of the monolayers, i.e. 'name PO4'")
+    parser.add_argument('-o','--out',type=str,required=True,help="Specify a path to a folder to which all calculated numpy arrays are saved")
+    parser.add_argument('-F','--From',default=0,type=int,help="Discard all frames in the trajectory prior to the frame supplied here, default=0")
+    parser.add_argument('-U','--Until',default=None,type=none_or_int,help="Discard all frames in the trajectory after to the frame supplied here, default=None")
+    parser.add_argument('-S','--Step',default=1,type=int,help="Traverse the trajectory with a step length supplied here, default=1")
+    parser.add_argument('--lambda_x', type=float, default=None,help="Fourier wavelength scale in x-direction (nm)")
+    parser.add_argument('--lambda_y', type=float, default=None,help="Fourier wavelength scale in y-direction (nm)")
+    parser.add_argument('--gridsize',default=100,type=int,help="Squareroot of the actual grid size number. Default is 100, which would put 100 points in x, 100 points in y direction, resulting in 10000 gridpoints")
+    parser.add_argument('-C','--center',default=None,type=str,help="MDAnalysis selection syntax to choose what should be centered")
+    parser.add_argument('--rotate',default=False, action="store_true", help="Rotation alignment of each frame")
+    parser.add_argument('--rotation-direction',default=None, type=str,help="An MDAnalysis selection (syntax). The center of geometry will be used for the rotation.")
+    parser.add_argument("--replay", help="Load args from replay file")
+    parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
+    parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")
+    parser.add_argument('-c','--clear',default=False,action=argparse.BooleanOptionalAction,help="Remove old numpy array in out directiory. NO WARNING IS GIVEN AND NO BACKUP IS MADE")
+
+
+def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
+    """Shared --center/--rotate/--rotation-direction consistency checks for
+    'CALM analyze sft' and 'CALM analyze full'."""
+    if ns.center is None:
+        if ns.rotate:
+            parser.error("--rotate requires --center")
+        if ns.rotation_direction is not None:
+            parser.error("--rotation-direction requires --center")
+    if ns.rotation_direction is not None and not ns.rotate:
+        parser.error("--rotation-direction requires --rotate")
+
+
+def apply_replay(parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, remaining: list[str]) -> argparse.Namespace:
+    """Re-parse args with any --replay file's tokens prepended (so
+    user-supplied CLI args on top of a replay still take priority)."""
+    replayed: list[str] = []
+    if pre_ns.replay:
+        replayed = load_replay_args(pre_ns.replay)
+
+    combined_argv = replayed + remaining
+    return parser.parse_args(combined_argv)
+
+
+class _CommentedLogFormatter(logging.Formatter):
+    """Formats log records as '#'-prefixed lines so they read as comments in
+    a CALM replay file (non-comment lines are parsed as CLI tokens on
+    replay) rather than being executed as arguments."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        return "\n".join(f"# {line}" for line in message.splitlines())
+
+
+def attach_replay_log_handler(replay_path: str, logger_name: str = "MDAnalysis", level: int = logging.INFO) -> logging.Handler:
+    """Append `logger_name`'s log records (default: MDAnalysis's own
+    logging, at INFO and above) to the replay file as '#'-prefixed comment
+    lines, so replaying the file later never tries to execute log text as
+    CLI arguments. Disables propagation to the root logger so these records
+    go *only* to the replay file, not also to the console."""
+    handler = logging.FileHandler(replay_path, mode="a", encoding="utf-8")
+    handler.setLevel(level)
+    handler.setFormatter(_CommentedLogFormatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
+
+    target_logger = logging.getLogger(logger_name)
+    target_logger.addHandler(handler)
+    target_logger.propagate = False
+    if target_logger.level == logging.NOTSET or target_logger.level > level:
+        target_logger.setLevel(level)
+
+    return handler
 
 
 if __name__=="__main__":
