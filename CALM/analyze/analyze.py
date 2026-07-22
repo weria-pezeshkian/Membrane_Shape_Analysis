@@ -4,6 +4,7 @@ from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
 from ..core.curvature import shape_operator_curvatures
+from ..core.rotation import recover_rotation_angle
 
 def circle_cutter(arr, dimensions):
     Lx, Ly = dimensions[:2]
@@ -53,6 +54,26 @@ def f(t, interp, mx, my, mz, nx, ny, nz,Lx,Ly):
 
     return zq - interp(yq, xq, grid=False)[()]
 
+def _rotated_grid(X, Y, cx, cy, angle):
+    """Coordinates to evaluate the (unrotated-as-fit) surface at, so the
+    result at output grid point (X, Y) is what the surface would look like
+    after rotating it by `angle` around (cx, cy)."""
+    dx = X - cx
+    dy = Y - cy
+    cos_a, sin_a = np.cos(-angle), np.sin(-angle)
+    x_old = cos_a * dx - sin_a * dy + cx
+    y_old = sin_a * dx + cos_a * dy + cy
+    return x_old, y_old
+
+def _rotate_direction_vectors(vecs, angle):
+    """Rotate an array of 2D tangent-plane direction vectors (shape (...,2))
+    by `angle`, so they're expressed in the rotated/aligned frame's basis
+    instead of the original (unrotated-as-fit) frame's basis."""
+    vx = vecs[..., 0]
+    vy = vecs[..., 1]
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
+    return np.stack([cos_a * vx - sin_a * vy, sin_a * vx + cos_a * vy], axis=-1)
+
 def analysis(universe, sft, methods, args=None):
     rotated=args.rotate
 
@@ -81,12 +102,27 @@ def analysis(universe, sft, methods, args=None):
         fourier2=Fourier_Series_Function(dimensions[:3][0],dimensions[:3][1],Nx,Ny)
         fourier2.setAnm(sft.A_mn[i,2])
 
+        # Curvature/height values are rotation-invariant scalars - rather than
+        # rotating Anm (would need refitting), evaluate the as-fit surface at
+        # the corresponding *unrotated* coordinate for each output grid point.
+        # Only direction vectors (dirs1/dirs2 below) need rotating afterward.
+        if rotated:
+            theta = recover_rotation_angle(sft.q_mn[i], dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+            X_eval, Y_eval = _rotated_grid(X, Y, dimensions[:3][0] / 2.0, dimensions[:3][1] / 2.0, theta)
+        else:
+            theta = 0.0
+            X_eval, Y_eval = X, Y
+
         if "Z_fitted" in methods or "thickness" in methods:
             # Z() is already vectorized over its (x, y) arguments (it loops over
             # Fourier modes, not grid points) - call it once on the full grid
             # instead of once per point. ~100x faster, identical result.
-            Z_fitted_1 = fourier0.Z(X, Y)
-            Z_fitted_2 = fourier1.Z(X, Y)
+            # Evaluated at (X_eval, Y_eval) rather than (X, Y): height is a
+            # rotation-invariant scalar, so this correctly produces "the
+            # rotated surface's height at output position (X, Y)" (see
+            # _rotated_grid) without needing to refit Anm.
+            Z_fitted_1 = fourier0.Z(X_eval, Y_eval)
+            Z_fitted_2 = fourier1.Z(X_eval, Y_eval)
             Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
             Z_fitted=np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0)
 
@@ -135,12 +171,25 @@ def analysis(universe, sft, methods, args=None):
                     print("Thickness could not be calculated. That could be an indication that the curvature is too high or that lambdas are too small.")
 
         if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
+            # H, K, k1, k2 are rotation-invariant scalars: evaluating at
+            # (X_eval, Y_eval) directly gives the correct rotated-surface
+            # value at output position (X, Y). dirs1/dirs2 are genuine
+            # direction vectors though, so they get an extra +theta rotation
+            # afterward to express them in the rotated/aligned frame's basis.
             #Upper leaflet
-            H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = shape_operator_curvatures(fourier0, X, Y)
+            H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = shape_operator_curvatures(fourier0, X_eval, Y_eval)
             #Lower leaflet
-            H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = shape_operator_curvatures(fourier1, X, Y)
+            H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = shape_operator_curvatures(fourier1, X_eval, Y_eval)
             #Middle surface
-            Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = shape_operator_curvatures(fourier2, X, Y)
+            Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = shape_operator_curvatures(fourier2, X_eval, Y_eval)
+
+            if theta != 0.0:
+                dirs1_1 = _rotate_direction_vectors(dirs1_1, theta)
+                dirs2_1 = _rotate_direction_vectors(dirs2_1, theta)
+                dirs1_2 = _rotate_direction_vectors(dirs1_2, theta)
+                dirs2_2 = _rotate_direction_vectors(dirs2_2, theta)
+                dirs1_mid = _rotate_direction_vectors(dirs1_mid, theta)
+                dirs2_mid = _rotate_direction_vectors(dirs2_mid, theta)
 
             if "mean" in methods:
                 np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy",np.stack([H1, H2, Hmid], axis=0) * 10)
