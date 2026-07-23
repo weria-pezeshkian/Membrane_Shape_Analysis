@@ -4,7 +4,7 @@ from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
 from ..core.curvature import shape_operator_curvatures
-from ..core.rotation import recover_rotation_angle
+from ..core.rotation import recover_rotation_angle, rotated_grid
 
 def circle_cutter(arr, dimensions):
     """NaN-mask arr outside the largest circle centered on the box that fits
@@ -59,17 +59,6 @@ def f(t, interp, mx, my, mz, nx, ny, nz,Lx,Ly):
 
     return zq - interp(yq, xq, grid=False)[()]
 
-def _rotated_grid(X, Y, cx, cy, angle):
-    """Coordinates to evaluate the (unrotated-as-fit) surface at, so the
-    result at output grid point (X, Y) is what the surface would look like
-    after rotating it by `angle` around (cx, cy)."""
-    dx = X - cx
-    dy = Y - cy
-    cos_a, sin_a = np.cos(-angle), np.sin(-angle)
-    x_old = cos_a * dx - sin_a * dy + cx
-    y_old = sin_a * dx + cos_a * dy + cy
-    return x_old, y_old
-
 def _rotate_direction_vectors(vecs, angle):
     """Rotate an array of 2D tangent-plane direction vectors (shape (...,2))
     by `angle`, so they're expressed in the rotated/aligned frame's basis
@@ -113,7 +102,7 @@ def analysis(universe, sft, methods, args=None):
         # Only direction vectors (dirs1/dirs2 below) need rotating afterward.
         if rotated:
             theta = recover_rotation_angle(sft.q_mn[i], dimensions[:3][0], dimensions[:3][1], Nx, Ny)
-            X_eval, Y_eval = _rotated_grid(X, Y, dimensions[:3][0] / 2.0, dimensions[:3][1] / 2.0, theta)
+            X_eval, Y_eval = rotated_grid(X, Y, dimensions[:3][0] / 2.0, dimensions[:3][1] / 2.0, theta)
         else:
             theta = 0.0
             X_eval, Y_eval = X, Y
@@ -125,7 +114,7 @@ def analysis(universe, sft, methods, args=None):
             # Evaluated at (X_eval, Y_eval) rather than (X, Y): height is a
             # rotation-invariant scalar, so this correctly produces "the
             # rotated surface's height at output position (X, Y)" (see
-            # _rotated_grid) without needing to refit Anm.
+            # core/rotation.py::rotated_grid) without needing to refit Anm.
             Z_fitted_1 = fourier0.Z(X_eval, Y_eval)
             Z_fitted_2 = fourier1.Z(X_eval, Y_eval)
             Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2

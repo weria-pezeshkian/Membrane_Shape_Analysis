@@ -19,7 +19,7 @@ import time
 import shlex
 from pathlib import Path
 from scipy.ndimage import binary_dilation
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, cKDTree
 
 class Rotation_and_Center_tracker:
     def __init__(self,u,sel1="protein", sel2=None,rotate=False):
@@ -165,6 +165,21 @@ def _rotate_q(q, angle):
 
     return np.asarray((qx_rot, qy_rot), dtype=np.float32)
 
+def _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold):
+    """Boolean mask, True where grid point (X, Y) has no atom of
+    layer_group's fit-input selection within `threshold` (periodic nearest-
+    neighbor distance in the XY plane - Z is irrelevant to a membrane-plane
+    hole). Uses a KD-tree (periodic via boxsize) rather than a full
+    O(n_grid * n_atoms) pairwise distance matrix - the tree has to be
+    rebuilt every frame since atom positions differ frame to frame, but each
+    frame's build+query is cheap: O(n_atoms log n_atoms) + O(n_grid log
+    n_atoms), instead of paying the full pairwise cost every frame."""
+    positions_xy = np.mod(layer_group.positions[:, :2], [Lx, Ly])
+    tree = cKDTree(positions_xy, boxsize=[Lx, Ly])
+    grid_points = np.column_stack([X.ravel(), Y.ravel()])
+    distances, _ = tree.query(grid_points)
+    return distances.reshape(X.shape) > threshold
+
 def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3):
     Lx = box_size[0]
     Ly = box_size[1]
@@ -227,7 +242,7 @@ def _init_worker(structure, trajectory, ndx_groups, dynamic_select, center, rota
     _worker_state["rotation_and_center"] = ract
 
 
-def _one_frame(frame, *, out_dir, dynamic_select, dynamic_selection, until,Nx=3,Ny=3,sqrt_n_atoms=100):
+def _one_frame(frame, *, out_dir, dynamic_select, dynamic_selection, until,Nx=3,Ny=3,sqrt_n_atoms=100,remove_tmd=False):
     universe = _worker_state["universe"]
     layer_group = _worker_state["layer_group"]
     layer_group_2 = _worker_state["layer_group_2"]
@@ -267,6 +282,18 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_selection, until,Nx=3,
     fouriermiddle = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
     fouriermiddle.setAnm(average_coefficients(fourier1.Anm, fourier2.Anm))
 
+    if remove_tmd:
+        # Grid points whose nearest atom in that leaflet's own fit-input
+        # selection is farther than the fit's own resolution (Lx/Nx, Ly/Ny) -
+        # e.g. a transmembrane protein displacing lipids. Same (already
+        # centered, never rotated) positions the fit itself used - see
+        # TODO.md for why this is computed on the unrotated grid/positions,
+        # with rotation-aware lookup left to consumers (map plot/write_xtc).
+        Lx, Ly = dimensions[:3][0], dimensions[:3][1]
+        threshold = min(Lx / Nx, Ly / Ny)
+        hole_upper = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold)
+        hole_lower = _hole_mask_for_layer(layer_group_2, X, Y, Lx, Ly, threshold)
+        hole_mask = np.stack((hole_upper, hole_lower), axis=0)
 
     if q_angle is not None:
         q = _rotate_q(q, q_angle)
@@ -286,6 +313,10 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_selection, until,Nx=3,
     np.save(fileAmn, SFT_A_mn)
     np.save(fileqmn, q)
     np.save(filedimensions, np.asarray(dimensions[:3], dtype=np.float64))
+
+    if remove_tmd:
+        filehole = raw_dir / f"{frame:0{num_digits}d}_hole_mask.npy"
+        np.save(filehole, hole_mask)
 
 
 def calc_fourier(args,u):
@@ -320,6 +351,7 @@ def calc_fourier(args,u):
                 Nx=args.lambda_x,
                 Ny=args.lambda_y,
                 sqrt_n_atoms=args.gridsize,
+                remove_tmd=args.remove_tmd,
                 )
 
     with ProcessPoolExecutor(

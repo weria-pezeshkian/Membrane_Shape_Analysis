@@ -153,6 +153,7 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('-C','--center',default=None,type=str,help="MDAnalysis selection syntax to choose what should be centered")
     parser.add_argument('--rotate',default=False, action="store_true", help="Rotation alignment of each frame")
     parser.add_argument('--rotation-direction',default=None, type=str,help="An MDAnalysis selection (syntax). The center of geometry will be used for the rotation.")
+    parser.add_argument('--Remove-TMD',dest='remove_tmd',default=False,action="store_true",help="Flag grid points whose nearest atom in the Upper/Lower fit selection is farther than the fit's own resolution (Lx/Nx, Ly/Ny) as unsupported by the fit (e.g. a transmembrane protein displacing lipids). No new distance parameter - thresholded against the fit's own resolution.")
     parser.add_argument("--replay", help="Load args from replay file")
     parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
     parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")

@@ -5,9 +5,6 @@ import numpy as np
 import glob
 from typing import List, Optional, Sequence, Dict
 
-_ROTATION_ANGLE_TOLERANCE = 1e-9  # radians; distinguishes "q_mn present but --rotate wasn't used" (theta == 0.0 exactly) from a real rotation
-
-
 def build_rotation_tcl(sft, out_path: str) -> bool:
     """Generate a VMD TCL script that, once sourced against an already-loaded
     ORIGINAL trajectory (same -F/-S/-U stride as used to build `sft`, so
@@ -24,31 +21,20 @@ def build_rotation_tcl(sft, out_path: str) -> bool:
     returns False (writes nothing) if q_mn is present but --rotate wasn't
     actually used during the build (theta ~ 0 for every frame).
     """
-    from ..core.rotation import recover_rotation_angle  # deferred: avoids a
+    from ..core.rotation import recover_all_rotation_angles, rotation_was_used, fixed_circle_radius  # deferred: avoids a
     # circular import (core.fourier_build -> utilize -> get_vmd_visualization
     # -> core.fourier_sft/rotation)
 
-    n_frames, _, M, N = sft.q_mn.shape
-    Nx = (M - 1) // 2
-    Ny = (N - 1) // 2
-
-    thetas = np.empty(n_frames)
-    for i in range(n_frames):
-        Lx, Ly = sft.dimensions[i, 0], sft.dimensions[i, 1]
-        thetas[i] = recover_rotation_angle(sft.q_mn[i], Lx, Ly, Nx, Ny)
-
-    if not np.any(np.abs(thetas) > _ROTATION_ANGLE_TOLERANCE):
+    if not rotation_was_used(sft):
         return False
 
+    thetas = recover_all_rotation_angles(sft)
     cx = sft.dimensions[:, 0] / 2.0
     cy = sft.dimensions[:, 1] / 2.0
-    # Fixed radius across the whole trajectory: circle_cutter's per-frame
-    # radius is min(Lx,Ly)/2 of THAT frame's box, and all these circles share
-    # the same center (Lx/2, Ly/2 of their own frame) - so the region valid
-    # in every frame is simply the smallest of these radii. Rotation pivots
-    # around (cx, cy) too, so distance-from-center - and thus this selection
-    # - is unaffected by whether it's evaluated before or after rotating.
-    radius = float(np.min(np.minimum(sft.dimensions[:, 0], sft.dimensions[:, 1])) / 2.0)
+    # Rotation pivots around (cx, cy) too, so distance-from-center - and thus
+    # this selection - is unaffected by whether it's evaluated before or
+    # after rotating.
+    radius = fixed_circle_radius(sft)
     thetas_deg = np.degrees(thetas)
 
     lines = [
@@ -113,7 +99,59 @@ def build_rotation_tcl(sft, out_path: str) -> bool:
     return True
 
 
-def get_vmd_visualisation(curvature_dir: str, out_dir: str):
+def _frame_number(path):
+    return int(os.path.basename(path).split("_")[0])
+
+
+def _trajectory_hole_union(sft, z_files, grid_shape):
+    """Per-layer (upper, lower) boolean mask, True where that grid point was
+    unsupported by the fit (--Remove-TMD) in ANY frame being visualized.
+
+    GRO+XTC atom names are set once for the whole topology, not per frame -
+    unlike Z_fitted's NaN-per-point (which can vary frame to frame), a single
+    trajectory can't rename an atom differently in different frames. So a
+    hole that only shows up in some frames (e.g. a moving TMD) still needs
+    marking for the whole trajectory: the union, not any single frame's mask.
+
+    Rotation-aware (per-frame lookup via lookup_mask_at_rotated_grid) if
+    --rotate was used, matching map/plot.py's approach - same reasoning:
+    hole_mask was computed on the unrotated, as-fit grid at build time, so it
+    has to be remapped onto each frame's rotated output grid before use.
+    """
+    from ..core.rotation import (
+        rotation_was_used, recover_all_rotation_angles, lookup_mask_at_rotated_grid,
+    )
+
+    rotate = rotation_was_used(sft)
+    thetas = recover_all_rotation_angles(sft) if rotate else None
+
+    upper_union = np.zeros(grid_shape, dtype=bool)
+    lower_union = np.zeros(grid_shape, dtype=bool)
+
+    for z_file in z_files:
+        matches = np.nonzero(sft.frame_indices == _frame_number(z_file))[0]
+        if not matches.size:
+            continue
+        idx = matches[0]
+        upper, lower = sft.hole_mask[idx]
+
+        if rotate:
+            Lx, Ly = sft.dimensions[idx, 0], sft.dimensions[idx, 1]
+            gridsize = upper.shape[0]
+            x = np.linspace(0, Lx, gridsize, endpoint=False)
+            y = np.linspace(0, Ly, gridsize, endpoint=False)
+            X, Y = np.meshgrid(x, y)
+            cx, cy = Lx / 2.0, Ly / 2.0
+            upper = lookup_mask_at_rotated_grid(upper, X, Y, Lx, Ly, cx, cy, thetas[idx])
+            lower = lookup_mask_at_rotated_grid(lower, X, Y, Lx, Ly, cx, cy, thetas[idx])
+
+        upper_union |= upper
+        lower_union |= lower
+
+    return upper_union, lower_union
+
+
+def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft=None):
     """Build pseudo-universe from Z_fitted_*.npy files,
     write GRO (first frame), XTC trajectory, and average GRO.
 
@@ -128,6 +166,15 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     frame's valid points (conservative: NaN in even one frame drops that
     point everywhere), rather than assuming the first frame's mask applies
     to all of them.
+
+    If `sft` is given and has a hole_mask (--Remove-TMD was used to build),
+    grid points with no real fitting support (in any frame, unioned - see
+    _trajectory_hole_union) are kept and given atom name "S" instead of "C",
+    so a user can filter them out in VMD via "not name S" without changing
+    the atom count. This is deliberately a different mechanism from the
+    circle exclusion above: circle-excluded points are dropped outright, hole
+    points are only renamed. Z_fitted's values are never altered for holes
+    either way - only the atom name changes.
     """
 
     # --- Load box size ---
@@ -185,7 +232,17 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str):
     for attr in ["name", "resname", "resid"]:
         u.add_TopologyAttr(attr)
 
-    u.atoms.names = ["C"] * coords.shape[0]
+    if sft is not None and sft.hole_mask is not None:
+        upper_union, lower_union = _trajectory_hole_union(sft, z_files, (Nx, Ny))
+        hole_by_layer = [upper_union, lower_union, upper_union | lower_union][:n_layers]
+        name_blocks = []
+        for l in range(n_layers):
+            block = np.full(n_valid, "C", dtype="<U1")
+            block[hole_by_layer[l][valid]] = "S"
+            name_blocks.append(block)
+        u.atoms.names = np.concatenate(name_blocks).tolist()
+    else:
+        u.atoms.names = ["C"] * coords.shape[0]
     u.residues.resnames = ["upper", "lower", "middle"][:n_layers]
     u.residues.resids = list(range(1, n_layers + 1))
     u.dimensions = [*box_size, 90.0, 90.0, 90.0]
@@ -228,17 +285,18 @@ def write_xtc(args: List[str]) -> None:
     args = parser.parse_args(args)
 
     os.makedirs(args.output, exist_ok=True)
-    get_vmd_visualisation(args.input, args.output)
 
-    # If this directory also has the raw SFT (Amn.npy/qmn.npy/dimensions.npy -
-    # the common case when it came from 'CALM analyze full' without --sft),
-    # and q_mn shows a real rotation was used, also emit a VMD TCL script.
+    # Load once, reused both for hole-mask atom naming (get_vmd_visualisation)
+    # and, below, for the rotation TCL script - the common case when this
+    # directory came from 'CALM analyze full' without --sft.
     from ..core.fourier_sft import SFT  # deferred: avoids a circular import
     # (core.fourier_build -> utilize -> get_vmd_visualization -> core.fourier_sft)
     try:
         sft = SFT.from_directory(args.input)
     except FileNotFoundError:
         sft = None
+
+    get_vmd_visualisation(args.input, args.output, sft=sft)
 
     if sft is not None:
         tcl_path = os.path.join(args.output, "rotate_and_select.tcl")

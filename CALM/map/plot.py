@@ -10,10 +10,16 @@ import glob
 import matplotlib.colors as mcolors
 import warnings
 import os
+from pathlib import Path
 from matplotlib.ticker import FormatStrFormatter
 
 from ..core.fourier_sft import SFT
-from ..core.rotation import rotation_was_used, fixed_circle_radius
+from ..core.rotation import (
+    rotation_was_used,
+    fixed_circle_radius,
+    recover_all_rotation_angles,
+    lookup_mask_at_rotated_grid,
+)
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -30,13 +36,73 @@ def get_XY(box_size, gridsize):
     X, Y = np.meshgrid(x, y)
     return X, Y
 
-def _load_mean(files, pattern, Dir):
-    """Average a set of per-frame .npy files. Raises a clear error instead of
-    silently producing a 0-d NaN scalar (which crashes far away, cryptically,
-    inside contourf) when the pattern matches nothing."""
+def _frame_number(path):
+    return int(Path(path).stem.split("_")[0])
+
+def _hole_masks_for_frame(sft, frame_idx, theta):
+    """(upper, lower) hole masks for one frame of sft, remapped onto the
+    output grid via the rotation-aware lookup if theta != 0. Safe only
+    within fixed_circle_radius (see core/rotation.py) - fine here, since
+    everything outside that circle is already excluded for the unrelated
+    circle_cutter reason."""
+    upper, lower = sft.hole_mask[frame_idx]
+    if theta == 0.0:
+        return upper, lower
+
+    Lx, Ly = sft.dimensions[frame_idx, 0], sft.dimensions[frame_idx, 1]
+    gridsize = upper.shape[0]
+    x = np.linspace(0, Lx, gridsize, endpoint=False)
+    y = np.linspace(0, Ly, gridsize, endpoint=False)
+    X, Y = np.meshgrid(x, y)
+    cx, cy = Lx / 2.0, Ly / 2.0
+    upper = lookup_mask_at_rotated_grid(upper, X, Y, Lx, Ly, cx, cy, theta)
+    lower = lookup_mask_at_rotated_grid(lower, X, Y, Lx, Ly, cx, cy, theta)
+    return upper, lower
+
+def _load_and_mask(files, pattern, Dir, sft, layer_sources):
+    """Load and average a set of per-frame .npy files, applying the (optional)
+    hole mask per frame before averaging.
+
+    layer_sources:
+      - None: the array has no leading layer axis (e.g. thickness, already
+        the combined bilayer quantity) - the union (upper OR lower) hole
+        mask is applied directly.
+      - a list, one entry per layer along axis 0: "upper", "lower", "union"
+        (upper OR lower - e.g. a middle-surface layer), or None (skip).
+
+    Averaging is conservative: a single NaN across the stacked frames at a
+    given point (from circle_cutter already baked into the file, or from the
+    hole mask applied here) makes the *averaged* point NaN too - plain
+    np.mean, not np.nanmean, so a point isn't silently averaged over
+    whichever frames happened to have data there.
+    """
     if not files:
         raise FileNotFoundError(f"No files matching '{pattern}' found in {Dir}")
-    return np.nanmean(np.asarray([np.load(f) for f in files]), axis=0)
+
+    have_holes = sft is not None and sft.hole_mask is not None
+    thetas = recover_all_rotation_angles(sft) if have_holes and rotation_was_used(sft) else None
+
+    frames = []
+    for f in files:
+        arr = np.load(f)
+        if have_holes:
+            matches = np.nonzero(sft.frame_indices == _frame_number(f))[0]
+            if matches.size:
+                idx = matches[0]
+                theta = thetas[idx] if thetas is not None else 0.0
+                upper_hole, lower_hole = _hole_masks_for_frame(sft, idx, theta)
+                union_hole = upper_hole | lower_hole
+                arr = arr.copy()
+                if layer_sources is None:
+                    arr[union_hole] = np.nan
+                else:
+                    sources = {"upper": upper_hole, "lower": lower_hole, "union": union_hole}
+                    for layer_idx, source in enumerate(layer_sources):
+                        if source is not None:
+                            arr[layer_idx][sources[source]] = np.nan
+        frames.append(arr)
+
+    return np.mean(np.asarray(frames), axis=0)
 
 def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minmax=None, filename="", show_vectors=True, title_pad=12,):
     fontsize = 20
@@ -48,10 +114,8 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
     dim_file = os.path.join(Dir, "dimensions.csv")
     box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1, max_rows=1, usecols=(1, 2, 3))
 
-    # --- Detect whether --rotate was used for this run ---
-    # (mirrors the box-vs-circle check in utilize/get_vmd_visualization.py)
-    # so the region clipped here matches exactly what circle_cutter already
-    # masked to NaN in the underlying data.
+    # --- Detect whether --rotate / --Remove-TMD were used for this run ---
+    sft = None
     circle_radius = None
     try:
         sft = SFT.from_directory(Dir)
@@ -75,7 +139,7 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
     if mode == "thickness":
         # Single panel, single colorbar - thickness has no upper/lower/middle
         # stacking (it's already the combined bilayer quantity).
-        thickness_mean = _load_mean(sorted(glob.glob(Dir + "*_thickness.npy")), "*_thickness.npy", Dir)
+        thickness_mean = _load_and_mask(sorted(glob.glob(Dir + "*_thickness.npy")), "*_thickness.npy", Dir, sft, layer_sources=None)
         gridsize = thickness_mean.shape[-1]
         X, Y = get_XY(box_size, gridsize)
 
@@ -122,7 +186,14 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
     else:
         raise ValueError("mode must be 'mean', 'gaussian', 'principal', or 'thickness'")
 
-    curvature_mean = _load_mean(sorted(glob.glob(Dir + pattern)), pattern, Dir)
+    # Layer order along axis 0, per mode - see analyze/analyze.py's np.stack
+    # calls when saving each of these files.
+    if mode == "principal":
+        curvature_layer_sources = ["upper", "upper", "lower", "lower", "union", "union"]
+    else:
+        curvature_layer_sources = ["upper", "lower", "union"]
+
+    curvature_mean = _load_and_mask(sorted(glob.glob(Dir + pattern)), pattern, Dir, sft, curvature_layer_sources)
 
     # --- Grid, sized to match the actual saved data rather than assuming a
     # fixed resolution - the data's own --gridsize may differ from any
@@ -144,7 +215,7 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
         thickness_files = sorted(glob.glob(Dir + "*_thickness.npy"))
         have_thickness = bool(thickness_files)
         if have_thickness:
-            thickness_mean = _load_mean(thickness_files, "*_thickness.npy", Dir)
+            thickness_mean = _load_and_mask(thickness_files, "*_thickness.npy", Dir, sft, layer_sources=None)
 
     elif mode == "gaussian":
         curvature_data1 = curvature_mean[0]
@@ -156,7 +227,8 @@ def draw(Dir, mode="mean", layer1="Upper", layer2="Lower", layer3="Middle", minm
         curvature_k1 = [curvature_mean[0], curvature_mean[2], curvature_mean[4]]
         curvature_k2 = [curvature_mean[1], curvature_mean[3], curvature_mean[5]]
 
-        dir_mean = _load_mean(sorted(glob.glob(Dir + "*_principal_dirs.npy")), "*_principal_dirs.npy", Dir)
+        dir_files = sorted(glob.glob(Dir + "*_principal_dirs.npy"))
+        dir_mean = _load_and_mask(dir_files, "*_principal_dirs.npy", Dir, sft, curvature_layer_sources)
 
         dirs_k1 = [normalize(dir_mean[0]), normalize(dir_mean[2]), normalize(dir_mean[4])]
         dirs_k2 = [normalize(dir_mean[1]), normalize(dir_mean[3]), normalize(dir_mean[5])]
