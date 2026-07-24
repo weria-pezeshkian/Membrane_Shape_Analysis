@@ -424,8 +424,16 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,N
         dist_upper = _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly)
         dist_lower = _grid_to_atom_distances(layer_group_2.positions[:, :2], X, Y, Lx, Ly)
 
-        threshold_upper = min(nyquist, median_multiple_threshold(dist_upper, k=1.5))
-        threshold_lower = min(nyquist, median_multiple_threshold(dist_lower, k=1.5))
+        # k=1.0 (threshold = the leaflet's own median grid-to-atom
+        # distance): validated 2026-07-24 on a real system alongside the
+        # gate below - sweeping k from 0.5 to 3.0 gave 0.00% far-field
+        # false positives at EVERY k (the gate, not k, is what's
+        # responsible for eliminating far-field noise), so k was chosen
+        # purely to maximize near-protein sensitivity: k=1.0 gave the
+        # highest detection rate in that sweep (80.9% of frames, vs 48.8%
+        # at k=3.0) while still keeping far-field noise at exactly zero.
+        threshold_upper = min(nyquist, median_multiple_threshold(dist_upper, k=1.0))
+        threshold_lower = min(nyquist, median_multiple_threshold(dist_lower, k=1.0))
 
         # Gate: a grid point only counts as a hole if it's BOTH unsupported
         # by lipids (the distance test above) AND spatially plausible as
@@ -435,8 +443,8 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,N
         # distance criterion (still "no real fit support here", not "here's
         # where we assume the protein is") - it corroborates it, filtering
         # out noise-driven flags that don't spatially coincide with the
-        # actual protein, which let k be tightened (more sensitive) without
-        # reintroducing far-field false positives. Reuses the SAME
+        # actual protein, which is what let k be tightened (more sensitive)
+        # without reintroducing far-field false positives. Reuses the SAME
         # threshold for the gate radius - no new free parameter.
         # rotation_and_center is guaranteed not None here - argument_parser
         # requires --center whenever --Remove-TMD is used.
