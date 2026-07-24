@@ -153,7 +153,10 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('-C','--center',default=None,type=str,help="MDAnalysis selection syntax to choose what should be centered")
     parser.add_argument('--rotate',default=False, action="store_true", help="Rotation alignment of each frame")
     parser.add_argument('--rotation-direction',default=None, type=str,help="An MDAnalysis selection (syntax). The center of geometry will be used for the rotation.")
-    parser.add_argument('--Remove-TMD',dest='remove_tmd',default=False,action="store_true",help="Flag grid points whose nearest atom in the Upper/Lower fit selection is farther than the fit's own resolution (Lx/Nx, Ly/Ny) as unsupported by the fit (e.g. a transmembrane protein displacing lipids). No new distance parameter - thresholded against the fit's own resolution.")
+    parser.add_argument('--Remove-TMD',dest='remove_tmd',default=False,action="store_true",help="Flag grid points whose nearest atom in the Upper/Lower fit selection is farther than a data-driven threshold (a multiple of the leaflet's own typical lipid spacing, capped by the fit's Nyquist resolution) AND spatially plausible as protein-displaced (within that same threshold of a --center atom that's actually embedded in the membrane right now, not a soluble/extramembrane domain). Requires --center.")
+    parser.add_argument('--regularization',dest='regularize',default=False,action="store_true",help="Enable automatic Tikhonov (|q|^2-weighted, Helfrich-bending-energy-like) regularization of each leaflet's Fourier fit as its coefficient count approaches its atom count. OFF by default: it biases per-frame Anm toward zero in proportion to curvature, which would circularly contaminate any later kappa/sigma calibration derived from these coefficients' cross-frame ensemble statistics. Only turn this on for single/few-frame curvature visualization, where per-frame overfitting is the bigger risk. See fit_coefficients()'s docstring for details.")
+    parser.add_argument('--min-balance',dest='min_balance',default=0.6,type=float,help="Only used with a dynamic (selection-string) -n/--index, i.e. per-frame leaflet detection: minimum acceptable leaflet-size balance (1.0=perfectly equal, 0.0=all-in-one-leaflet) for a candidate 2-leaflet split to be considered valid; among valid splits the one covering the most atoms wins. Default 0.6 (rejects splits more lopsided than ~4:1). See core/leaflet.py's get_components()/_split_score() docstrings for details.")
+    parser.add_argument('--margin',dest='margin',default=2.0,type=float,help="Only used with a dynamic (selection-string) -n/--index: an atom is only kept in a leaflet if its distance to the nearest atom in the OTHER leaflet is at least this many times its distance to the nearest atom in its OWN leaflet - i.e. decisively closer to one side, not just technically connected. Catches structural anomalies (e.g. a lipid squeezed toward mid-plane near a protein, or mid flip-flop) that XY-connectivity alone can miss, without suppressing genuine sharp membrane curvature (which is inter-leaflet-distance-preserving, unlike a real anomaly). Default 2.0, data-grounded on a real system where >99% of atoms had ratio > 4 and a known problem lipid sat at ratio ~1.9. See core/leaflet.py's apply_margin_filter() docstring for details.")
     parser.add_argument("--replay", help="Load args from replay file")
     parser.add_argument("--out-replay", default=None,help="Write replay file (includes defaults) [Optional: Specify Path to replay file]")
     parser.add_argument('-W','--Workers',default=1,type=int,help="Number of workers for parallel processing, 1 worker=1 cpu, default=1")
@@ -161,13 +164,22 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
-    """Shared --center/--rotate/--rotation-direction consistency checks for
-    'CALM analyze sft' and 'CALM analyze full'."""
+    """Shared --center/--rotate/--rotation-direction/--Remove-TMD
+    consistency checks for 'CALM analyze sft' and 'CALM analyze full'."""
     if ns.center is None:
         if ns.rotate:
             parser.error("--rotate requires --center")
         if ns.rotation_direction is not None:
             parser.error("--rotation-direction requires --center")
+        if ns.remove_tmd:
+            parser.error(
+                "--Remove-TMD requires --center: it uses the --center "
+                "selection (e.g. 'name BB') to identify which of those "
+                "atoms are actually embedded in the membrane right now, "
+                "and only counts a grid point as a hole if it's both "
+                "unsupported by lipids AND spatially plausible as "
+                "protein-displaced."
+            )
     if ns.rotation_direction is not None and not ns.rotate:
         parser.error("--rotation-direction requires --rotate")
 

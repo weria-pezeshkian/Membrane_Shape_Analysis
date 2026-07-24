@@ -74,7 +74,11 @@ def _load_and_mask(files, pattern, Dir, sft, layer_sources):
     given point (from circle_cutter already baked into the file, or from the
     hole mask applied here) makes the *averaged* point NaN too - plain
     np.mean, not np.nanmean, so a point isn't silently averaged over
-    whichever frames happened to have data there.
+    whichever frames happened to have data there. This relies on the hole
+    mask's own per-frame false-positive rate being low (see
+    core/fourier_build.py's median_multiple_threshold comment) - an under-
+    tuned per-frame threshold would make this poison almost every point over
+    a long trajectory; the fix belongs in the per-frame threshold, not here.
     """
     if not files:
         raise FileNotFoundError(f"No files matching '{pattern}' found in {Dir}")

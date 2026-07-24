@@ -9,6 +9,7 @@ class SFT:
         self.dimensions=None
         self.frame_indices=None
         self.hole_mask=None  # optional: only set if --Remove-TMD was used to build
+        self.regularized=None  # optional: True/False if known, None if unknown (older SFTs)
 
     def read_raw(self, read_dir, which):
         dir_path = Path(read_dir) / "raw_sft"
@@ -44,13 +45,25 @@ class SFT:
         self.dimensions,_=self.read_raw(args.out,"dimensions")
         if any((Path(args.out) / "raw_sft").glob("*_hole_mask.npy")):
             self.hole_mask,_=self.read_raw(args.out,"hole_mask")
+        # Whole-build constant (one CLI flag for every frame), not a
+        # per-frame raw file - set directly from args rather than round-
+        # tripping through raw_sft.
+        self.regularized=bool(args.regularize)
 
     def write(self,out_dir):
         """Save the consolidated SFT (Amn.npy, qmn.npy, dimensions.npy) into
         out_dir. dimensions.npy is [frame_index, Lx, Ly, Lz] per row - this is
         what 'CALM analyze full --sft <out_dir>' later reads back via
         from_directory(). holemask.npy is only written if --Remove-TMD was
-        used to build (self.hole_mask is not None)."""
+        used to build (self.hole_mask is not None). regularized.npy records
+        whether --regularization was used to fit Amn - only written if known
+        (self.regularized is not None). This matters beyond bookkeeping: a
+        regularized fit biases each mode's coefficient toward zero in
+        proportion to its own curvature contribution, which would circularly
+        contaminate any later kappa/sigma (bending rigidity/tension)
+        calibration derived from these coefficients' cross-frame ensemble
+        statistics - such a calibration step needs unregularized Amn to stay
+        valid (see TODO.md)."""
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         np.save(out_dir / "Amn.npy", self.A_mn)
@@ -59,6 +72,8 @@ class SFT:
         np.save(out_dir / "dimensions.npy", combined_dimensions)
         if self.hole_mask is not None:
             np.save(out_dir / "holemask.npy", self.hole_mask)
+        if self.regularized is not None:
+            np.save(out_dir / "regularized.npy", np.array(self.regularized))
 
     @classmethod
     def from_directory(cls, directory):
@@ -90,6 +105,10 @@ class SFT:
         holemask_path = directory / "holemask.npy"
         if holemask_path.exists():
             sft.hole_mask = np.load(holemask_path)
+
+        regularized_path = directory / "regularized.npy"
+        if regularized_path.exists():
+            sft.regularized = bool(np.load(regularized_path))
 
         return sft
 
