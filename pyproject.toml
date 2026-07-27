@@ -33,12 +33,8 @@ Issues = "https://github.com/weria-pezeshkian/Membrane_Shape_Analysis/issues"
 [tool.setuptools]
 license-files = ["LICENSE"]
 
-# If you use a src/ layout (recommended), uncomment the next two sections:#
-#[tool.setuptools.packages.find]
-#where = ["CALM"]
-
-#[tool.setuptools.package-data]
-#"calm" = ["py.typed"]  # or any data files you ship
+[tool.setuptools.package-data]
+"CALM.manuals" = ["*.md"]
 
 [project.scripts]
 CALM = "CALM.run_modules:main"
