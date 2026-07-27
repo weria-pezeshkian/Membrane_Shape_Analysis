@@ -1,39 +1,43 @@
+from __future__ import annotations
+
 import argparse
+import glob
 import os
+from typing import List, Optional
+
 import MDAnalysis as mda
 import numpy as np
-import glob
-from typing import List, Optional, Sequence, Dict
 
-def build_rotation_tcl(sft, out_path: str) -> bool:
-    """Generate a VMD TCL script that, once sourced against an already-loaded
-    ORIGINAL trajectory (same -F/-S/-U stride as used to build `sft`, so
-    frame i here lines up with frame i of the fit), rotates every atom
-    per-frame to match the rotation alignment used by 'CALM analyze full
-    --rotate', and sets up a representation that only *displays* residues
-    within the region that stays meaningful across the whole trajectory (the
-    same-centered circle, of fixed radius, that fits in every frame's box -
-    see analyze/analyze.py's circle_cutter). Rotation is applied to the whole
-    system, not just that subset - only the displayed selection is
-    restricted.
+from ..core.fourier_sft import SFT
+from ..core.manual import add_manual
+from ..core.rotation import (
+    fixed_circle_radius,
+    lookup_mask_at_rotated_grid,
+    recover_all_rotation_angles,
+    rotation_was_used,
+)
 
-    Returns True and writes out_path if q_mn shows a real rotation was used;
-    returns False (writes nothing) if q_mn is present but --rotate wasn't
-    actually used during the build (theta ~ 0 for every frame).
+
+def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
+    """Write a VMD TCL script that rotates every atom per frame to match 'CALM analyze full --rotate'.
+
+    Sourced against the ORIGINAL trajectory (same -F/-S/-U stride used to
+    build `sft`, so frame i lines up with frame i of the fit). Also sets up
+    a representation that only displays residues within the fixed-radius
+    circle shared by every frame (see `analyze/analyze.py`'s
+    `circle_cutter`); rotation itself applies to the whole system, not just
+    that displayed subset.
+
+    Returns True and writes `out_path` if q_mn shows a real rotation was
+    used; returns False (writes nothing) if q_mn is present but --rotate
+    wasn't actually used during the build.
     """
-    from ..core.rotation import recover_all_rotation_angles, rotation_was_used, fixed_circle_radius  # deferred: avoids a
-    # circular import (core.fourier_build -> utilize -> get_vmd_visualization
-    # -> core.fourier_sft/rotation)
-
     if not rotation_was_used(sft):
         return False
 
     thetas = recover_all_rotation_angles(sft)
     cx = sft.dimensions[:, 0] / 2.0
     cy = sft.dimensions[:, 1] / 2.0
-    # Rotation pivots around (cx, cy) too, so distance-from-center - and thus
-    # this selection - is unaffected by whether it's evaluated before or
-    # after rotating.
     radius = fixed_circle_radius(sft)
     thetas_deg = np.degrees(thetas)
 
@@ -99,29 +103,25 @@ def build_rotation_tcl(sft, out_path: str) -> bool:
     return True
 
 
-def _frame_number(path):
+def _frame_number(path: str) -> int:
     return int(os.path.basename(path).split("_")[0])
 
 
-def _trajectory_hole_union(sft, z_files, grid_shape):
-    """Per-layer (upper, lower) boolean mask, True where that grid point was
-    unsupported by the fit (--Remove-TMD) in ANY frame being visualized.
+def _trajectory_hole_union(
+    sft: SFT, z_files: List[str], grid_shape: tuple
+) -> tuple:
+    """Per-layer (upper, lower) mask, True where a grid point was unsupported by the fit (--Remove-TMD) in ANY visualized frame.
 
-    GRO+XTC atom names are set once for the whole topology, not per frame -
-    unlike Z_fitted's NaN-per-point (which can vary frame to frame), a single
-    trajectory can't rename an atom differently in different frames. So a
+    Atom names are set once for the whole topology, not per frame, so a
     hole that only shows up in some frames (e.g. a moving TMD) still needs
-    marking for the whole trajectory: the union, not any single frame's mask.
+    marking for the whole trajectory - the union, not any single frame's
+    mask.
 
-    Rotation-aware (per-frame lookup via lookup_mask_at_rotated_grid) if
-    --rotate was used, matching map/plot.py's approach - same reasoning:
-    hole_mask was computed on the unrotated, as-fit grid at build time, so it
-    has to be remapped onto each frame's rotated output grid before use.
+    Rotation-aware (per-frame lookup via `lookup_mask_at_rotated_grid`) if
+    --rotate was used: `hole_mask` was computed on the unrotated, as-fit
+    grid at build time, and must be remapped onto each frame's rotated
+    output grid before use (see `map/plot.py` for the same pattern).
     """
-    from ..core.rotation import (
-        rotation_was_used, recover_all_rotation_angles, lookup_mask_at_rotated_grid,
-    )
-
     rotate = rotation_was_used(sft)
     thetas = recover_all_rotation_angles(sft) if rotate else None
 
@@ -151,38 +151,27 @@ def _trajectory_hole_union(sft, z_files, grid_shape):
     return upper_union, lower_union
 
 
-def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft=None):
-    """Build pseudo-universe from Z_fitted_*.npy files,
-    write GRO (first frame), XTC trajectory, and average GRO.
+def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: Optional[SFT] = None) -> None:
+    """Build a pseudo-universe from *_Z_fitted.npy files; write GRO (first frame), XTC trajectory, and average GRO.
 
-    Grid points that are NaN (e.g. outside the inscribed circle after
-    --rotate's circle_cutter masking, see analyze/analyze.py - only that
-    region stays meaningful across differently-rotated frames) are dropped
-    entirely rather than written as NaN coordinates, which MDAnalysis's GRO
-    writer rejects outright. circle_cutter's radius is min(Lx,Ly)/2 using
-    *that frame's* box size, which can drift in an NPT run - so which grid
-    cells are NaN isn't necessarily identical across frames. A single
-    trajectory needs a fixed atom count, so we use the intersection of every
-    frame's valid points (conservative: NaN in even one frame drops that
-    point everywhere), rather than assuming the first frame's mask applies
-    to all of them.
+    Grid points that are NaN in any frame (e.g. outside the inscribed
+    circle after --rotate's `circle_cutter` masking) are dropped from the
+    atom count entirely, rather than written as NaN coordinates, which
+    MDAnalysis's GRO writer rejects. Since which points are NaN can differ
+    per frame (box size can drift under NPT), a trajectory's fixed atom
+    count uses the intersection of every frame's valid points.
 
-    If `sft` is given and has a hole_mask (--Remove-TMD was used to build),
-    grid points with no real fitting support (in any frame, unioned - see
-    _trajectory_hole_union) are kept and given atom name "S" instead of "C",
-    so a user can filter them out in VMD via "not name S" without changing
-    the atom count. This is deliberately a different mechanism from the
-    circle exclusion above: circle-excluded points are dropped outright, hole
-    points are only renamed. Z_fitted's values are never altered for holes
-    either way - only the atom name changes.
+    If `sft` is given and has a hole_mask (--Remove-TMD was used to
+    build), grid points with no real fitting support in any frame (see
+    `_trajectory_hole_union`) are kept but renamed from atom name "C" to
+    "S", so they can be filtered out in VMD with "not name S" without
+    changing the atom count. Z_fitted's values are never altered for
+    holes either way, only the atom name.
     """
-
-    # --- Load box size ---
     dim_file = os.path.join(curvature_dir, "dimensions.csv")
     box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1,
                           max_rows=1, usecols=(1, 2, 3))
 
-    # --- Find all Z_fitted files ---
     z_files = sorted(glob.glob(os.path.join(curvature_dir, "*_Z_fitted.npy")))
     if not z_files:
         raise FileNotFoundError(
@@ -191,14 +180,12 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft=None):
 
     print(f"Found {len(z_files)} frames.")
 
-    # --- Grid shape from the first frame ---
     n_layers, Nx, Ny = np.load(z_files[0]).shape
 
     x = np.linspace(0, box_size[0], Nx, endpoint=False)
     y = np.linspace(0, box_size[1], Ny, endpoint=False)
     X, Y = np.meshgrid(x, y)
 
-    # --- Points valid (non-NaN) across every frame ---
     valid = np.ones((Nx, Ny), dtype=bool)
     for z_file in z_files:
         valid &= ~np.any(np.isnan(np.load(z_file)), axis=0)
@@ -210,7 +197,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft=None):
     X_valid, Y_valid = X[valid], Y[valid]
     n_valid = int(valid.sum())
 
-    def build_coords(z_array):
+    def build_coords(z_array: np.ndarray) -> np.ndarray:
         return np.vstack([
             np.column_stack([X_valid,
                              Y_valid,
@@ -247,59 +234,49 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft=None):
     u.residues.resids = list(range(1, n_layers + 1))
     u.dimensions = [*box_size, 90.0, 90.0, 90.0]
 
-    # Output paths
     gro_path = os.path.join(out_dir, "first_frame.gro")
     xtc_path = os.path.join(out_dir, "trajectory.xtc")
     avg_gro_path = os.path.join(out_dir, "average_structure.gro")
 
-    # Write first frame GRO
     u.atoms.positions = coords
     u.atoms.write(gro_path)
 
-
-    # --- Trajectory + averaging ---
     avg_z = np.zeros_like(z_values)
 
     with mda.coordinates.XTC.XTCWriter(
             xtc_path, n_atoms=u.atoms.n_atoms) as writer:
 
         for z_file in z_files:
-            z_values = np.load(z_file) *10
+            z_values = np.load(z_file) * 10
             avg_z += z_values
 
             u.atoms.positions = build_coords(z_values)
             writer.write(u.atoms)
 
-
-    # --- Average structure ---
     avg_z /= len(z_files)
     u.atoms.positions = build_coords(avg_z)
     u.atoms.write(avg_gro_path)
 
 
 def write_xtc(args: List[str]) -> None:
+    """CLI entry: export a 'CALM analyze full' run's fitted surface as GRO + XTC for VMD."""
+    parser = argparse.ArgumentParser(description="Export the fitted surface as a GRO + XTC trajectory for VMD")
+    parser.add_argument("-i", "--input", help="directory with *_Z_fitted.npy and dimensions.csv")
+    parser.add_argument("-o", "--output", help="output directory")
+    add_manual(parser, "link_write_xtc")
+    ns = parser.parse_args(args)
 
-    parser = argparse.ArgumentParser(description="Create GRO + XTC of fitting from CALM analyze output files",formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-i", "--input",help="Folder containing *_Z_fitted.npy and dimensions.csv")
-    parser.add_argument("-o", "--output",help="Folder to store generated GRO and XTC files")
-    args = parser.parse_args(args)
+    os.makedirs(ns.output, exist_ok=True)
 
-    os.makedirs(args.output, exist_ok=True)
-
-    # Load once, reused both for hole-mask atom naming (get_vmd_visualisation)
-    # and, below, for the rotation TCL script - the common case when this
-    # directory came from 'CALM analyze full' without --sft.
-    from ..core.fourier_sft import SFT  # deferred: avoids a circular import
-    # (core.fourier_build -> utilize -> get_vmd_visualization -> core.fourier_sft)
     try:
-        sft = SFT.from_directory(args.input)
+        sft = SFT.from_directory(ns.input)
     except FileNotFoundError:
         sft = None
 
-    get_vmd_visualisation(args.input, args.output, sft=sft)
+    get_vmd_visualisation(ns.input, ns.output, sft=sft)
 
     if sft is not None:
-        tcl_path = os.path.join(args.output, "rotate_and_select.tcl")
+        tcl_path = os.path.join(ns.output, "rotate_and_select.tcl")
         if build_rotation_tcl(sft, tcl_path):
             print(f"Rotation detected in q_mn: wrote VMD script to {tcl_path}")
         else:
@@ -308,8 +285,3 @@ def write_xtc(args: List[str]) -> None:
 
 if __name__ == "__main__":
     pass
-
-
-
-
-

@@ -1,51 +1,59 @@
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import time
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import MDAnalysis as mda
 import numpy as np
 import threadpoolctl
-from tqdm import tqdm
-import argparse
-import logging
-from typing import List
-from scipy.interpolate import RectBivariateSpline
-from scipy.optimize import brentq
-from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes, average_coefficients
-from ..core.fourier_fit import fit_coefficients
-from ..core import argument_parser as arg_helper
-import os
-from ..core.leaflet import get_components, track_components, _label_by_z, apply_margin_filter
-from ..core.packing import median_multiple_threshold
 from MDAnalysis.lib.distances import distance_array
-from concurrent.futures import ProcessPoolExecutor
-from functools import partial
-import time
-import shlex
-from pathlib import Path
-from scipy.ndimage import binary_dilation
 from scipy.spatial import ConvexHull, cKDTree
+from tqdm import tqdm
+
+from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
+from ..core.fourier_fit import fit_coefficients
+from ..core.leaflet import _label_by_z, apply_margin_filter, get_components, track_components
+from ..core.packing import median_multiple_threshold
+
 
 class Rotation_and_Center_tracker:
-    def __init__(self,u,sel1="protein", sel2=None,rotate=False):
+    """Recenters a Universe on `sel1` each frame, and optionally tracks its
+    rotation relative to frame 0 (by `sel2`'s direction if given, otherwise
+    by `sel1`'s gyration-tensor major axis)."""
+
+    def __init__(
+        self,
+        u: mda.Universe,
+        sel1: str = "protein",
+        sel2: Optional[str] = None,
+        rotate: bool = False,
+    ) -> None:
         self.u = u
-        self.rotate=rotate
+        self.rotate = rotate
         self.sel1 = sel1
         self.sel2 = sel2
         self.base_rot_vector = np.zeros(3)
         self.current_vector = np.zeros(3)
 
-        self.sel_center=np.zeros(3)
+        self.sel_center = np.zeros(3)
 
         self._center()
         if self.rotate:
             self._get_vec()
-            
 
-    def _get_vec(self,base=True):
+    def _get_vec(self, base: bool = True) -> None:
         if self.sel2 is not None:
-                self._rot_by_points(base)
+            self._rot_by_points(base)
         else:
             self._rot_by_gyration(base)
 
-
-    def _center(self):
+    def _center(self) -> None:
         sel = self.u.select_atoms(self.sel1)
 
         box_center = self.u.dimensions[:3] / 2.0
@@ -59,7 +67,7 @@ class Rotation_and_Center_tracker:
 
         self.sel_center = box_center.copy()
 
-    def _rotate(self):
+    def _rotate(self) -> None:
         angle = np.arctan2(
             self.current_vector[0] * self.base_rot_vector[1]
             - self.current_vector[1] * self.base_rot_vector[0],
@@ -79,7 +87,9 @@ class Rotation_and_Center_tracker:
         coords = self.u.atoms.positions
         self.u.atoms.positions = (coords - self.sel_center) @ rot.T + self.sel_center
 
-    def _distance_to_hull_along_vector(self, point, vector, hull):
+    def _distance_to_hull_along_vector(
+        self, point: np.ndarray, vector: np.ndarray, hull: ConvexHull
+    ) -> float:
         distances = []
 
         for a, b, c in hull.equations:
@@ -91,7 +101,7 @@ class Rotation_and_Center_tracker:
 
         return min(distances)
 
-    def _rot_by_gyration(self,base=True):
+    def _rot_by_gyration(self, base: bool = True) -> None:
         ag = self.u.select_atoms(self.sel1)
 
         coords = ag.positions[:, :2]
@@ -113,11 +123,11 @@ class Rotation_and_Center_tracker:
             axis = -axis
         if base:
             self.base_rot_vector = np.array([axis[0], axis[1], 0.0])
-            self.current_vector=np.array([axis[0], axis[1], 0.0])
+            self.current_vector = np.array([axis[0], axis[1], 0.0])
         else:
-            self.current_vector=np.array([axis[0], axis[1], 0.0])
+            self.current_vector = np.array([axis[0], axis[1], 0.0])
 
-    def _rot_by_points(self,base=True):
+    def _rot_by_points(self, base: bool = True) -> None:
         ag1 = self.u.select_atoms(self.sel1)
         ag2 = self.u.select_atoms(self.sel2)
 
@@ -126,14 +136,14 @@ class Rotation_and_Center_tracker:
 
         vector = center2 - center1
         vector = vector / np.linalg.norm(vector)
-        
+
         if base:
             self.base_rot_vector = np.array([vector[0], vector[1], 0.0])
             self.current_vector = np.array([vector[0], vector[1], 0.0])
         else:
             self.current_vector = np.array([vector[0], vector[1], 0.0])
 
-    def _get_rotation_angle(self):
+    def _get_rotation_angle(self) -> float:
         return np.arctan2(
             self.current_vector[0] * self.base_rot_vector[1]
             - self.current_vector[1] * self.base_rot_vector[0],
@@ -142,20 +152,23 @@ class Rotation_and_Center_tracker:
         )
 
 
-def _read_ndx(filename): #TODO: Weria said, there is an mda plugin for this now. Must be confirmed and if it exists put in here.
-    groups = {}
+def _read_ndx(filename: str) -> Dict[str, List[int]]:
+    # TODO: confirm whether MDAnalysis has a built-in reader for this format
+    # now, and replace this with it if so.
+    groups: Dict[str, List[int]] = {}
     with open(filename) as f:
         group_name = None
         for line in f:
             line = line[:line.find(";")].strip()
-            if line.startswith('['):  
+            if line.startswith('['):
                 group_name = line[1:-1].strip()
                 groups[group_name] = []
             elif group_name is not None:
                 groups[group_name].extend(map(int, line.split()))
     return groups
 
-def _rotate_q(q, angle):
+
+def _rotate_q(q: np.ndarray, angle: float) -> np.ndarray:
     qx, qy = q
 
     cos_a = np.cos(angle)
@@ -166,32 +179,29 @@ def _rotate_q(q, angle):
 
     return np.asarray((qx_rot, qy_rot), dtype=np.float32)
 
-def _tmd_threshold(Lx, Ly, Nx, Ny):
-    """Nyquist spacing for the fit's shortest representable wavelength
-    (Lx/Nx, Ly/Ny): resolving a feature at wavelength lambda needs real
-    support at least every lambda/2 (points bracketing it from both sides),
-    not just one point per full period - below that spacing the fit can't
-    distinguish "lipid here" from "no lipid here" at its own chosen
-    resolution anyway. No new distance parameter - thresholded against the
-    fit's own resolution (lambda_x/lambda_y, via Nx/Ny)."""
+
+def _tmd_threshold(Lx: float, Ly: float, Nx: int, Ny: int) -> float:
+    """Nyquist spacing for the fit's shortest representable wavelength (Lx/Nx, Ly/Ny).
+
+    Resolving a feature at wavelength lambda needs support at least every
+    lambda/2; below that spacing the fit can't distinguish "lipid here"
+    from "no lipid here" at its own resolution anyway.
+    """
     return min(Lx / (2 * Nx), Ly / (2 * Ny))
 
-def _grid_to_atom_distances(positions_xy, X, Y, Lx, Ly):
-    """Periodic distance from each grid point (X, Y) to its nearest position
-    in `positions_xy` (an (N, 2) array - Z is irrelevant to a membrane-plane
-    hole). Uses a KD-tree (periodic via boxsize) rather than a full
-    O(n_grid * n_atoms) pairwise distance matrix - the tree has to be
-    rebuilt every frame since positions differ frame to frame, but each
-    frame's build+query is cheap: O(n_atoms log n_atoms) + O(n_grid log
-    n_atoms), instead of paying the full pairwise cost every frame.
 
-    Generic over WHICH atoms - shared by _hole_mask_for_layer (lipid
-    fit-input positions) and _one_frame's remove_tmd block (also lipid
-    positions, to derive the hole threshold FROM this same distribution -
-    see median_multiple_threshold in core/packing.py: calibrating against a
-    *different* distance measurement, e.g. atom-to-atom spacing, would
-    compare against the wrong scale - AND TMD-filtered protein positions,
-    to gate hole detection against where the protein actually is)."""
+def _grid_to_atom_distances(
+    positions_xy: np.ndarray, X: np.ndarray, Y: np.ndarray, Lx: float, Ly: float
+) -> np.ndarray:
+    """Periodic XY distance from each grid point (X, Y) to its nearest position in `positions_xy`.
+
+    `positions_xy` is an (N, 2) array; Z is irrelevant to a membrane-plane
+    hole. Used both for lipid fit-input positions (`_hole_mask_for_layer`)
+    and for TMD-filtered protein positions (`_one_frame`'s remove_tmd
+    block) - see `core/packing.py`'s `median_multiple_threshold` for why
+    the distance kind being calibrated against and tested against must
+    match.
+    """
     positions_xy = np.mod(np.asarray(positions_xy, dtype=float), [Lx, Ly])
     if len(positions_xy) == 0:
         return np.full(X.shape, np.inf)
@@ -201,23 +211,31 @@ def _grid_to_atom_distances(positions_xy, X, Y, Lx, Ly):
     return distances.reshape(X.shape)
 
 
-def _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold):
-    """Boolean mask, True where grid point (X, Y) has no atom of
-    layer_group's fit-input selection within `threshold` (periodic nearest-
-    neighbor distance in the XY plane - Z is irrelevant to a membrane-plane
-    hole)."""
+def _hole_mask_for_layer(
+    layer_group: mda.core.groups.AtomGroup,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Lx: float,
+    Ly: float,
+    threshold: float,
+) -> np.ndarray:
+    """True where grid point (X, Y) has no atom of `layer_group` within `threshold` (periodic, XY only)."""
     return _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly) > threshold
 
 
-def _tmd_protein_atoms_xy(center_selection, universe, fourier_upper, fourier_lower):
-    """XY positions of `center_selection` atoms that are actually embedded
-    in the membrane right now - a STRICT check (no size/margin tolerance,
-    keeping this force-field-independent rather than needing a per-bead
-    size): an atom counts only if its own z falls exactly between the
-    upper and lower leaflet surfaces evaluated at that atom's own (x,y)
-    (curvature-aware - uses the local surface height, not a flat global z
-    cutoff), discarding soluble/extramembrane domains automatically without
-    needing a separate selection string for "just the TMD part".
+def _tmd_protein_atoms_xy(
+    center_selection: str,
+    universe: mda.Universe,
+    fourier_upper: Fourier_Series_Function,
+    fourier_lower: Fourier_Series_Function,
+) -> np.ndarray:
+    """XY positions of `center_selection` atoms currently embedded in the membrane.
+
+    An atom counts only if its own z falls between the upper and lower
+    leaflet surfaces evaluated at that atom's own (x, y) - curvature-aware,
+    and with no size/margin tolerance so it stays force-field-independent.
+    This discards soluble/extramembrane domains of the same selection
+    without needing a separate "just the TMD part" selection string.
     """
     atoms = universe.select_atoms(center_selection)
     xy = atoms.positions[:, :2]
@@ -227,15 +245,23 @@ def _tmd_protein_atoms_xy(center_selection, universe, fourier_upper, fourier_low
     in_tmd = (z >= np.minimum(z_upper, z_lower)) & (z <= np.maximum(z_upper, z_lower))
     return xy[in_tmd]
 
-def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3, regularize=False):
+
+def _fourier_by_layer(
+    layer_group: mda.core.groups.AtomGroup,
+    box_size: np.ndarray,
+    Nx: int = 3,
+    Ny: int = 3,
+    regularize: bool = False,
+) -> Tuple[Fourier_Series_Function, np.ndarray]:
+    """Fit `layer_group`'s Fourier surface and return (fourier, q), q being the (qx, qy) meshgrid for its modes."""
     Lx = box_size[0]
     Ly = box_size[1]
     data_3m = layer_group.positions.T
     fourier = Fourier_Series_Function(Lx, Ly, Nx, Ny)
     fourier.setAnm(fit_coefficients(data_3m, Lx, Ly, Nx, Ny, regularize=regularize))
 
-    M=fourier.Anm.shape[0]
-    N=fourier.Anm.shape[1]
+    M = fourier.Anm.shape[0]
+    N = fourier.Anm.shape[1]
 
     m = np.arange(M)
     n = np.arange(N)
@@ -247,34 +273,38 @@ def _fourier_by_layer(layer_group, box_size, Nx=3, Ny=3, regularize=False):
     qy = 2 * np.pi * n / Ly
 
     q = np.meshgrid(qx, qy, indexing="ij")
-    return fourier,q
 
-# Per-worker-process state (populated once by _init_worker, not once per
-# frame). Keeping the Universe/AtomGroups/Rotation_and_Center_tracker out of
-# _one_frame's arguments means ProcessPoolExecutor never has to pickle them -
-# each worker opens its own Universe exactly once instead of re-opening it
-# (via unpickling) on every single submitted frame.
-_worker_state = {}
+    return fourier, q
 
 
-def _init_worker(structure, trajectory, ndx_groups, dynamic_select, center, rotation_direction, rotate):
-    """ProcessPoolExecutor(initializer=...) target: runs once per worker
-    process at pool startup.
+# Per-worker-process state, populated once by _init_worker at pool startup
+# (not once per frame) so ProcessPoolExecutor never has to pickle the
+# Universe/AtomGroups/tracker into _one_frame's arguments.
+_worker_state: Dict[str, object] = {}
 
-    Also caps this worker's BLAS thread pool (OpenBLAS/MKL/etc.) to 1: we're
-    already parallel at the process level (one worker per frame), so each
-    worker's own numpy/scipy calls trying to *also* use every CPU core would
-    massively oversubscribe the machine - N workers x all-cores-per-worker
-    fights over the same physical cores and ends up slower than 1 worker.
-    Confirmed empirically: this single change took a 200-frame benchmark
-    from 70s (8 workers, uncapped) to 3s (8 workers, capped).
+
+def _init_worker(
+    structure: str,
+    trajectory: str,
+    ndx_groups: Optional[Dict[str, List[int]]],
+    dynamic_select: bool,
+    center: Optional[str],
+    rotation_direction: Optional[str],
+    rotate: bool,
+) -> None:
+    """ProcessPoolExecutor initializer: opens this worker's own Universe once.
+
+    Also caps this worker's BLAS thread pool to 1: process-level
+    parallelism (one worker per frame) already uses every core, so each
+    worker's numpy/scipy calls also trying to use every core oversubscribes
+    the machine.
     """
     threadpoolctl.threadpool_limits(1)
 
     u = mda.Universe(structure, trajectory)
 
     if not dynamic_select:
-        layer_group = u.atoms[[x - 1 for x in ndx_groups["Upper"]]]
+        layer_group = u.atoms[[x - 1 for x in ndx_groups["Upper"]]]#TODO, check if this should be u.atoms.indices
         layer_group_2 = u.atoms[[x - 1 for x in ndx_groups["Lower"]]]
     else:
         layer_group, layer_group_2 = None, None
@@ -289,52 +319,50 @@ def _init_worker(structure, trajectory, ndx_groups, dynamic_select, center, rota
     _worker_state["rotation_and_center"] = ract
 
 
-def _fetch_dynamic_positions(frame, *, dynamic_selection):
-    """Parallel phase for dynamic (selection-string) leaflet detection:
-    fetch this frame's selection positions/box only. No dependency on any
-    other frame's result, so safe to run across workers independently/out
-    of order - the leaflet-tracking pass that consumes these results (see
-    _track_dynamic_leaflets) needs its input in trajectory order, which is
-    calc_fourier's job to guarantee (via ProcessPoolExecutor.map(), whose
-    results preserve input order regardless of which worker finishes when -
-    unlike submit(), whose futures complete in arbitrary order)."""
+def _fetch_dynamic_positions(
+    frame: int, *, dynamic_selection: str
+) -> Tuple[int, np.ndarray, np.ndarray]:
+    """Fetch one frame's dynamic-selection positions and box dimensions.
+
+    Independent per frame, safe to run across workers in any order.
+    `calc_fourier` calls this via `ProcessPoolExecutor.map()`, which
+    preserves input order regardless of completion order, since the
+    sequential tracking pass that consumes the results
+    (`_track_dynamic_leaflets`) needs trajectory order.
+    """
     universe = _worker_state["universe"]
     universe.trajectory[frame]
     selection = universe.select_atoms(dynamic_selection)
     return frame, selection.positions.copy(), np.array(universe.dimensions, dtype=np.float64)
 
 
-def _track_dynamic_leaflets(ordered_results, selection_global_indices, min_balance, margin=2.0):
-    """Sequential leaflet-tracking pass over `ordered_results` (a
-    trajectory-ordered list of (frame, positions, dimensions) from the
-    parallel _fetch_dynamic_positions phase). This is cheap relative to the
-    per-frame Fourier fit (no LSQ solve here, just distance/graph work) -
-    a plain loop, not parallelized, since leaflet identity genuinely
-    depends on the previous frame's result: the first frame is clustered
-    fresh via get_components(); every later frame is incrementally updated
-    via track_components() using the previous frame's (upper, lower) and a
-    cutoff persisted from that first clustering - see both functions'
-    docstrings in core/leaflet.py for why (stable leaflet identity across
-    the trajectory, not an independent re-cluster every frame that could
-    reshuffle which physical group counts as "Upper").
+def _track_dynamic_leaflets(
+    ordered_results: List[Tuple[int, np.ndarray, np.ndarray]],
+    selection_global_indices: np.ndarray,
+    min_balance: float,
+    margin: float = 2.0,
+) -> Dict[int, Tuple[List[int], List[int]]]:
+    """Sequential leaflet-tracking pass over trajectory-ordered per-frame positions.
 
-    apply_margin_filter is then applied to EVERY frame's result (both the
-    frame-0 bootstrap and every tracked frame after it) - XY-connectivity
-    alone (get_components/track_components) can miss a lipid that's well-
-    connected sideways to its own leaflet's neighbors while structurally
-    anomalous in 3D (e.g. squeezed toward mid-plane near a protein, or mid
-    flip-flop) - see apply_margin_filter's docstring.
+    The first frame is clustered fresh via `get_components`; every later
+    frame is incrementally updated via `track_components`, using the
+    previous frame's (upper, lower) and the cutoff persisted from that
+    first clustering, so leaflet identity stays stable across the
+    trajectory instead of being independently re-derived (and possibly
+    reshuffled) every frame.
 
-    positions/track_components/get_components/apply_margin_filter all work
-    in LOCAL indices (0..len(selection)-1); selection_global_indices maps a
-    local index back to its 0-based index in the full Universe (assumes the
-    selection's atom membership - not positions - is the same every frame,
-    true for a plain "name X"-style selection string).
+    `apply_margin_filter` is then applied to every frame's result -
+    XY-connectivity alone can miss an atom that is well-connected sideways
+    to its own leaflet but structurally anomalous in 3D.
 
-    Returns {frame: (upper_global_indices, lower_global_indices)} as plain
-    lists of 0-based global atom indices, ready for universe.atoms[...].
+    `positions`/`track_components`/`get_components`/`apply_margin_filter`
+    all use local indices (0..len(selection)-1); `selection_global_indices`
+    maps a local index to its 0-based global atom index (assumes the
+    selection's atom membership is the same every frame).
+
+    Returns {frame: (upper_global_indices, lower_global_indices)}.
     """
-    out = {}
+    out: Dict[int, Tuple[List[int], List[int]]] = {}
     prev_upper = prev_lower = None
     cutoff = None
 
@@ -357,7 +385,20 @@ def _track_dynamic_leaflets(ordered_results, selection_global_indices, min_balan
     return out
 
 
-def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,Ny=3,sqrt_n_atoms=100,remove_tmd=False,regularize=False):
+def _one_frame(
+    frame: int,
+    *,
+    out_dir: str,
+    dynamic_select: bool,
+    dynamic_leaflets: Optional[Dict[int, Tuple[List[int], List[int]]]],
+    until: int,
+    Nx: Optional[float] = 3,
+    Ny: Optional[float] = 3,
+    sqrt_n_atoms: int = 100,
+    remove_tmd: bool = False,
+    regularize: bool = False,
+) -> None:
+    """Fit one frame's Fourier surfaces (and optional hole mask) and save its raw_sft output."""
     universe = _worker_state["universe"]
     layer_group = _worker_state["layer_group"]
     layer_group_2 = _worker_state["layer_group_2"]
@@ -370,22 +411,19 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,N
     y = np.linspace(0, dimensions[:3][1], sqrt_n_atoms, endpoint=False)
     X, Y = np.meshgrid(x, y)
 
-    # Save box dimensions
     with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
         dims.write(f"{frame},{','.join(map(str, dimensions[:3]))}\n")
 
-    # Dynamic selection: leaflets were already determined for every frame by
-    # the sequential _track_dynamic_leaflets pass in calc_fourier (before
-    # this pool of workers was dispatched) - just look this frame's up.
-    # upper/lower are already 0-based global atom indices (matching
-    # universe.atoms[...] directly, no +/-1 adjustment needed).
     if dynamic_select:
+        # Leaflets for this frame were already determined by the sequential
+        # _track_dynamic_leaflets pass in calc_fourier, as 0-based global
+        # atom indices.
         upper_index, lower_index = dynamic_leaflets[frame]
         layer_group = universe.atoms[upper_index]
         layer_group_2 = universe.atoms[lower_index]
 
-    Nx, Ny = get_fourier_modes(dimensions[:3],lambda_x=Nx,lambda_y=Ny)
-    
+    Nx, Ny = get_fourier_modes(dimensions[:3], lambda_x=Nx, lambda_y=Ny)
+
     q_angle = None
 
     if rotation_and_center is not None:
@@ -395,59 +433,34 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,N
             rotation_and_center._get_vec(base=False)
             q_angle = rotation_and_center._get_rotation_angle()
 
-    # Fourier fits
-    fourier1,q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny, regularize=regularize)
-    fourier2,_ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny, regularize=regularize)
+    fourier1, q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny, regularize=regularize)
+    fourier2, _ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny, regularize=regularize)
     fouriermiddle = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
     fouriermiddle.setAnm(average_coefficients(fourier1.Anm, fourier2.Anm))
 
     if remove_tmd:
-        # Combined via min() per leaflet, independently (leaflets can pack
-        # differently): the Nyquist term (_tmd_threshold) alone can be too
-        # loose whenever a coarse lambda_x/lambda_y is chosen for shape
-        # smoothing (it tracks the fit's chosen resolution, not the real
-        # lipid density), so a moderate protein footprint could go
-        # undetected. The spacing term anchors detection sensitivity to how
-        # densely THIS leaflet's real lipids are actually packed, computed
-        # from (and applied to) the SAME grid-to-atom distance distribution
-        # - see median_multiple_threshold's docstring for why calibrating
-        # against a *different* distance measurement (e.g. atom-to-atom
-        # spacing) would compare against the wrong scale and over-flag
-        # normal packing as if it were a hole.
-        # Positions are the same (already centered, never rotated) ones the
-        # fit itself used - see TODO.md for why this is computed on the
-        # unrotated grid/positions, with rotation-aware lookup left to
-        # consumers (map plot/write_xtc).
+        # Threshold per leaflet: the Nyquist term alone (_tmd_threshold)
+        # tracks the fit's chosen resolution, not the real lipid density,
+        # so it can be too loose when lambda_x/lambda_y is coarse. Capping
+        # it with median_multiple_threshold anchors sensitivity to how
+        # densely this leaflet's lipids are actually packed, computed on
+        # the same grid-to-atom distances it's applied to. k=1.0.
         Lx, Ly = dimensions[:3][0], dimensions[:3][1]
         nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
 
         dist_upper = _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly)
         dist_lower = _grid_to_atom_distances(layer_group_2.positions[:, :2], X, Y, Lx, Ly)
 
-        # k=1.0 (threshold = the leaflet's own median grid-to-atom
-        # distance): validated 2026-07-24 on a real system alongside the
-        # gate below - sweeping k from 0.5 to 3.0 gave 0.00% far-field
-        # false positives at EVERY k (the gate, not k, is what's
-        # responsible for eliminating far-field noise), so k was chosen
-        # purely to maximize near-protein sensitivity: k=1.0 gave the
-        # highest detection rate in that sweep (80.9% of frames, vs 48.8%
-        # at k=3.0) while still keeping far-field noise at exactly zero.
         threshold_upper = min(nyquist, median_multiple_threshold(dist_upper, k=1.0))
         threshold_lower = min(nyquist, median_multiple_threshold(dist_lower, k=1.0))
 
-        # Gate: a grid point only counts as a hole if it's BOTH unsupported
-        # by lipids (the distance test above) AND spatially plausible as
-        # protein-displaced - within the same threshold of a center-
-        # selection atom that's actually embedded in the membrane right now
-        # (see _tmd_protein_atoms_xy). This doesn't replace the lipid-
-        # distance criterion (still "no real fit support here", not "here's
-        # where we assume the protein is") - it corroborates it, filtering
-        # out noise-driven flags that don't spatially coincide with the
-        # actual protein, which is what let k be tightened (more sensitive)
-        # without reintroducing far-field false positives. Reuses the SAME
-        # threshold for the gate radius - no new free parameter.
-        # rotation_and_center is guaranteed not None here - argument_parser
-        # requires --center whenever --Remove-TMD is used.
+        # A grid point counts as a hole only if it is both unsupported by
+        # lipids (the distance test above) AND within the same threshold of
+        # a --center atom currently embedded in the membrane
+        # (_tmd_protein_atoms_xy) - corroborating evidence, not a
+        # replacement for the lipid-distance test. rotation_and_center is
+        # guaranteed not None here: argument_parser requires --center
+        # whenever --Remove-TMD is used.
         tmd_xy = _tmd_protein_atoms_xy(rotation_and_center.sel1, universe, fourier1, fourier2)
         dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
 
@@ -460,14 +473,13 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,N
     else:
         q = np.asarray(q, dtype=np.float32)
 
-    
-    SFT_A_mn = np.asarray(np.stack((fourier1.Anm,fourier2.Anm,fouriermiddle.Anm),axis=0),dtype=np.float32)
+    SFT_A_mn = np.asarray(np.stack((fourier1.Anm, fourier2.Anm, fouriermiddle.Anm), axis=0), dtype=np.float32)
 
     raw_dir = Path(out_dir) / "raw_sft"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     fileAmn = raw_dir / f"{frame:0{num_digits}d}_A_mn.npy"
-    fileqmn= raw_dir / f"{frame:0{num_digits}d}_q_mn.npy"
+    fileqmn = raw_dir / f"{frame:0{num_digits}d}_q_mn.npy"
     filedimensions = raw_dir / f"{frame:0{num_digits}d}_dimensions.npy"
 
     np.save(fileAmn, SFT_A_mn)
@@ -479,29 +491,30 @@ def _one_frame(frame, *, out_dir, dynamic_select, dynamic_leaflets, until,Nx=3,N
         np.save(filehole, hole_mask)
 
 
-def calc_fourier(args,u):
-    Until=args.Until
-    ndx=args.index
+def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
+    """Fit every selected frame's Fourier surfaces in parallel and save raw_sft output to args.out."""
+    Until = args.Until
+    ndx = args.index
 
     if Until is None:
         Until = len(u.trajectory)
     else:
-        Until=int(Until)
+        Until = int(Until)
     if ndx is None:
         exit("An index selection or file has to be supplied. Exiting.")
     try:
         ndx_groups = _read_ndx(ndx)
-        dynamic_select=False
-        dynamic_selection=None
+        dynamic_select = False
+        dynamic_selection = None
     except FileNotFoundError:
         print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
-        dynamic_select=True
-        dynamic_selection=ndx
-        ndx_groups=None
+        dynamic_select = True
+        dynamic_selection = ndx
+        ndx_groups = None
 
-    dimensions=u.trajectory[0].dimensions
-    with open(f"{args.out}/dimensions.csv","w",encoding="UTF8") as dims:
-        dims.write(f"#Box Parameters: {' '.join(map(str,dimensions[3:]))}\n")
+    dimensions = u.trajectory[0].dimensions
+    with open(f"{args.out}/dimensions.csv", "w", encoding="UTF8") as dims:
+        dims.write(f"#Box Parameters: {' '.join(map(str, dimensions[3:]))}\n")
 
     frames = list(range(args.From, Until, args.Step))
 
@@ -512,11 +525,9 @@ def calc_fourier(args,u):
     ) as ex:
         dynamic_leaflets = None
         if dynamic_select:
-            # Parallel phase: fetch every frame's selection positions (order
-            # preserved by map(), unlike submit()'s arbitrary completion
-            # order) - independent per frame, no leaflet-tracking history
-            # needed here. Then a cheap sequential pass (in this main
-            # process, not the pool) turns those into a stable per-frame
+            # Parallel phase (order preserved by map()): fetch every frame's
+            # selection positions independently. Then a cheap sequential
+            # pass in this process turns those into a stable per-frame
             # leaflet assignment - see _track_dynamic_leaflets.
             fetch = partial(_fetch_dynamic_positions, dynamic_selection=dynamic_selection)
             ordered_results = list(ex.map(fetch, frames))
@@ -540,5 +551,5 @@ def calc_fourier(args,u):
             future.result()  # surfaces exceptions raised in worker processes
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     pass

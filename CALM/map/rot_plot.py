@@ -1,50 +1,61 @@
-import argparse, logging, os, glob, shutil, tempfile, subprocess, math, json
+from __future__ import annotations
+
+import argparse
+import glob
+import logging
+import math
+import os
+import shutil
+import tempfile
+from typing import Any, List, Optional, Tuple
+
+import MDAnalysis as mda
 import numpy as np
 import matplotlib.pyplot as plt
-import MDAnalysis as mda
 from matplotlib.colors import Normalize
 from matplotlib.ticker import MaxNLocator
 from PIL import Image
 from tqdm import tqdm
-from typing import List
-from ..core.calc_vectors import _rel_indices_within_protein
-from ..core.calc_vectors import get_rotation_and_protein
 
+from ..core.calc_vectors import get_rotation_and_protein
+from ..core.manual import add_manual
 
 logger = logging.getLogger(__name__)
 
-# ====================== utilty functions ======================
+# ====================== utility functions ======================
 
-def _require(path, name):
+
+def _require(path: str, name: str) -> None:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing {name}: {path}")
 
-def _inscribed_disk_mask(shape, inset_px=0.5):
+
+def _inscribed_disk_mask(shape: Tuple[int, int], inset_px: float = 0.5) -> np.ndarray:
     H, W = shape
     yy, xx = np.mgrid[:H, :W]
-    cx, cy = (W-1)/2.0, (H-1)/2.0
+    cx, cy = (W - 1) / 2.0, (H - 1) / 2.0
     r = min(cx, cy) - inset_px
-    dist = np.sqrt((xx-cx)**2 + (yy-cy)**2)
+    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
     return dist <= r
 
-def _theta_from_OP_box(O_box, P_box, Lx, Ly):
-    """
-    Changes the angle (degrees) from the vector O→P to the reference (x=Lx/2, y=Ly).
-    - O_box, P_box are in box (nm) coordinates.
-    - The reference direction points from O toward the top-center of the box.
-    """
-    O = np.asarray(O_box, float); P = np.asarray(P_box, float)
-    side = np.array([Lx/2.0, Ly], float)
+
+def _theta_from_OP_box(O_box: np.ndarray, P_box: np.ndarray, Lx: float, Ly: float) -> float:
+    """Angle (degrees) from vector O->P to the reference direction O->(Lx/2, Ly). O_box/P_box are box (nm) coordinates."""
+    O = np.asarray(O_box, float)
+    P = np.asarray(P_box, float)
+    side = np.array([Lx / 2.0, Ly], float)
     ba = P - O
     bc = side - O
     denom = np.linalg.norm(ba) * np.linalg.norm(bc)
-    if denom == 0: return 0.0
-    cos_t = np.clip(np.dot(ba, bc)/denom, -1.0, 1.0)
+    if denom == 0:
+        return 0.0
+    cos_t = np.clip(np.dot(ba, bc) / denom, -1.0, 1.0)
     theta = np.degrees(np.arccos(cos_t))
-    cross = ba[0]*bc[1] - ba[1]*bc[0]
+    cross = ba[0] * bc[1] - ba[1] * bc[0]
     return +theta if cross > 0 else -theta
 
-def _rotate_image(arr2d, theta_deg):
+
+def _rotate_image(arr2d: np.ndarray, theta_deg: float) -> np.ndarray:
     try:
         from scipy.ndimage import rotate
         return rotate(arr2d, theta_deg, reshape=False, order=0,
@@ -52,7 +63,8 @@ def _rotate_image(arr2d, theta_deg):
     except Exception:
         return arr2d
 
-def _rotate_points_about_center(points_xy, theta_deg, center_xy):
+
+def _rotate_points_about_center(points_xy: np.ndarray, theta_deg: float, center_xy: np.ndarray) -> np.ndarray:
     pts = np.asarray(points_xy, float)
     c = np.asarray(center_xy, float)
     th = np.radians(theta_deg)
@@ -62,25 +74,23 @@ def _rotate_points_about_center(points_xy, theta_deg, center_xy):
 
 # ====================== loading ======================
 
-def _load_box(dirpath):
+
+def _load_box(dirpath: str) -> Tuple[float, float]:
     path = os.path.join(dirpath, "boxsize.npy")
     _require(path, "boxsize.npy")
     box = np.load(path).astype(float)
     return float(box[0]), float(box[1])
 
-def _sorted_frame_files(dirpath, pattern):
-    """
-    Glob and sort by the numeric token located at [-2] when splitting
-    the basename on underscores. This assumes filenames like:
-        prefix_<frame>_<Layer>.npy
-    If your naming differs, update this sorter (regex might be safer).
-    """
+
+def _sorted_frame_files(dirpath: str, pattern: str) -> List[str]:
+    """Glob `pattern` and sort by the numeric token at [-2] of the underscore-split basename (prefix_<frame>_<layer>.npy)."""
     files = sorted(glob.glob(os.path.join(dirpath, pattern)),
                    key=lambda p: int(os.path.basename(p).split("_")[-2]))
     return files
 
-def _load_field_stack(dirpath, layer, key):
-    pat = f"Z_fitted_*_{layer}.npy" if key=="Zfit" else f"curvature_frame_*_{layer}.npy"
+
+def _load_field_stack(dirpath: str, layer: str, key: str) -> np.ndarray:
+    pat = f"Z_fitted_*_{layer}.npy" if key == "Zfit" else f"curvature_frame_*_{layer}.npy"
     files = _sorted_frame_files(dirpath, pat)
     if not files:
         raise FileNotFoundError(f"No frames matched: {pat}")
@@ -91,7 +101,8 @@ def _load_field_stack(dirpath, layer, key):
         stack[i] = np.load(fp)
     return stack
 
-def _load_vectors_and_protein(dirpath):
+
+def _load_vectors_and_protein(dirpath: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     o_path = os.path.join(dirpath, "rotation_vectors_o.npy")
     p_path = os.path.join(dirpath, "rotation_vectors_p.npy")
     prot_path = os.path.join(dirpath, "protein_atom_positions_rotation.npy")
@@ -99,8 +110,8 @@ def _load_vectors_and_protein(dirpath):
     _require(p_path, "rotation_vectors_p.npy")
     _require(prot_path, "protein_atom_positions_rotation.npy")
 
-    o_all = np.asarray(np.load(o_path))[:, :2].astype(float)   # (F,2)
-    p_all = np.asarray(np.load(p_path))[:, :2].astype(float)   # (F,2)
+    o_all = np.asarray(np.load(o_path))[:, :2].astype(float)
+    p_all = np.asarray(np.load(p_path))[:, :2].astype(float)
 
     prot_raw = np.asarray(np.load(prot_path))
     if prot_raw.ndim == 3:
@@ -119,71 +130,81 @@ def _load_vectors_and_protein(dirpath):
 
 # ====================== per-frame transforms ======================
 
-def _nm_to_px(pt_box, W, H, Lx, Ly):
-    x_px = pt_box[0] / Lx * (W-1)
-    y_px = pt_box[1] / Ly * (H-1)
+
+def _nm_to_px(pt_box: np.ndarray, W: int, H: int, Lx: float, Ly: float) -> np.ndarray:
+    x_px = pt_box[0] / Lx * (W - 1)
+    y_px = pt_box[1] / Ly * (H - 1)
     return np.array([x_px, y_px], float)
 
-def _px_shift_to_box(sx, sy, W, H, Lx, Ly):
-    return sx * (Lx/(W-1)), sy * (Ly/(H-1))
 
-def _recenter_roll(arr2d, O_px):
-    """
-    - This is a periodic (wraparound) shift in both axes.
-    - The returned (sx, sy) are in pixels; later converted back to nm so we can
-      adjust P and protein coordinates consistently in box units.
-    """
+def _px_shift_to_box(sx: int, sy: int, W: int, H: int, Lx: float, Ly: float) -> Tuple[float, float]:
+    return sx * (Lx / (W - 1)), sy * (Ly / (H - 1))
+
+
+def _recenter_roll(arr2d: np.ndarray, O_px: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int]]:
+    """Circularly roll `arr2d` so pixel `O_px` lands at its center. Returns (rolled array, (sx, sy) pixel shift applied)."""
     H, W = arr2d.shape
-    cx, cy = (W-1)/2.0, (H-1)/2.0
+    cx, cy = (W - 1) / 2.0, (H - 1) / 2.0
     sx = int(round(cx - O_px[0]))
     sy = int(round(cy - O_px[1]))
     rec = np.roll(np.roll(arr2d, sx, axis=1), sy, axis=0)
     return rec, (sx, sy)
 
-def _calc_frame_recenter_and_theta(arr_raw, O_box, P_box, Lx, Ly):
-    """
-      1) convert O from nm→px and recenter the array via circular roll,
-      2) convert the applied pixel shift back to nm (dx_box, dy_box),
-      3) compute θ using the recentered O' = (Lx/2, Ly/2) and shifted P' = P + (dx,dy).
-    """
 
+def _calc_frame_recenter_and_theta(
+    arr_raw: np.ndarray, O_box: np.ndarray, P_box: np.ndarray, Lx: float, Ly: float
+) -> Tuple[np.ndarray, float, float, float]:
+    """Recenter `arr_raw` on O and compute the rotation angle theta to align O->P with O->(Lx/2, Ly).
+
+    Returns (recentered array, theta degrees, dx_box, dy_box), where
+    (dx_box, dy_box) is the recentering shift in box units (nm), needed to
+    move P and protein coordinates consistently.
+    """
     H, W = arr_raw.shape
     O_px = _nm_to_px(O_box, W, H, Lx, Ly)
     rec, (sx, sy) = _recenter_roll(arr_raw, O_px)
     dx_box, dy_box = _px_shift_to_box(sx, sy, W, H, Lx, Ly)
-    O_prime_box = np.array([Lx/2.0, Ly/2.0], float)
+    O_prime_box = np.array([Lx / 2.0, Ly / 2.0], float)
     P_prime_box = np.array([P_box[0] + dx_box, P_box[1] + dy_box], float)
     theta = _theta_from_OP_box(O_prime_box, P_prime_box, Lx, Ly)
     return rec, theta, dx_box, dy_box
 
-def _protein_for_frame(prot_all_box, i):
+
+def _protein_for_frame(prot_all_box: np.ndarray, i: int) -> np.ndarray:
     F = prot_all_box.shape[0]
     i0 = i if F > 1 else 0
-    return prot_all_box[i0]  # (N,2)
+    return prot_all_box[i0]
 
 # ====================== figure helpers ======================
 
-def _set_axes_style(ax, Lx, Ly):
-    ax.set_aspect(Lx/Ly)
-    ax.set_xlim(0, Lx); ax.set_ylim(0, Ly)
-    ax.set_xticks([0, Lx]); ax.set_yticks([0, Ly])
-    ax.set_xticklabels(['0', 'L$_x$']); ax.set_yticklabels(['0', 'L$_y$'])
+
+def _set_axes_style(ax: Any, Lx: float, Ly: float) -> None:
+    ax.set_aspect(Lx / Ly)
+    ax.set_xlim(0, Lx)
+    ax.set_ylim(0, Ly)
+    ax.set_xticks([0, Lx])
+    ax.set_yticks([0, Ly])
+    ax.set_xticklabels(['0', 'L$_x$'])
+    ax.set_yticklabels(['0', 'L$_y$'])
     ax.set_facecolor((0.1, 0.1, 0.1))
     ax.tick_params(colors='black')
     for spine in ax.spines.values():
         spine.set_edgecolor('black')
 
-def _colorbar_with_ticks(fig, cax, vmin, vmax, cmap):
+
+def _colorbar_with_ticks(fig: Any, cax: Any, vmin: float, vmax: float, cmap: str) -> Any:
     sm = plt.cm.ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
     cb.set_label(r"Curvature ($\mathrm{nm^{-1}}$)", color='black')
     cb.ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
     cb.ax.tick_params(labelsize=10, colors='black')
-    for tick in cb.ax.get_yticklabels(): tick.set_color('black')
+    for tick in cb.ax.get_yticklabels():
+        tick.set_color('black')
     cb.outline.set_edgecolor('black')
     return cb
 
-def _fig_dual(Lx, Ly, vmin, vmax, cmap):
+
+def _fig_dual(Lx: float, Ly: float, vmin: float, vmax: float, cmap: str) -> Tuple[Any, Any, Any]:
     fig = plt.figure(figsize=(16, 8))
     gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 0.055], wspace=0.15)
     axL = fig.add_subplot(gs[0, 0])
@@ -195,10 +216,12 @@ def _fig_dual(Lx, Ly, vmin, vmax, cmap):
     _colorbar_with_ticks(fig, cax, vmin, vmax, cmap)
     return fig, axL, axR
 
-def _fig_single(Lx, Ly, vmin, vmax, cmap):
+
+def _fig_single(Lx: float, Ly: float, vmin: float, vmax: float, cmap: str) -> Tuple[Any, Any]:
     fig = plt.figure(figsize=(8, 8))
     gs = fig.add_gridspec(1, 2, width_ratios=[1, 0.055], wspace=0.12)
-    ax = fig.add_subplot(gs[0, 0]); cax = fig.add_subplot(gs[0, 1])
+    ax = fig.add_subplot(gs[0, 0])
+    cax = fig.add_subplot(gs[0, 1])
     _set_axes_style(ax, Lx, Ly)
     fig.patch.set_facecolor('white')
     _colorbar_with_ticks(fig, cax, vmin, vmax, cmap)
@@ -206,11 +229,12 @@ def _fig_single(Lx, Ly, vmin, vmax, cmap):
 
 # --------- contour helpers ---------
 
-def _draw_contour(ax, arr_box, Lx, Ly, vmin, vmax, cmap, mask_bool, levels):
-    """
-    Draw a contourf where x ∈ [0, Lx], y ∈ [0, Ly] (box units, nm).
-    If 'mask_bool' is provided, values outside the mask are set to NaN.
-    """
+
+def _draw_contour(
+    ax: Any, arr_box: np.ndarray, Lx: float, Ly: float, vmin: float, vmax: float,
+    cmap: str, mask_bool: Optional[np.ndarray], levels: np.ndarray,
+) -> Any:
+    """Draw a contourf over x in [0, Lx], y in [0, Ly] (box units, nm); values outside `mask_bool` (if given) are NaN."""
     a = np.array(arr_box, float)
     if mask_bool is not None:
         a = np.where(mask_bool, a, np.nan)
@@ -221,71 +245,84 @@ def _draw_contour(ax, arr_box, Lx, Ly, vmin, vmax, cmap, mask_bool, levels):
     )
     return cs
 
-def _clear_contour(cs):
-    if cs is None: return
-    for coll in list(getattr(cs, "collections", [])):
-        try: coll.remove()
-        except Exception: pass
 
-def _update_contour(ax, old_cs, arr_box, Lx, Ly, vmin, vmax, cmap, mask_bool, levels):
-    """
-      1) Remove all previous contour collections from 'old_cs' (if any).
-      2) Draw a new filled contour ('arr_box') using the same style and limits.
-    """
+def _clear_contour(cs: Any) -> None:
+    if cs is None:
+        return
+    for coll in list(getattr(cs, "collections", [])):
+        try:
+            coll.remove()
+        except Exception:
+            pass
+
+
+def _update_contour(
+    ax: Any, old_cs: Any, arr_box: np.ndarray, Lx: float, Ly: float, vmin: float, vmax: float,
+    cmap: str, mask_bool: Optional[np.ndarray], levels: np.ndarray,
+) -> Any:
+    """Remove `old_cs`'s contour collections (if any) and draw a new filled contour with the same style and limits."""
     _clear_contour(old_cs)
     return _draw_contour(ax, arr_box, Lx, Ly, vmin, vmax, cmap, mask_bool, levels)
 
 # --------- protein overlay ---------
 
-def _scatter_protein(ax, pts, origin_idx, p2_idx):
+
+def _scatter_protein(ax: Any, pts: np.ndarray, origin_idx: int, p2_idx: int) -> List[Any]:
     arts = []
     if pts.size == 0:
         return arts
     n = pts.shape[0]
     mask_other = np.ones(n, dtype=bool)
-    if 0 <= origin_idx < n: mask_other[origin_idx] = False
-    if 0 <= p2_idx < n: mask_other[p2_idx] = False
+    if 0 <= origin_idx < n:
+        mask_other[origin_idx] = False
+    if 0 <= p2_idx < n:
+        mask_other[p2_idx] = False
     if mask_other.any():
-        arts.append(ax.scatter(pts[mask_other,0], pts[mask_other,1],
+        arts.append(ax.scatter(pts[mask_other, 0], pts[mask_other, 1],
                                s=20, c='white', edgecolors="black",
                                linewidths=0.5, alpha=0.9, zorder=10))
     if 0 <= origin_idx < n:
         p = pts[origin_idx]
-        arts.append(ax.scatter([p[0]],[p[1]], s=22, c='red',
+        arts.append(ax.scatter([p[0]], [p[1]], s=22, c='red',
                                edgecolors="black", linewidths=0.7,
                                alpha=0.95, zorder=12))
     if 0 <= p2_idx < n:
         p = pts[p2_idx]
-        arts.append(ax.scatter([p[0]],[p[1]], s=22, c='lime',
+        arts.append(ax.scatter([p[0]], [p[1]], s=22, c='lime',
                                edgecolors="black", linewidths=0.7,
                                alpha=0.95, zorder=12))
     return arts
 
 # ====================== COM helpers (optional selection files) ======================
 
-def _try_load_selection_indices(dirpath):
+
+def _try_load_selection_indices(dirpath: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     fO = os.path.join(dirpath, "rotation_origin_indices.npy")
     fP = os.path.join(dirpath, "rotation_p2_indices.npy")
     O_idx = np.load(fO) if os.path.exists(fO) else None
     P_idx = np.load(fP) if os.path.exists(fP) else None
-    # allow either 1D or 2D; keep as list of ints
     if O_idx is not None:
         O_idx = np.asarray(O_idx).astype(int).ravel()
     if P_idx is not None:
         P_idx = np.asarray(P_idx).astype(int).ravel()
     return O_idx, P_idx
 
-def _scatter_com_markers(ax, pts, O_idx, P_idx, O_color="red", P_color="lime"):
+
+def _scatter_com_markers(
+    ax: Any, pts: np.ndarray, O_idx: Optional[np.ndarray], P_idx: Optional[np.ndarray],
+    O_color: str = "red", P_color: str = "lime",
+) -> List[Any]:
     arts = []
     if pts.size == 0:
         return arts
     n = pts.shape[0]
-    def _safe_com(indices):
+
+    def _safe_com(indices: np.ndarray) -> Optional[np.ndarray]:
         valid = [i for i in indices if 0 <= i < n]
         if len(valid) == 0:
             return None
         sub = pts[valid]
-        return np.array([sub[:,0].mean(), sub[:,1].mean()], float)
+        return np.array([sub[:, 0].mean(), sub[:, 1].mean()], float)
 
     if O_idx is not None:
         comO = _safe_com(O_idx)
@@ -301,84 +338,76 @@ def _scatter_com_markers(ax, pts, O_idx, P_idx, O_color="red", P_color="lime"):
 
 # ====================== main draw ======================
 
-def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
-    """
-    Modes:
-      - Static (no --video): produce a 2×2 panel of mean fields:
-          [Z_fitted approx, Upper curvature, Lower curvature, Both curvature].
-      - Video (--video {Upper|Lower|Both}): produce a binned GIF for that layer.
-        * 'bins' splits the timeline; each bin is averaged to a single frame.
-        * 'dual' shows left=recentered, right=rotated; otherwise only rotated.
-        * 'spf' sets seconds per frame (default 3.0 s).
 
-    Color scaling:
-      - vmin/vmax are computed from ALL rotated frames across Upper/Lower/Both
-        so that multi-layer outputs share a consistent scale.
+def draw(
+    Dir: str,
+    out_png: str = "",
+    video_layer: Optional[str] = None,
+    dual: bool = False,
+    spf: float = 3.0,
+    bins: Optional[int] = None,
+) -> None:
+    """Render curvature plots or a video, recentred on O and rotated to align O->P.
 
-    Overlays:
-      - Protein atoms are recentred and then rotated by +θ.
-      - Optional COM markers from 'rotation_origin_indices.npy' and
-        'rotation_p2_indices.npy' are plotted as red/green dots.
+    Without `video_layer`: a static 2x2 panel of mean fields (Z_fitted
+    approximation, Upper/Lower/Both curvature). With `video_layer` (one of
+    Upper/Lower/Both): a binned GIF for that layer, `bins` frames long
+    (each bin averaged), showing the recentred view alongside the rotated
+    one if `dual`, otherwise only rotated. `spf` sets seconds per frame.
+
+    The color scale (vmin/vmax) is computed once from all rotated frames
+    across Upper/Lower/Both, so multi-layer outputs share one scale.
+    Protein atoms are recentred then rotated by +theta; optional COM
+    markers are loaded from rotation_origin_indices.npy /
+    rotation_p2_indices.npy if present.
     """
-    
     logging.info("=== curv: plot_curvature ===")
 
-    # Box + vectors + protein
     Lx, Ly = _load_box(Dir)
     logging.info(f"Box (Lx, Ly) = ({Lx}, {Ly})")
     o_all, p_all, prot_all_box = _load_vectors_and_protein(Dir)
     F = len(o_all)
     logging.info(f"Frames loaded: {F}")
 
-    # Optional selection indices → COM markers
     O_idx, P_idx = _try_load_selection_indices(Dir)
     if O_idx is not None or P_idx is not None:
         logging.info("Found selection index files; red/green markers will be COMs of those selections.")
 
-    # Load raw stacks - THIS LOGIC WILL NEED TO BE CHANGES WHEN ZFIT WORKS
     layers = {"Zfit": "Both", "Upper": "Upper", "Lower": "Lower", "Both": "Both"}
     stacks_raw = {k: _load_field_stack(Dir, v, k) for k, v in layers.items()}
 
-    # Color scale from rotated stacks
-    logging.info("Computing color scale from rotated stacks …")
+    logging.info("Computing color scale from rotated stacks...")
     all_rot_vals = []
     for key in ("Upper", "Lower", "Both"):
         raw = stacks_raw[key]
         vals = []
         for i in tqdm(range(F), desc=f"Scan {key}", unit="frame"):
             rec_i, theta_i, *_ = _calc_frame_recenter_and_theta(raw[i], o_all[i], p_all[i], Lx, Ly)
-            vals.append(_rotate_image(rec_i, -theta_i))  # membrane uses -θ
+            vals.append(_rotate_image(rec_i, -theta_i))  # membrane uses -theta
         all_rot_vals.append(np.stack(vals, 0))
     all_vals = np.concatenate([x.ravel() for x in all_rot_vals])
     vmin, vmax = float(np.nanmin(all_vals)), float(np.nanmax(all_vals))
     logging.info(f"Auto color scale: vmin={vmin:.4f}, vmax={vmax:.4f}")
 
-    # Global mask
     mask = _inscribed_disk_mask(stacks_raw["Upper"][0].shape, inset_px=0.5)
     logging.info("Using global circular mask (inscribed disk).")
 
-    # -------- VIDEO --------
     if video_layer:
         layer_name = str(video_layer)
         if layer_name not in ("Upper", "Lower", "Both"):
             raise ValueError(f"--video must be one of Upper/Lower/Both, got {layer_name}")
 
-        # bins for mean-per-bin frames
         if bins is None or bins <= 1 or bins > F:
             bins = F
         logging.info(f"Binning frames: total={F}, bins={bins} (avg ~{F/bins:.1f} frames/bin)")
         idx_bins = np.array_split(np.arange(F), bins)
 
-        # timing
-        # --- Timing setup ---
-        # Use seconds per frame (spf). Default = 3.0 s if not provided.
         try:
             seconds_per_frame = float(spf)
         except (TypeError, ValueError):
             logging.warning(f"Invalid --spf={spf!r}; falling back to 3.0 s/frame.")
             seconds_per_frame = 3.0
 
-        # Ensure positive, finite value
         if not np.isfinite(seconds_per_frame) or seconds_per_frame <= 0:
             logging.warning(f"Invalid --spf={spf!r}; falling back to 3.0 s/frame.")
             seconds_per_frame = 3.0
@@ -391,7 +420,6 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         cmap = "RdBu"
         levels = np.linspace(vmin, vmax, 20)
 
-        # figure & first draw
         if dual:
             fig, axL, axR = _fig_dual(Lx, Ly, vmin, vmax, cmap)
             csL = _draw_contour(axL, stacks_raw[layer_name][0], Lx, Ly, vmin, vmax, cmap, mask, levels)
@@ -408,84 +436,75 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
                 rec_i, theta_i, dx_box_i, dy_box_i = _calc_frame_recenter_and_theta(
                     stacks_raw[layer_name][i], o_all[i], p_all[i], Lx, Ly
                 )
-                rec_list.append(rec_i)                          # left
-                rot_list.append(_rotate_image(rec_i, -theta_i)) # right: membrane -θ
-                thetas.append(theta_i)                          # +θ for protein overlay
+                rec_list.append(rec_i)
+                rot_list.append(_rotate_image(rec_i, -theta_i))
+                thetas.append(theta_i)
                 shifts.append((dx_box_i, dy_box_i))
 
             AiL = np.nanmean(np.stack(rec_list, 0), axis=0) if dual else None
             AiR = np.nanmean(np.stack(rot_list, 0), axis=0)
 
-            # representative frame for overlay
-            i_rep = ids[len(ids)//2]
-            theta_rep = thetas[len(thetas)//2]
-            dx_box, dy_box = shifts[len(shifts)//2]
-            prot_rep = _protein_for_frame(prot_all_box, i_rep)  # (N,2)
+            i_rep = ids[len(ids) // 2]
+            theta_rep = thetas[len(thetas) // 2]
+            dx_box, dy_box = shifts[len(shifts) // 2]
+            prot_rep = _protein_for_frame(prot_all_box, i_rep)
 
-            # overlays → recenter (+ rotate on right)
-            center = np.array([Lx/2.0, Ly/2.0], float)
+            center = np.array([Lx / 2.0, Ly / 2.0], float)
             prot_recent = prot_rep + np.array([dx_box, dy_box], float)
             prot_rot = _rotate_points_about_center(prot_recent, theta_rep, center)
 
-            # update contour fields (clear then redraw)
             if dual:
                 csL = _update_contour(axL, csL, AiL, Lx, Ly, vmin, vmax, cmap, mask, levels)
                 csR = _update_contour(axR, csR, AiR, Lx, Ly, vmin, vmax, cmap, mask, levels)
             else:
                 csR = _update_contour(axR, csR, AiR, Lx, Ly, vmin, vmax, cmap, mask, levels)
 
-            # protein dots (white) + COM markers (red/green) if available
             artists = []
             if dual:
-                # left: not rotated
-                artists += _scatter_protein(axL, prot_recent, -1, -1)  # no colored atoms
+                artists += _scatter_protein(axL, prot_recent, -1, -1)
                 artists += _scatter_com_markers(axL, prot_recent, O_idx, P_idx)
-                # right: rotated
                 artists += _scatter_protein(axR, prot_rot, -1, -1)
                 artists += _scatter_com_markers(axR, prot_rot, O_idx, P_idx)
             else:
                 artists += _scatter_protein(axR, prot_rot, -1, -1)
                 artists += _scatter_com_markers(axR, prot_rot, O_idx, P_idx)
 
-            fig.suptitle(f"{layer_name} — Bin {bi+1}/{bins}",
+            fig.suptitle(f"{layer_name} - Bin {bi+1}/{bins}",
                          fontsize=14, color='black')
             out_png_frame = os.path.join(tmp_dir, f"frame_{bi:05d}.png")
             fig.savefig(out_png_frame, dpi=170, facecolor='white', bbox_inches="tight")
 
-            # clear per-frame markers (contours already refreshed)
             for a in artists:
-                try: a.remove()
-                except Exception: pass
+                try:
+                    a.remove()
+                except Exception:
+                    pass
 
-        # ---- encode output ----
         paths = sorted(glob.glob(os.path.join(tmp_dir, "frame_*.png")))
         if not paths:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise RuntimeError("No PNG frames found to encode.")
 
-        if True:
-            out_name = f"video_{layer_name}{'_dual' if dual else ''}.gif"
-            # seconds → ms; ≥ 20 ms to avoid viewer clamping to 0
-            duration_ms = max(20, int(round(seconds_per_frame * 1000)))
-            logging.info(f"Encoding GIF with Pillow (duration={seconds_per_frame:.3f}s/frame) …")
-            frames = [Image.open(p).convert("P", palette=Image.ADAPTIVE, colors=256) for p in paths]
-            frames[0].save(out_name, save_all=True, append_images=frames[1:],
-                           duration=duration_ms, loop=0, optimize=False, disposal=2)
+        out_name = f"video_{layer_name}{'_dual' if dual else ''}.gif"
+        duration_ms = max(20, int(round(seconds_per_frame * 1000)))  # >= 20ms to avoid viewer clamping to 0
+        logging.info(f"Encoding GIF with Pillow (duration={seconds_per_frame:.3f}s/frame)...")
+        frames = [Image.open(p).convert("P", palette=Image.ADAPTIVE, colors=256) for p in paths]
+        frames[0].save(out_name, save_all=True, append_images=frames[1:],
+                       duration=duration_ms, loop=0, optimize=False, disposal=2)
 
         shutil.rmtree(tmp_dir, ignore_errors=True)
         logging.info(f"Saved: {out_name}")
         return
 
-    # -------- static 2×2 means --------
-    logging.info("Producing 2×2 mean images (no video).")
+    logging.info("Producing 2x2 mean images (no video).")
 
-    def _mean_rotated(raw_stack):
+    def _mean_rotated(raw_stack: np.ndarray) -> np.ndarray:
         vals = []
         for i in range(F):
             rec_i, theta_i, *_ = _calc_frame_recenter_and_theta(raw_stack[i], o_all[i], p_all[i], Lx, Ly)
             rot = np.where(np.abs(rot) < 0.05, 0.0, rot)
             vals.append(_rotate_image(rec_i, -theta_i))
-        return np.nanmean(np.stack(vals,0), axis=0)
+        return np.nanmean(np.stack(vals, 0), axis=0)
 
     mean_Z = _mean_rotated(stacks_raw["Zfit"])
     mean_U = _mean_rotated(stacks_raw["Upper"])
@@ -498,24 +517,22 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
 
     vmin_plot, vmax_plot = -0.15, 0.15
 
-    fig, axes = plt.subplots(2,2, figsize=(16,16))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 16))
     fig.patch.set_facecolor('white')
     axes = axes.ravel()
     arrays = [mean_Z, mean_U, mean_L, mean_B]
     titles = ["Fourier Approximation", "Curvature Upper", "Curvature Lower", "Curvature Both"]
 
-
     cmap = "RdBu"
     levels = np.linspace(vmin_plot, vmax_plot, 20)
     mask2 = _inscribed_disk_mask(mean_U.shape, 0.5)
 
-    # pick a representative frame for overlays
     i_rep = F // 2
     rec_i, theta_i, dx_box, dy_box = _calc_frame_recenter_and_theta(
         stacks_raw["Upper"][i_rep], o_all[i_rep], p_all[i_rep], Lx, Ly
     )
     prot_rep = _protein_for_frame(prot_all_box, i_rep)[:, :2]
-    center = np.array([Lx/2.0, Ly/2.0], float)
+    center = np.array([Lx / 2.0, Ly / 2.0], float)
     prot_recent = prot_rep + np.array([dx_box, dy_box], float)
     prot_rot = _rotate_points_about_center(prot_recent, theta_i, center)
 
@@ -525,13 +542,12 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         cs = _draw_contour(ax, a, Lx, Ly, vmin_plot, vmax_plot, cmap, None, levels)
         ax.set_title(title, color='black')
 
-        # overlay protein (white atoms + COM markers if available)
         _ = _scatter_protein(ax, prot_rot, -1, -1)
         _ = _scatter_com_markers(ax, prot_rot, O_idx, P_idx)
 
     cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     _colorbar_with_ticks(fig, cax, vmin_plot, vmax_plot, cmap)
-    plt.tight_layout(rect=[0.05,0.02,0.9,0.98])
+    plt.tight_layout(rect=[0.05, 0.02, 0.9, 0.98])
 
     if out_png:
         fig.savefig(out_png, dpi=220, facecolor='white', bbox_inches="tight")
@@ -540,55 +556,49 @@ def draw(Dir, out_png="", video_layer=None, dual=False, spf=3.0, bins=None):
         plt.show()
     plt.close(fig)
 
-
 # ====================== bins image (multi-panel PNG) ======================
 
-def _grid_shape(n):
+
+def _grid_shape(n: int) -> Tuple[int, int]:
     cols = math.ceil(math.sqrt(n))
     rows = math.ceil(n / cols)
     return rows, cols
 
-def _add_colorbar(fig, vmin, vmax, cmap):
+
+def _add_colorbar(fig: Any, vmin: float, vmax: float, cmap: str) -> None:
     cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     sm = plt.cm.ScalarMappable(norm=Normalize(vmin=vmin, vmax=vmax), cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
     cb.set_label(r"Curvature ($\mathrm{nm^{-1}}$)", color='black')
     cb.ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
     cb.ax.tick_params(labelsize=10, colors='black')
-    for tick in cb.ax.get_yticklabels(): tick.set_color('black')
+    for tick in cb.ax.get_yticklabels():
+        tick.set_color('black')
     cb.outline.set_edgecolor('black')
 
-def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
-    """
-    Render a single PNG containing 'bins' temporal bins for a chosen layer.
 
-    For each bin:
-      - Recenter + rotate(-θ) each frame, average within the bin,
-      - Plot the mean field with consistent color scale across bins,
-      - Overlay protein atoms (recentred, then rotated by +θ) and optional COMs.
-
-    Output:
-      - Writes 'outfile' (PNG).
-    """
-    
+def draw_bins_image(Dir: str, layer: str, bins: int, outfile: str, cmap: str = "plasma") -> None:
+    """Render a single PNG with `bins` temporal bins for `layer`: each bin is recentred, rotated (-theta), and averaged."""
     logging.info("=== curv: bin image ===")
     Lx, Ly = _load_box(Dir)
     o_all, p_all, prot_all_box = _load_vectors_and_protein(Dir)
     F = len(o_all)
 
-    # selection indices for COM overlay (optional)
     O_idx, P_idx = _try_load_selection_indices(Dir)
 
     key = "Zfit" if layer == "Zfit" else layer
-    stack = _load_field_stack(Dir, layer if layer!="Zfit" else "Both", key)
+    stack = _load_field_stack(Dir, layer if layer != "Zfit" else "Both", key)
     if stack.shape[0] != F:
         n = min(stack.shape[0], F)
-        stack = stack[:n]; o_all = o_all[:n]; p_all = p_all[:n]
-        if prot_all_box.shape[0] > 1: prot_all_box = prot_all_box[:n]
+        stack = stack[:n]
+        o_all = o_all[:n]
+        p_all = p_all[:n]
+        if prot_all_box.shape[0] > 1:
+            prot_all_box = prot_all_box[:n]
         F = n
         logging.info(f"Truncated to {F} frames to match arrays.")
 
-    logging.info(f"Recenter/rotate frames for '{layer}' …")
+    logging.info(f"Recenter/rotate frames for '{layer}'...")
     rots, thetas, shifts = [], [], []
     for i in tqdm(range(F), desc=f"Rotate {layer}", unit="frame"):
         rec_i, theta_i, dx_box, dy_box = _calc_frame_recenter_and_theta(
@@ -602,7 +612,8 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
     shifts = np.asarray(shifts)
 
     field = rots
-    vmin = float(np.nanmin(field)); vmax = float(np.nanmax(field))
+    vmin = float(np.nanmin(field))
+    vmax = float(np.nanmax(field))
     logging.info(f"Color scale: vmin={vmin:.4f}, vmax={vmax:.4f}")
     mask = _inscribed_disk_mask(field[0].shape, inset_px=0.5)
     levels = np.linspace(vmin, vmax, 20)
@@ -610,8 +621,8 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
     bins = max(1, int(bins))
     idx_bins = np.array_split(np.arange(F), bins)
     rows, cols = _grid_shape(bins)
-    fig_w = 4.8*cols + 2.0
-    fig_h = 4.8*rows
+    fig_w = 4.8 * cols + 2.0
+    fig_h = 4.8 * rows
     fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h), squeeze=False)
     fig.patch.set_facecolor('white')
 
@@ -624,25 +635,21 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
         a = np.where(mask, A, np.nan)
         _draw_contour(ax, a, Lx, Ly, vmin, vmax, cmap, None, levels)
 
-        # overlay at representative frame
-        i_rep = ids[len(ids)//2]
+        i_rep = ids[len(ids) // 2]
         theta_rep = thetas[i_rep]
         dx_box, dy_box = shifts[i_rep]
         prot_rep = _protein_for_frame(prot_all_box, i_rep)[:, :2]
-        center = np.array([Lx/2.0, Ly/2.0], float)
+        center = np.array([Lx / 2.0, Ly / 2.0], float)
         prot_recent = prot_rep + np.array([dx_box, dy_box], float)
         prot_rot = _rotate_points_about_center(prot_recent, theta_rep, center)
 
-        # protein dots (white)
         _ = _scatter_protein(ax, prot_rot, -1, -1)
-        # COM markers if available
         _ = _scatter_com_markers(ax, prot_rot, O_idx, P_idx)
 
-        start, end = int(ids[0])+1, int(ids[-1])+1
-        ax.set_title(f"Frames {start}–{end}", color='black', fontsize=11)
+        start, end = int(ids[0]) + 1, int(ids[-1]) + 1
+        ax.set_title(f"Frames {start}-{end}", color='black', fontsize=11)
 
-    # turn off unused axes
-    for k in range(bins, rows*cols):
+    for k in range(bins, rows * cols):
         r, c = divmod(k, cols)
         axes[r, c].axis('off')
 
@@ -657,45 +664,31 @@ def draw_bins_image(Dir, layer, bins, outfile, cmap="plasma"):
 
 # ====================== CLI ======================
 
-def rot_plot(argv):
-    p = argparse.ArgumentParser(
-        description="Curvature plots/videos. Dual mode: left recentred, right rotated (membrane -θ, protein +θ).",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    p.add_argument("-d","--numpys_directory", required=True)
-    p.add_argument("-o","--outfile", default="")
-    p.add_argument("-v","--video", choices=["Upper","Lower","Both"])
-    p.add_argument("--dual", action="store_true", help="Dual view: left recentred, right rotated.")
-    p.add_argument("--spf", type=float, default=3.0, help="Seconds per frame (default: 3.0 s per frame).")
-    p.add_argument("--bins-video", type=int, default=None, help="Temporal bins (mean per bin) for video.")
-    p.add_argument("--bins-image", type=int, default=None,
-                   help="If set, render a single PNG with this many temporal bins for the chosen layer, then exit.")
-    p.add_argument("--bins-layer", choices=["Upper","Lower","Both","Zfit"], default="Upper",
-                   help="Layer to use when --bins-image is requested.")
 
-    ## calc_vectors arguements
+def rot_plot(argv: List[str]) -> None:
+    """CLI entry: compute rotation-tracking vectors, then render curvature plots or a video."""
+    p = argparse.ArgumentParser(description="Rotation-tracked curvature plots and videos")
+    p.add_argument("-d", "--numpys_directory", required=True, help="'CALM analyze full' output directory")
+    p.add_argument("-o", "--outfile", default="", help="output image/video path")
+    p.add_argument("-v", "--video", choices=["Upper", "Lower", "Both"], help="render a binned video for this layer")
+    p.add_argument("--dual", action="store_true", help="show recentred and rotated views side by side")
+    p.add_argument("--spf", type=float, default=3.0, help="seconds per video frame (default: 3.0)")
+    p.add_argument("--bins-video", type=int, default=None, help="temporal bins for the video (default: one per frame)")
+    p.add_argument("--bins-image", type=int, default=None, help="render a single binned PNG instead, then exit")
+    p.add_argument("--bins-layer", choices=["Upper", "Lower", "Both", "Zfit"], default="Upper", help="layer for --bins-image (default: Upper)")
 
-    p.add_argument('-f','--trajectory', type=str, required=True,
-                        help="Path to trajectory file (e.g., .xtc, .dcd)")
-    p.add_argument('-s','--structure', type=str, required=True,
-                        help="Path to structure/topology file (e.g., .pdb, .psf, .gro)")
-    p.add_argument('-F','--From', default=0, type=int,
-                        help="First frame index (inclusive)")
-    p.add_argument('-U','--Until', default=None, type=int,
-                        help="Stop before this frame index (exclusive); None = end")
-    p.add_argument('-S','--Step', default=1, type=int,
-                        help="Stride between frames")
-    p.add_argument("--np-dir", default="", type=str,
-                        help="Directory containing curvature numpys (default: current dir)")
-    p.add_argument('-p1','--selection1', type=str, required=True,
-                        help="Atom selection for reference point 1 (O)")
-    p.add_argument('-p2','--selection2', type=str, required=True,
-                        help="Atom selection for reference point 2 (P)")
+    p.add_argument('-f', '--trajectory', type=str, required=True, help="trajectory file")
+    p.add_argument('-s', '--structure', type=str, required=True, help="structure file")
+    p.add_argument('-F', '--From', default=0, type=int, help="first frame, inclusive (default: 0)")
+    p.add_argument('-U', '--Until', default=None, type=int, help="last frame, exclusive (default: end)")
+    p.add_argument('-S', '--Step', default=1, type=int, help="frame stride (default: 1)")
+    p.add_argument("--np-dir", default="", type=str, help="directory to write rotation vectors to (default: current dir)")
+    p.add_argument('-p1', '--selection1', type=str, required=True, help="MDAnalysis selection for reference point O")
+    p.add_argument('-p2', '--selection2', type=str, required=True, help="MDAnalysis selection for reference point P")
+    add_manual(p, "map_rot_plot")
 
-    
     ns = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-
 
     try:
         u = mda.Universe(ns.structure, ns.trajectory)
@@ -711,11 +704,10 @@ def rot_plot(argv):
         box_path = os.path.join(ns.np_dir or "./", "boxsize.npy")
         np.save(box_path, np.array([lx, ly], float))
         logging.info(f"Wrote boxsize.npy: Lx={lx}, Ly={ly}")
-        
+
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
-
 
     try:
         if ns.bins_image is not None:
@@ -733,4 +725,3 @@ def rot_plot(argv):
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
-

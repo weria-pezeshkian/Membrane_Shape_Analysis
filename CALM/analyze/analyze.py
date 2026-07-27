@@ -1,17 +1,26 @@
+from __future__ import annotations
+
+import argparse
+from typing import List, Optional, Tuple
+
 import numpy as np
-from tqdm import tqdm
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
-from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
+from tqdm import tqdm
+
 from ..core.curvature import shape_operator_curvatures
+from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
+from ..core.fourier_sft import SFT
 from ..core.rotation import recover_rotation_angle, rotated_grid
 
-def circle_cutter(arr, dimensions):
-    """NaN-mask arr outside the largest circle centered on the box that fits
-    within it. Spatial axes are always axes 1 and 2 (arr.shape[1:3]); axis 0
-    is a layer/component axis (e.g. upper/lower/middle), and any further
-    trailing axes (e.g. the 2 vector components of principal_dirs) are left
-    untouched by the mask."""
+
+def circle_cutter(arr: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
+    """NaN-mask `arr` outside the largest box-centered circle that fits within it.
+
+    Spatial axes are always axes 1 and 2 (`arr.shape[1:3]`); axis 0 is a
+    layer/component axis (e.g. upper/lower/middle), and any further
+    trailing axes (e.g. principal_dirs' 2 vector components) are untouched.
+    """
     Lx, Ly = dimensions[:2]
 
     if arr.ndim >= 3:
@@ -34,14 +43,16 @@ def circle_cutter(arr, dimensions):
 
     return arr
 
-def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
-    # dZ/dx: axis 1
+
+def periodic_gradient(
+    Z: np.ndarray, dx: float, dy: float, periodic_x: bool = True, periodic_y: bool = True
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (dZ/dy, dZ/dx) of grid Z (axis 0 = y, axis 1 = x), central-differenced with wraparound where periodic."""
     if periodic_x:
         dz_dx = (np.roll(Z, -1, axis=1) - np.roll(Z, 1, axis=1)) / (2 * dx)
     else:
         dz_dx = np.gradient(Z, dx, axis=1)
 
-    # dZ/dy: axis 0
     if periodic_y:
         dz_dy = (np.roll(Z, -1, axis=0) - np.roll(Z, 1, axis=0)) / (2 * dy)
     else:
@@ -49,7 +60,15 @@ def periodic_gradient(Z, dx, dy, periodic_x=True, periodic_y=True):
 
     return dz_dy, dz_dx
 
-def f(t, interp, mx, my, mz, nx, ny, nz,Lx,Ly):
+
+def f(
+    t: float,
+    interp: RectBivariateSpline,
+    mx: float, my: float, mz: float,
+    nx: float, ny: float, nz: float,
+    Lx: float, Ly: float,
+) -> float:
+    """Root function for brentq: signed distance along a normal ray between a query point and the interpolated surface."""
     xq = mx + t * nx
     yq = my + t * ny
     zq = mz + t * nz
@@ -59,20 +78,25 @@ def f(t, interp, mx, my, mz, nx, ny, nz,Lx,Ly):
 
     return zq - interp(yq, xq, grid=False)[()]
 
-def _rotate_direction_vectors(vecs, angle):
-    """Rotate an array of 2D tangent-plane direction vectors (shape (...,2))
-    by `angle`, so they're expressed in the rotated/aligned frame's basis
-    instead of the original (unrotated-as-fit) frame's basis."""
+
+def _rotate_direction_vectors(vecs: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate an array of 2D tangent-plane direction vectors (shape (..., 2)) by `angle`."""
     vx = vecs[..., 0]
     vy = vecs[..., 1]
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     return np.stack([cos_a * vx - sin_a * vy, sin_a * vx + cos_a * vy], axis=-1)
 
-def analysis(universe, sft, methods, args=None):
-    rotated=args.rotate
 
+def analysis(
+    universe: Optional[object],
+    sft: SFT,
+    methods: List[str],
+    args: Optional[argparse.Namespace] = None,
+) -> None:
+    """Compute the requested `methods` for every frame in `sft` and save each to `args.out`."""
+    rotated = args.rotate
 
-    for i,frame in tqdm(enumerate(sft.frame_indices),total=len(sft.frame_indices)):
+    for i, frame in tqdm(enumerate(sft.frame_indices), total=len(sft.frame_indices)):
         if universe is not None:
             try:
                 universe.trajectory[frame]
@@ -80,26 +104,27 @@ def analysis(universe, sft, methods, args=None):
                 universe.trajectory[i]
             dimensions = universe.dimensions[:3]
         else:
-            # No trajectory available (SFT was loaded via --sft): use the box
-            # size captured per-frame at build time instead.
+            # No trajectory (SFT was loaded via --sft): use the box size
+            # captured per-frame at build time instead.
             dimensions = sft.dimensions[i]
         x = np.linspace(0, dimensions[:3][0], args.gridsize, endpoint=False)
         y = np.linspace(0, dimensions[:3][1], args.gridsize, endpoint=False)
         X, Y = np.meshgrid(x, y)
 
         num_digits = len(str(max(sft.frame_indices)))
-        Nx,Ny=get_fourier_modes(dimensions[:3],args.lambda_x,args.lambda_y)
-        fourier0=Fourier_Series_Function(dimensions[:3][0],dimensions[:3][1],Nx,Ny)
-        fourier0.setAnm(sft.A_mn[i,0])
-        fourier1=Fourier_Series_Function(dimensions[:3][0],dimensions[:3][1],Nx,Ny)
-        fourier1.setAnm(sft.A_mn[i,1])
-        fourier2=Fourier_Series_Function(dimensions[:3][0],dimensions[:3][1],Nx,Ny)
-        fourier2.setAnm(sft.A_mn[i,2])
+        Nx, Ny = get_fourier_modes(dimensions[:3], args.lambda_x, args.lambda_y)
+        fourier0 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+        fourier0.setAnm(sft.A_mn[i, 0])
+        fourier1 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+        fourier1.setAnm(sft.A_mn[i, 1])
+        fourier2 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+        fourier2.setAnm(sft.A_mn[i, 2])
 
-        # Curvature/height values are rotation-invariant scalars - rather than
-        # rotating Anm (would need refitting), evaluate the as-fit surface at
-        # the corresponding *unrotated* coordinate for each output grid point.
-        # Only direction vectors (dirs1/dirs2 below) need rotating afterward.
+        # Curvature/height are rotation-invariant scalars: instead of
+        # rotating Anm (would need refitting), evaluate the as-fit surface
+        # at the corresponding unrotated coordinate for each output grid
+        # point. Only direction vectors (dirs1/dirs2 below) need rotating
+        # afterward.
         if rotated:
             theta = recover_rotation_angle(sft.q_mn[i], dimensions[:3][0], dimensions[:3][1], Nx, Ny)
             X_eval, Y_eval = rotated_grid(X, Y, dimensions[:3][0] / 2.0, dimensions[:3][1] / 2.0, theta)
@@ -108,31 +133,22 @@ def analysis(universe, sft, methods, args=None):
             X_eval, Y_eval = X, Y
 
         if "Z_fitted" in methods or "thickness" in methods:
-            # Z() is already vectorized over its (x, y) arguments (it loops over
-            # Fourier modes, not grid points) - call it once on the full grid
-            # instead of once per point. ~100x faster, identical result.
-            # Evaluated at (X_eval, Y_eval) rather than (X, Y): height is a
-            # rotation-invariant scalar, so this correctly produces "the
-            # rotated surface's height at output position (X, Y)" (see
-            # core/rotation.py::rotated_grid) without needing to refit Anm.
             Z_fitted_1 = fourier0.Z(X_eval, Y_eval)
             Z_fitted_2 = fourier1.Z(X_eval, Y_eval)
             Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
-            Z_fitted=np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0)
+            Z_fitted = np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0)
 
             if rotated:
-                Z_fitted=circle_cutter(Z_fitted,dimensions)
+                Z_fitted = circle_cutter(Z_fitted, dimensions)
 
-            if "Z_fitted" in methods: 
+            if "Z_fitted" in methods:
                 np.save(f"{args.out}/{frame:0{num_digits}d}_Z_fitted.npy", Z_fitted / 10)
 
             if "thickness" in methods:
                 try:
-                    # Interpolators for intersections
-                    interp_upper = RectBivariateSpline(Y[:, 0], X[0, :],  Z_fitted_1)
-                    interp_lower = RectBivariateSpline(Y[:, 0], X[0, :],  Z_fitted_2)
+                    interp_upper = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_1)
+                    interp_lower = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_2)
 
-                    # ---- Thickness calculation ---- #
                     dx = dimensions[:3][0] / (X.shape[1] - 1)
                     dy = dimensions[:3][1] / (Y.shape[0] - 1)
                     dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
@@ -144,21 +160,19 @@ def analysis(universe, sft, methods, args=None):
 
                     thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
 
-                    t_max=np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
+                    t_max = np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
                     for i in range(X.shape[0]):
                         for j in range(X.shape[1]):
-                            x0, y0, z0 = X[i,j], Y[i,j], Z_fitted_vmd[i, j]
-                            nvecx,nvecy, nvecz = N[i,j]
+                            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
+                            nvecx, nvecy, nvecz = N[i, j]
 
-                            l1 = brentq(f,0.0,t_max,args=(interp_upper, x0,y0,z0, nvecx, nvecy, nvecz,dimensions[:3][0],dimensions[:3][1]))
-                            l2 = brentq(f,-t_max,0.0,args=(interp_lower, x0,y0,z0, nvecx, nvecy, nvecz,dimensions[:3][0],dimensions[:3][1]))
+                            l1 = brentq(f, 0.0, t_max, args=(interp_upper, x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1]))
+                            l2 = brentq(f, -t_max, 0.0, args=(interp_lower, x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1]))
 
-                            #l1_map[i, j] = l1
-                            #l2_map[i, j] = l2
                             thickness_map[i, j] = l1 - l2
 
                     if rotated:
-                        thickness_map=circle_cutter(thickness_map,dimensions)
+                        thickness_map = circle_cutter(thickness_map, dimensions)
 
                     np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
                 except ValueError:
@@ -166,15 +180,12 @@ def analysis(universe, sft, methods, args=None):
 
         if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
             # H, K, k1, k2 are rotation-invariant scalars: evaluating at
-            # (X_eval, Y_eval) directly gives the correct rotated-surface
-            # value at output position (X, Y). dirs1/dirs2 are genuine
-            # direction vectors though, so they get an extra +theta rotation
-            # afterward to express them in the rotated/aligned frame's basis.
-            #Upper leaflet
+            # (X_eval, Y_eval) directly gives the rotated surface's value at
+            # output position (X, Y). dirs1/dirs2 are direction vectors and
+            # get an extra +theta rotation to express them in the
+            # rotated/aligned frame's basis.
             H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = shape_operator_curvatures(fourier0, X_eval, Y_eval)
-            #Lower leaflet
             H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = shape_operator_curvatures(fourier1, X_eval, Y_eval)
-            #Middle surface
             Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = shape_operator_curvatures(fourier2, X_eval, Y_eval)
 
             if theta != 0.0:
@@ -210,6 +221,5 @@ def analysis(universe, sft, methods, args=None):
                 np.save(f"{args.out}/{frame:0{num_digits}d}_principal_dirs.npy", principal_dirs)
 
 
-
-if __name__=="__main__":
+if __name__ == "__main__":
     pass

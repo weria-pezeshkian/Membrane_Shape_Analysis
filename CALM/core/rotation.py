@@ -1,16 +1,27 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Tuple
+
 import numpy as np
 
+if TYPE_CHECKING:
+    from .fourier_sft import SFT
 
-def recover_rotation_angle(q_mn_frame, Lx, Ly, Nx, Ny):
-    """Recover the rotation angle baked into this frame's q_mn (see
-    core/fourier_build.py::_rotate_q / _fourier_by_layer) by comparing the
-    actual (rotated) q at a reference mode against that mode's analytically
-    known, unrotated value. Mode (m=1, n=0) - array index [1, 0] - always
-    exists and always has a nonzero original q, since Nx/Ny >= 1 always
-    (see get_fourier_modes).
+# Radians; distinguishes "q_mn present but --rotate wasn't used" (theta == 0.0
+# exactly) from a real rotation.
+ROTATION_ANGLE_TOLERANCE = 1e-9
 
-    Shared by analyze/analyze.py (to evaluate the fit at a rotated grid) and
-    utilize/get_vmd_visualization.py (to generate a VMD rotation script).
+
+def recover_rotation_angle(
+    q_mn_frame: np.ndarray, Lx: float, Ly: float, Nx: int, Ny: int
+) -> float:
+    """Recover the rotation angle baked into a frame's q_mn.
+
+    Compares the frame's actual (possibly rotated) q at mode (m=1, n=0)
+    against that mode's analytically known, unrotated value. That mode
+    always exists with a nonzero unrotated q, since Nx, Ny >= 1 always (see
+    `get_fourier_modes`). See `_rotate_q` / `_fourier_by_layer` in
+    `fourier_build.py` for where the rotation is applied at build time.
     """
     M = 2 * Nx + 1
     N = 2 * Ny + 1
@@ -31,13 +42,8 @@ def recover_rotation_angle(q_mn_frame, Lx, Ly, Nx, Ny):
     )
 
 
-# radians; distinguishes "q_mn present but --rotate wasn't used" (theta == 0.0 exactly) from a real rotation
-ROTATION_ANGLE_TOLERANCE = 1e-9
-
-
-def recover_all_rotation_angles(sft):
-    """recover_rotation_angle for every frame in an SFT (q_mn/dimensions
-    already loaded, e.g. via SFT.from_directory)."""
+def recover_all_rotation_angles(sft: "SFT") -> np.ndarray:
+    """`recover_rotation_angle` for every frame in an SFT with q_mn/dimensions loaded."""
     n_frames, _, M, N = sft.q_mn.shape
     Nx = (M - 1) // 2
     Ny = (N - 1) // 2
@@ -47,39 +53,41 @@ def recover_all_rotation_angles(sft):
     ])
 
 
-def rotation_was_used(sft, tolerance=ROTATION_ANGLE_TOLERANCE):
-    """Whether --rotate was actually used to build this SFT. q_mn is always
-    saved (see core/fourier_build.py::_one_frame) whether or not --rotate was
-    given, so file presence alone isn't a reliable signal; this checks
-    whether the recovered angle is genuinely nonzero for at least one frame.
-    Frame 0 alone is not a reliable check even when rotation was used, since
-    it's the reference frame (its own recovered angle is always ~0) - so
-    every frame is checked."""
+def rotation_was_used(sft: "SFT", tolerance: float = ROTATION_ANGLE_TOLERANCE) -> bool:
+    """Whether --rotate was used to build this SFT.
+
+    q_mn is always saved regardless of --rotate (see `_one_frame` in
+    `fourier_build.py`), so file presence alone isn't a reliable signal.
+    Checks every frame, since frame 0 is the reference frame and its own
+    recovered angle is always ~0 even when rotation was used elsewhere.
+    """
     return bool(np.any(np.abs(recover_all_rotation_angles(sft)) > tolerance))
 
 
-def fixed_circle_radius(sft):
-    """The radius (in sft.dimensions' units) of the largest same-centered
-    circle that fits inside every frame's box - see analyze/analyze.py's
-    circle_cutter. Box size can drift per frame (NPT), and circle_cutter's
-    per-frame radius is min(Lx,Ly)/2 of that frame's own box; since all these
-    circles share the same center, the region valid across every frame is
-    simply the smallest of these radii."""
+def fixed_circle_radius(sft: "SFT") -> float:
+    """Radius of the largest same-centered circle that fits inside every frame's box.
+
+    Box size can drift per frame (NPT); each frame's own circle radius is
+    min(Lx, Ly)/2 of that frame's box (see `circle_cutter` in
+    `analyze/analyze.py`). Since all such circles share the same center,
+    the region valid across every frame is the smallest of these radii.
+    """
     return float(np.min(np.minimum(sft.dimensions[:, 0], sft.dimensions[:, 1])) / 2.0)
 
 
-def rotated_grid(X, Y, cx, cy, angle):
-    """Coordinates to evaluate the (unrotated-as-fit) surface/data at, so the
-    result at output grid point (X, Y) is what it would look like after
-    rotating by `angle` around (cx, cy). This is the ONE rotation mechanism
-    used throughout CALM: real data (atom positions, Anm, the hole mask) is
-    never itself rotated - only the query point is transformed, so nothing
-    needs redoing to account for a frame's rotation.
+def rotated_grid(
+    X: np.ndarray, Y: np.ndarray, cx: float, cy: float, angle: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Map output grid point (X, Y) to the as-fit coordinates it corresponds to under rotation.
 
-    Only meaningful (no PBC wraparound ambiguity - see TODO.md) for (X, Y)
-    within fixed_circle_radius of (cx, cy): rotation preserves distance from
-    the pivot exactly, so such points' transformed coordinates never actually
-    leave the box under any angle, unlike points nearer the box edges.
+    This is the one rotation mechanism used throughout CALM: fitted data
+    (atom positions, Anm, the hole mask) is never itself rotated, only the
+    query point is transformed.
+
+    Only meaningful for (X, Y) within `fixed_circle_radius` of (cx, cy):
+    rotation preserves distance from the pivot, so such points' transformed
+    coordinates never leave the box under any angle, unlike points nearer
+    the box edges.
     """
     dx = X - cx
     dy = Y - cy
@@ -89,13 +97,22 @@ def rotated_grid(X, Y, cx, cy, angle):
     return x_old, y_old
 
 
-def lookup_mask_at_rotated_grid(mask, X, Y, Lx, Ly, cx, cy, angle):
-    """Look up a boolean mask (computed on the canonical, unrotated grid -
-    e.g. the hole mask from core/fourier_build.py) at the position each
-    output grid point (X, Y) corresponds to in the original (unrotated,
-    as-measured) frame, via nearest-cell snapping (a mask has no continuous
-    interpolation the way Z() does). Only call this for (X, Y) within
-    fixed_circle_radius of (cx, cy) - see rotated_grid's docstring."""
+def lookup_mask_at_rotated_grid(
+    mask: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Lx: float,
+    Ly: float,
+    cx: float,
+    cy: float,
+    angle: float,
+) -> np.ndarray:
+    """Look up a boolean mask (computed on the canonical, unrotated grid) under rotation.
+
+    Uses nearest-cell snapping, since a mask has no continuous
+    interpolation the way `Z()` does. Only meaningful for (X, Y) within
+    `fixed_circle_radius` of (cx, cy) - see `rotated_grid`.
+    """
     x_old, y_old = rotated_grid(X, Y, cx, cy, angle)
     grid_rows, grid_cols = mask.shape
     col_idx = np.mod(np.round(x_old / Lx * grid_cols).astype(int), grid_cols)

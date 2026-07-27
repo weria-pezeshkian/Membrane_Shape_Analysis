@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -9,6 +11,7 @@ import MDAnalysis as mda
 
 from ..core import argument_parser as arg_helper
 from ..core.fourier_sft import SFT
+from ..core.manual import add_manual
 from ..analyze.analyze import analysis
 from ..analyze.sft import build_sft
 
@@ -34,23 +37,21 @@ def full(args: List[str]) -> None:
     needed.
     """
     parser = argparse.ArgumentParser(
-        description="Calculate the curvature of a Lipid Bilayer. Builds the SFT first unless --sft is supplied.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Run the full geometric analysis pipeline (thickness, curvature).",
     )
     arg_helper.add_build_arguments(parser)
     parser.add_argument(
         "--sft", default=None, type=str,
-        help="Directory containing a previously built SFT (Amn.npy, qmn.npy, dimensions.npy - "
-             "as written by 'CALM analyze sft'). If given, --trajectory/-f and --structure/-s "
-             "are not required.",
+        help="reuse a previously built fit instead of --trajectory/--structure (see --man)",
     )
     parser.add_argument(
         "--method",
         nargs="+",
         choices=METHODS,
         default=None,
-        help="Analysis method(s) to run. If omitted, all methods are run.",
+        help="analysis method(s) to run (default: all)",
     )
+    add_manual(parser, "analyze_full")
 
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")

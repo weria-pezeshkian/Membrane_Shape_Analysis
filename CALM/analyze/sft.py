@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -9,13 +11,13 @@ import MDAnalysis as mda
 
 from ..core import argument_parser as arg_helper
 from ..core.fourier_sft import SFT
+from ..core.manual import add_manual
 
 logger = logging.getLogger(__name__)
 
 
-def build_sft(args, universe) -> SFT:
-    """Build the per-frame Fourier coefficient stack (SFT) from a trajectory
-    and save it (Amn.npy, qmn.npy, dimensions.npy) into args.out.
+def build_sft(args: argparse.Namespace, universe: mda.Universe) -> SFT:
+    """Build the SFT (A_mn/q_mn/dimensions) from a trajectory and save it into args.out.
 
     Shared by 'CALM analyze sft' and 'CALM analyze full' (the latter calls
     this when it isn't handed a precomputed SFT via --sft).
@@ -31,10 +33,10 @@ def sft(args: List[str]) -> None:
     trajectory. This is the starting point for 'CALM analyze full' and,
     eventually, 'CALM calibrate'."""
     parser = argparse.ArgumentParser(
-        description="Build and save the per-frame Fourier coefficient stack (Amn.npy, qmn.npy, dimensions.npy) from a trajectory.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Build and save the per-frame Fourier coefficient stack from a trajectory.",
     )
     arg_helper.add_build_arguments(parser)
+    add_manual(parser, "analyze_sft")
 
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")

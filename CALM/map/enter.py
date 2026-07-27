@@ -1,70 +1,46 @@
-from .rot_plot import rot_plot
-from .plot import plot
-import sys
-import logging
+from __future__ import annotations
+
 import argparse
+import sys
 from importlib.metadata import version
 
+from ..core.manual import add_manual
+from .dynamic_plot import dynamic_plot
+from .plot import plot
+from .rot_plot import rot_plot
 
-logger = logging.getLogger(__name__)
+MODULES = ["rot_plot", "plot", "dynamic_plot"]
 
-def run_module(module_name, args):
-    """
-    run the specified python module with given arguments.
-    """
-    module_name=module_name.lower()
-    if module_name == 'rot_plot':
+
+def run_module(module_name: str, args: list[str]) -> None:
+    """Dispatch to the named map command's entry point."""
+    module_name = module_name.lower()
+    if module_name == "rot_plot":
         rot_plot(args)
-    elif module_name == 'plot':
-        plot(args) 
-    #elif module_name == '<new module>': # remember to import module function up top
-    #    plot_height(args)
+    elif module_name == "plot":
+        plot(args)
+    elif module_name == "dynamic_plot":
+        dynamic_plot(args)
     else:
         print(f"Unknown module: {module_name}")
 
-def Map(args):
-    """
-    main entry point for the CALM link command-line interface.
-    """
 
-    modules=['rot_plot','plot']
+def Map(args: list[str]) -> None:
+    """CLI entry point: `CALM map <command> <args...>`."""
+    sys.argv = [""] + args
 
-    sys.argv=[""]+args
-    # call the right subroutine based on the module type
-
-    # parse arguments before a calling module
     parser = argparse.ArgumentParser(
-    description='CALM link: link contains utility or preparation functions that are not mandatory, but nice. For instance, the automatic writing of an index file to split the bilayer into monolayers.',
-    prog='CALM',
-    formatter_class=argparse.RawTextHelpFormatter
+        description="CALM map: plots, videos, and rotation tracking from analysis output.",
+        prog="CALM",
     )
+    parser.add_argument("module", choices=MODULES, help="command to run")
+    parser.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the chosen command")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {version('CALM')}")
+    add_manual(parser, "map")
 
-    parser.add_argument(
-    'module',
-    choices=modules,
-    help='choice of which module to run, run CALM link <module> -h for detailed help\n\
-    <rot_plot> prepares an index file\n\
-    <calculate> calculates the curvature\n\
-    <plot> plots the curvature data based on a directory with the files from curvature'
-    )
-
-    parser.add_argument(
-    'args',
-    nargs=argparse.REMAINDER,
-    help='arguments for the chosen module'
-    )
-
-    parser.add_argument(
-    "-v", "--version",
-    action="version",
-    version=f'%(prog)s {version("CALM")}'
-    )
-
-    args = parser.parse_args()
-
-    # call the right subroutine based on the module type
-    run_module(args.module, args.args)
+    ns = parser.parse_args()
+    run_module(ns.module, ns.args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass

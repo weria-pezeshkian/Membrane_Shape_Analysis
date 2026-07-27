@@ -1,17 +1,28 @@
-import numpy as np
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
+from typing import Optional, Tuple
+
+import MDAnalysis as mda
+import numpy as np
+
 from .fourier_build import calc_fourier
 
-class SFT:
-    def __init__(self):
-        self.A_mn=None
-        self.q_mn=None
-        self.dimensions=None
-        self.frame_indices=None
-        self.hole_mask=None  # optional: only set if --Remove-TMD was used to build
-        self.regularized=None  # optional: True/False if known, None if unknown (older SFTs)
 
-    def read_raw(self, read_dir, which):
+class SFT:
+    """The per-frame Fourier coefficient stack: A_mn, q_mn, box dimensions, and optional hole mask."""
+
+    def __init__(self) -> None:
+        self.A_mn: Optional[np.ndarray] = None
+        self.q_mn: Optional[np.ndarray] = None
+        self.dimensions: Optional[np.ndarray] = None
+        self.frame_indices: Optional[np.ndarray] = None
+        self.hole_mask: Optional[np.ndarray] = None  # set only if --Remove-TMD was used to build
+        self.regularized: Optional[bool] = None  # None if unknown (older SFTs written before this was tracked)
+
+    def read_raw(self, read_dir: str, which: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Load per-frame `{frame}_{which}.npy` files from `read_dir/raw_sft`, stacked in frame order."""
         dir_path = Path(read_dir) / "raw_sft"
         files = sorted(dir_path.glob(f"*_{which}.npy"))
 
@@ -38,32 +49,23 @@ class SFT:
 
         return Arr, np.array(frame_indices, dtype=int)
 
-    def build(self,args,universe):
-        calc_fourier(args,universe)
-        self.A_mn,self.frame_indices=self.read_raw(args.out,"A_mn")
-        self.q_mn,_=self.read_raw(args.out,"q_mn")
-        self.dimensions,_=self.read_raw(args.out,"dimensions")
+    def build(self, args: argparse.Namespace, universe: mda.Universe) -> None:
+        """Run `calc_fourier` and load its per-frame raw output into this SFT."""
+        calc_fourier(args, universe)
+        self.A_mn, self.frame_indices = self.read_raw(args.out, "A_mn")
+        self.q_mn, _ = self.read_raw(args.out, "q_mn")
+        self.dimensions, _ = self.read_raw(args.out, "dimensions")
         if any((Path(args.out) / "raw_sft").glob("*_hole_mask.npy")):
-            self.hole_mask,_=self.read_raw(args.out,"hole_mask")
-        # Whole-build constant (one CLI flag for every frame), not a
-        # per-frame raw file - set directly from args rather than round-
-        # tripping through raw_sft.
-        self.regularized=bool(args.regularize)
+            self.hole_mask, _ = self.read_raw(args.out, "hole_mask")
+        self.regularized = bool(args.regularize)
 
-    def write(self,out_dir):
-        """Save the consolidated SFT (Amn.npy, qmn.npy, dimensions.npy) into
-        out_dir. dimensions.npy is [frame_index, Lx, Ly, Lz] per row - this is
-        what 'CALM analyze full --sft <out_dir>' later reads back via
-        from_directory(). holemask.npy is only written if --Remove-TMD was
-        used to build (self.hole_mask is not None). regularized.npy records
-        whether --regularization was used to fit Amn - only written if known
-        (self.regularized is not None). This matters beyond bookkeeping: a
-        regularized fit biases each mode's coefficient toward zero in
-        proportion to its own curvature contribution, which would circularly
-        contaminate any later kappa/sigma (bending rigidity/tension)
-        calibration derived from these coefficients' cross-frame ensemble
-        statistics - such a calibration step needs unregularized Amn to stay
-        valid (see TODO.md)."""
+    def write(self, out_dir: str) -> None:
+        """Save the consolidated SFT (Amn.npy, qmn.npy, dimensions.npy) into out_dir.
+
+        dimensions.npy is [frame_index, Lx, Ly, Lz] per row, as read back by
+        `from_directory`. holemask.npy and regularized.npy are written only
+        if known (hole_mask/regularized are not None).
+        """
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         np.save(out_dir / "Amn.npy", self.A_mn)
@@ -76,10 +78,11 @@ class SFT:
             np.save(out_dir / "regularized.npy", np.array(self.regularized))
 
     @classmethod
-    def from_directory(cls, directory):
-        """Load a previously built SFT from a directory containing Amn.npy,
-        qmn.npy and dimensions.npy (as written by write()). Raises
-        FileNotFoundError naming exactly which file(s) are missing."""
+    def from_directory(cls, directory: str) -> "SFT":
+        """Load a previously built SFT from a directory containing Amn.npy, qmn.npy, dimensions.npy.
+
+        Raises FileNotFoundError naming exactly which required file(s) are missing.
+        """
         directory = Path(directory)
         required = {
             "Amn.npy": directory / "Amn.npy",
@@ -113,5 +116,5 @@ class SFT:
         return sft
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     pass

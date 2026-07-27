@@ -1,71 +1,43 @@
-from CALM.utilize.write_ndx import write_ndx
-from .get_vmd_visualization import write_xtc
-import sys
-import logging
+from __future__ import annotations
+
 import argparse
+import sys
 from importlib.metadata import version
 
+from CALM.utilize.write_ndx import write_ndx
+from ..core.manual import add_manual
+from .get_vmd_visualization import write_xtc
 
-logger = logging.getLogger(__name__)
+MODULES = ["write_ndx", "write_xtc"]
 
-def run_module(module_name, args):
-    """
-    run the specified python module with given arguments.
-    """
-    
-    module_name=module_name.lower()
-    if module_name == 'write_ndx':
+
+def run_module(module_name: str, args: list[str]) -> None:
+    """Dispatch to the named link command's entry point."""
+    module_name = module_name.lower()
+    if module_name == "write_ndx":
         write_ndx(args)
-    elif module_name == 'write_xtc':
-        write_xtc(args) 
-    #elif module_name == '<new module>': # remember to import module function up top
-    #    plot_height(args)
+    elif module_name == "write_xtc":
+        write_xtc(args)
     else:
         print(f"Unknown module: {module_name}")
 
-def Link(args):
-    """
-    main entry point for the CALM link command-line interface.
-    """
 
-    modules=['write_ndx','write_xtc']
+def Link(args: list[str]) -> None:
+    """CLI entry point: `CALM link <command> <args...>`."""
+    sys.argv = [""] + args
 
-    sys.argv=[""]+args
-    # call the right subroutine based on the module type
-
-    # parse arguments before a calling module
     parser = argparse.ArgumentParser(
-    description='CALM link: link contains utility or preparation functions that are not mandatory, but nice. For instance, the automatic writing of an index file to split the bilayer into monolayers.',
-    prog='CALM',
-    formatter_class=argparse.RawTextHelpFormatter
+        description="CALM link: leaflet index files and VMD export.",
+        prog="CALM",
     )
+    parser.add_argument("module", choices=MODULES, help="command to run")
+    parser.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the chosen command")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {version('CALM')}")
+    add_manual(parser, "link")
 
-    parser.add_argument(
-    'module',
-    choices=modules,
-    help='choice of which module to run, run CALM link <module> -h for detailed help\n\
-    <write_ndx> prepares an index file\n\
-    <calculate> calculates the curvature\n\
-    <plot> plots the curvature data based on a directory with the files from curvature'
-    )
-
-    parser.add_argument(
-    'args',
-    nargs=argparse.REMAINDER,
-    help='arguments for the chosen module'
-    )
-
-    parser.add_argument(
-    "-v", "--version",
-    action="version",
-    version=f'%(prog)s {version("CALM")}'
-    )
-
-    args = parser.parse_args()
-
-    # call the right subroutine based on the module type
-    run_module(args.module, args.args)
+    ns = parser.parse_args()
+    run_module(ns.module, ns.args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass
