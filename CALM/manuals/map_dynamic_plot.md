@@ -28,9 +28,9 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
   disables smoothing (each video frame is that one frame, unaveraged).
 - `--spf` (default 0.2) - seconds per video frame.
 - `--minimum`, `--maximum` - fix the color scale's lower/upper bound. Both
-  must be given together; otherwise the scale is computed once from the
-  whole (unwindowed) trajectory, same as `CALM map plot`'s own auto scale,
-  and held fixed across every video frame so the color scale doesn't
+  must be given together; otherwise the scale spans every rolling window's
+  own averaged data (not just the full-trajectory average, which is
+  narrower) and is held fixed across every video frame so it doesn't
   flicker.
 - `--vectors` - overlay principal-direction vectors (`--mode principal`
   only).

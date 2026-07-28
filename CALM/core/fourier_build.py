@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import os
-import shlex
-import time
+import logging
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -13,13 +12,15 @@ import MDAnalysis as mda
 import numpy as np
 import threadpoolctl
 from MDAnalysis.lib.distances import distance_array
+from scipy import ndimage
 from scipy.spatial import ConvexHull, cKDTree
-from tqdm import tqdm
 
 from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
 from ..core.fourier_fit import fit_coefficients
 from ..core.leaflet import _label_by_z, apply_margin_filter, get_components, track_components
 from ..core.packing import median_multiple_threshold
+
+logger = logging.getLogger(__name__)
 
 
 class Rotation_and_Center_tracker:
@@ -211,6 +212,30 @@ def _grid_to_atom_distances(
     return distances.reshape(X.shape)
 
 
+def _close_enclosed_gaps(hole: np.ndarray) -> np.ndarray:
+    """Extend `hole` to include non-hole regions enclosed by hole cells, using periodic boundary connectivity.
+
+    Tiles the non-hole mask 3x3 to resolve periodic connectivity, then
+    marks a connected non-hole component as a hole when its pixels stay
+    entirely within the center tile (it never reaches, via wraparound,
+    into open area outside that one period).
+    """
+    valid = ~hole
+    H, W = valid.shape
+    tiled = np.tile(valid, (3, 3))
+    labeled, _ = ndimage.label(tiled)
+    center = labeled[H:2 * H, W:2 * W]
+
+    result = hole.copy()
+    for lab in np.unique(center):
+        if lab == 0:
+            continue
+        rows, cols = np.nonzero(labeled == lab)
+        if rows.min() >= H and rows.max() < 2 * H and cols.min() >= W and cols.max() < 2 * W:
+            result |= (center == lab)
+    return result
+
+
 def _hole_mask_for_layer(
     layer_group: mda.core.groups.AtomGroup,
     X: np.ndarray,
@@ -252,13 +277,14 @@ def _fourier_by_layer(
     Nx: int = 3,
     Ny: int = 3,
     regularize: bool = False,
+    diagnostics: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[Fourier_Series_Function, np.ndarray]:
     """Fit `layer_group`'s Fourier surface and return (fourier, q), q being the (qx, qy) meshgrid for its modes."""
     Lx = box_size[0]
     Ly = box_size[1]
     data_3m = layer_group.positions.T
     fourier = Fourier_Series_Function(Lx, Ly, Nx, Ny)
-    fourier.setAnm(fit_coefficients(data_3m, Lx, Ly, Nx, Ny, regularize=regularize))
+    fourier.setAnm(fit_coefficients(data_3m, Lx, Ly, Nx, Ny, regularize=regularize, diagnostics=diagnostics))
 
     M = fourier.Anm.shape[0]
     N = fourier.Anm.shape[1]
@@ -397,8 +423,17 @@ def _one_frame(
     sqrt_n_atoms: int = 100,
     remove_tmd: bool = False,
     regularize: bool = False,
-) -> None:
-    """Fit one frame's Fourier surfaces (and optional hole mask) and save its raw_sft output."""
+    tmd_far_multiple: float = 5.0,
+) -> Dict[str, object]:
+    """Fit one frame's Fourier surfaces (and optional hole mask) and save its raw_sft output.
+
+    Returns `{"frame": frame, "diagnostics": [(level, message), ...],
+    "hole_stats": {...} or None}` for the caller (`calc_fourier`, in the
+    main process) to log - this function runs inside a worker process, so
+    everything worth logging is collected here and handed back rather than
+    logged directly, keeping every write to the replay log single-process.
+    """
+    diagnostics: List[Tuple[str, str]] = []
     universe = _worker_state["universe"]
     layer_group = _worker_state["layer_group"]
     layer_group_2 = _worker_state["layer_group_2"]
@@ -422,7 +457,7 @@ def _one_frame(
         layer_group = universe.atoms[upper_index]
         layer_group_2 = universe.atoms[lower_index]
 
-    Nx, Ny = get_fourier_modes(dimensions[:3], lambda_x=Nx, lambda_y=Ny)
+    Nx, Ny = get_fourier_modes(dimensions[:3], lambda_x=Nx, lambda_y=Ny, diagnostics=diagnostics)
 
     q_angle = None
 
@@ -433,40 +468,68 @@ def _one_frame(
             rotation_and_center._get_vec(base=False)
             q_angle = rotation_and_center._get_rotation_angle()
 
-    fourier1, q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny, regularize=regularize)
-    fourier2, _ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny, regularize=regularize)
+    fourier1, q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny, regularize=regularize, diagnostics=diagnostics)
+    fourier2, _ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny, regularize=regularize, diagnostics=diagnostics)
     fouriermiddle = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
     fouriermiddle.setAnm(average_coefficients(fourier1.Anm, fourier2.Anm))
 
+    hole_stats: Optional[Dict[str, object]] = None
     if remove_tmd:
-        # Threshold per leaflet: the Nyquist term alone (_tmd_threshold)
-        # tracks the fit's chosen resolution, not the real lipid density,
-        # so it can be too loose when lambda_x/lambda_y is coarse. Capping
-        # it with median_multiple_threshold anchors sensitivity to how
-        # densely this leaflet's lipids are actually packed, computed on
-        # the same grid-to-atom distances it's applied to. k=1.0.
+        # One threshold shared by both leaflets. The Nyquist term
+        # (_tmd_threshold) reflects the fit's chosen resolution; capping it
+        # with median_multiple_threshold anchors it to how densely lipids
+        # are packed, using the larger of the two leaflets' own
+        # median-based candidates, which keeps the protein-proximity gate
+        # below equally permissive for both leaflets.
         Lx, Ly = dimensions[:3][0], dimensions[:3][1]
         nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
 
         dist_upper = _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly)
         dist_lower = _grid_to_atom_distances(layer_group_2.positions[:, :2], X, Y, Lx, Ly)
 
-        threshold_upper = min(nyquist, median_multiple_threshold(dist_upper, k=1.0))
-        threshold_lower = min(nyquist, median_multiple_threshold(dist_lower, k=1.0))
+        threshold = min(nyquist, max(
+            median_multiple_threshold(dist_upper, k=1),
+            median_multiple_threshold(dist_lower, k=1),
+        ))
+        far_threshold = threshold * tmd_far_multiple
 
-        # A grid point counts as a hole only if it is both unsupported by
-        # lipids (the distance test above) AND within the same threshold of
-        # a --center atom currently embedded in the membrane
-        # (_tmd_protein_atoms_xy) - corroborating evidence, not a
-        # replacement for the lipid-distance test. rotation_and_center is
-        # guaranteed not None here: argument_parser requires --center
-        # whenever --Remove-TMD is used.
+        # A grid point counts as a hole when it is unsupported by lipids
+        # (the distance test) and either within `threshold` of a --center
+        # atom currently embedded in the membrane (_tmd_protein_atoms_xy),
+        # or farther from any lipid than `far_threshold`.
+        # rotation_and_center is always a real tracker object here, since
+        # argument_parser requires --center whenever --Remove-TMD is used.
         tmd_xy = _tmd_protein_atoms_xy(rotation_and_center.sel1, universe, fourier1, fourier2)
         dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
 
-        hole_upper = (dist_upper > threshold_upper) & (dist_to_protein <= threshold_upper)
-        hole_lower = (dist_lower > threshold_lower) & (dist_to_protein <= threshold_lower)
+        near_protein = dist_to_protein <= threshold
+        hole_upper = (dist_upper > threshold) & (near_protein | (dist_upper > far_threshold))
+        hole_lower = (dist_lower > threshold) & (near_protein | (dist_lower > far_threshold))
+        n_before_upper = int(hole_upper.sum())
+        n_before_lower = int(hole_lower.sum())
+        hole_upper = _close_enclosed_gaps(hole_upper)
+        hole_lower = _close_enclosed_gaps(hole_lower)
         hole_mask = np.stack((hole_upper, hole_lower), axis=0)
+
+        # Breaks each leaflet's flagged points down by which rule flagged
+        # them, and how many more the enclosed-gap-closing pass added, so
+        # calc_fourier can log a concrete accounting of what --Remove-TMD
+        # did on this frame.
+        hole_stats = {
+            "n_grid": int(hole_upper.size),
+            "upper": {
+                "near_protein": int((near_protein & (dist_upper > threshold)).sum()),
+                "far_fallback_only": int(((dist_upper > far_threshold) & ~near_protein & (dist_upper > threshold)).sum()),
+                "closed_gap": int(hole_upper.sum()) - n_before_upper,
+                "total": int(hole_upper.sum()),
+            },
+            "lower": {
+                "near_protein": int((near_protein & (dist_lower > threshold)).sum()),
+                "far_fallback_only": int(((dist_lower > far_threshold) & ~near_protein & (dist_lower > threshold)).sum()),
+                "closed_gap": int(hole_lower.sum()) - n_before_lower,
+                "total": int(hole_lower.sum()),
+            },
+        }
 
     if q_angle is not None:
         q = _rotate_q(q, q_angle)
@@ -490,6 +553,8 @@ def _one_frame(
         filehole = raw_dir / f"{frame:0{num_digits}d}_hole_mask.npy"
         np.save(filehole, hole_mask)
 
+    return {"frame": frame, "diagnostics": diagnostics, "hole_stats": hole_stats}
+
 
 def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
     """Fit every selected frame's Fourier surfaces in parallel and save raw_sft output to args.out."""
@@ -501,13 +566,13 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
     else:
         Until = int(Until)
     if ndx is None:
-        exit("An index selection or file has to be supplied. Exiting.")
+        sys.exit("An index selection or file has to be supplied. Exiting.")
     try:
         ndx_groups = _read_ndx(ndx)
         dynamic_select = False
         dynamic_selection = None
     except FileNotFoundError:
-        print("INFO: The ndx file does not exist, it is assumed a selection was provided for dynamic components.")
+        logger.info("No ndx file found at the given --index path; treating it as a dynamic MDAnalysis selection instead.")
         dynamic_select = True
         dynamic_selection = ndx
         ndx_groups = None
@@ -547,8 +612,42 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
                     )
 
         futures = [ex.submit(fn, x) for x in frames]
+        hole_totals: Optional[Dict[str, object]] = None
         for future in futures:
-            future.result()  # surfaces exceptions raised in worker processes
+            result = future.result()  # surfaces exceptions raised in worker processes
+            frame_num = result["frame"]
+            for level, message in result["diagnostics"]:
+                log_fn = logger.warning if level == "warning" else logger.info
+                log_fn(f"frame {frame_num}: {message}")
+
+            stats = result["hole_stats"]
+            if stats is None:
+                continue
+            logger.info(
+                f"frame {frame_num}: --Remove-TMD flagged "
+                f"{stats['upper']['total']}/{stats['n_grid']} upper and "
+                f"{stats['lower']['total']}/{stats['n_grid']} lower grid points as holes "
+                f"(near-protein upper/lower: {stats['upper']['near_protein']}/{stats['lower']['near_protein']}, "
+                f"far-fallback-only upper/lower: {stats['upper']['far_fallback_only']}/{stats['lower']['far_fallback_only']}, "
+                f"enclosed gaps closed upper/lower: {stats['upper']['closed_gap']}/{stats['lower']['closed_gap']})"
+            )
+            if hole_totals is None:
+                hole_totals = {"n_grid": 0, "upper": {k: 0 for k in stats["upper"]}, "lower": {k: 0 for k in stats["lower"]}}
+            hole_totals["n_grid"] += stats["n_grid"]
+            for layer in ("upper", "lower"):
+                for key, value in stats[layer].items():
+                    hole_totals[layer][key] += value
+
+        if hole_totals is not None:
+            logger.info(
+                f"--Remove-TMD summary over {len(frames)} frames: "
+                f"upper holes {hole_totals['upper']['total']}/{hole_totals['n_grid']} "
+                f"({100 * hole_totals['upper']['total'] / hole_totals['n_grid']:.1f}%), "
+                f"lower holes {hole_totals['lower']['total']}/{hole_totals['n_grid']} "
+                f"({100 * hole_totals['lower']['total'] / hole_totals['n_grid']:.1f}%); "
+                f"enclosed gaps closed: upper {hole_totals['upper']['closed_gap']}, "
+                f"lower {hole_totals['lower']['closed_gap']}"
+            )
 
 
 if __name__ == "__main__":

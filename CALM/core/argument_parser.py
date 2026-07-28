@@ -1,11 +1,12 @@
 from __future__ import annotations
-from datetime import datetime
+
 import argparse
+import hashlib
 import logging
 import shlex
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
-
+from typing import Optional
 
 
 def default_replay_name(out_dir: str | None) -> str:
@@ -18,6 +19,15 @@ def default_replay_name(out_dir: str | None) -> str:
 def none_or_int(x: str) -> Optional[int]:
     # Enables faithful round-trip for --Until None
     return None if x.lower() == "none" else int(x)
+
+
+def _sha256_of_file(path: str, chunk_size: int = 2 ** 20) -> str:
+    """SHA-256 hex digest of the file at `path`, read in chunks to bound memory use for large trajectories."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_replay_args(path: str) -> list[str]:
@@ -43,6 +53,15 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
     out.append("")
     out.append(f"# Generated: {datetime.now().isoformat(timespec='seconds')}")
     out.append(f"# Working directory: {Path.cwd()}")
+
+    # Records what the run's -f/-s inputs actually were, so a later mismatch
+    # between this replay file and the input files on disk is detectable.
+    for dest, label in (("trajectory", "Trajectory"), ("structure", "Structure")):
+        input_path = getattr(ns, dest, None)
+        if input_path and Path(input_path).is_file():
+            out.append(f"# {label} file: {input_path}")
+            out.append(f"# {label} sha256: {_sha256_of_file(input_path)}")
+
     out.append("")
 
     # Separate optionals and positionals to preserve typical CLI ordering
@@ -163,6 +182,7 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out-replay", default=None, help="path to write this run's replay file")
     parser.add_argument('-W', '--Workers', default=1, type=int, help="parallel workers (default: 1)")
     parser.add_argument('-c', '--clear', default=False, action=argparse.BooleanOptionalAction, help="remove existing .npy files in --out before running")
+    parser.add_argument('--loud', default=False, action="store_true", help="also print info-level log messages to the console (default: only warnings/errors print; info-level messages still go to the replay log)")
 
 
 def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
@@ -186,6 +206,54 @@ def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespa
         parser.error("--rotation-direction requires --rotate")
 
 
+def _read_recorded_checksums(path: str) -> dict[str, str]:
+    """Sha256 checksums recorded in a replay file's header (see `write_replay_file`), keyed by 'trajectory'/'structure'."""
+    recorded: dict[str, str] = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        for label, dest in (("Trajectory", "trajectory"), ("Structure", "structure")):
+            prefix = f"# {label} sha256: "
+            if line.startswith(prefix):
+                recorded[dest] = line[len(prefix):].strip()
+    return recorded
+
+
+def _verify_replay_checksums(replay_path: str, ns: argparse.Namespace) -> None:
+    """Interactively confirm before continuing if a replayed run's -f/-s files no longer match the checksums recorded in `replay_path`.
+
+    Requires a 'y'/'yes' answer on stdin to proceed; anything else
+    (including no stdin to read, e.g. a non-interactive batch job) aborts
+    the run, so a silently changed input file can't produce a result that
+    looks like a faithful replay but isn't.
+    """
+    recorded = _read_recorded_checksums(replay_path)
+    if not recorded:
+        return
+
+    mismatched = []
+    for dest, label in (("trajectory", "Trajectory"), ("structure", "Structure")):
+        recorded_hash = recorded.get(dest)
+        current_path = getattr(ns, dest, None)
+        if recorded_hash is None or not current_path or not Path(current_path).is_file():
+            continue
+        if _sha256_of_file(current_path) != recorded_hash:
+            mismatched.append((label, current_path))
+
+    if not mismatched:
+        return
+
+    print(f"WARNING: replaying {replay_path}, but the following input file(s) no longer match its recorded checksum:")
+    for label, path in mismatched:
+        print(f"  {label}: {path}")
+
+    try:
+        answer = input("Continue with these changed input files anyway? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+
+    if answer not in ("y", "yes"):
+        raise SystemExit("Aborted: replayed input file(s) changed since the replay file was recorded.")
+
+
 def apply_replay(parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, remaining: list[str]) -> argparse.Namespace:
     """Re-parse args with any --replay file's tokens prepended (so
     user-supplied CLI args on top of a replay still take priority)."""
@@ -194,7 +262,12 @@ def apply_replay(parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, re
         replayed = load_replay_args(pre_ns.replay)
 
     combined_argv = replayed + remaining
-    return parser.parse_args(combined_argv)
+    ns = parser.parse_args(combined_argv)
+
+    if pre_ns.replay:
+        _verify_replay_checksums(pre_ns.replay, ns)
+
+    return ns
 
 
 class _CommentedLogFormatter(logging.Formatter):
@@ -207,21 +280,37 @@ class _CommentedLogFormatter(logging.Formatter):
         return "\n".join(f"# {line}" for line in message.splitlines())
 
 
-def attach_replay_log_handler(replay_path: str, logger_name: str = "MDAnalysis", level: int = logging.INFO) -> logging.Handler:
-    """Append `logger_name`'s log records (default: MDAnalysis's own
-    logging, at INFO and above) to the replay file as '#'-prefixed comment
-    lines, so replaying the file later never tries to execute log text as
-    CLI arguments. Disables propagation to the root logger so these records
-    go *only* to the replay file, not also to the console."""
+def attach_replay_log_handler(
+    replay_path: str,
+    logger_name: str = "MDAnalysis",
+    level: int = logging.INFO,
+    console_level: Optional[int] = None,
+) -> logging.Handler:
+    """Append `logger_name`'s log records (default: MDAnalysis's own logging,
+    at INFO and above) to the replay file as '#'-prefixed comment lines, so
+    replaying the file later parses them as comments rather than CLI
+    arguments. When `console_level` is given, records at that level and
+    above are also printed to the console via a second handler; records
+    below it are recorded in the replay file alone. Handles propagation to
+    the root logger itself here rather than through any other configuration,
+    so `logger_name`'s records are handled exactly once, by these handlers."""
     handler = logging.FileHandler(replay_path, mode="a", encoding="utf-8")
     handler.setLevel(level)
     handler.setFormatter(_CommentedLogFormatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
 
     target_logger = logging.getLogger(logger_name)
     target_logger.addHandler(handler)
+
+    if console_level is not None:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(console_level)
+        console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        target_logger.addHandler(console_handler)
+
     target_logger.propagate = False
-    if target_logger.level == logging.NOTSET or target_logger.level > level:
-        target_logger.setLevel(level)
+    effective_level = min(level, console_level) if console_level is not None else level
+    if target_logger.level == logging.NOTSET or target_logger.level > effective_level:
+        target_logger.setLevel(effective_level)
 
     return handler
 

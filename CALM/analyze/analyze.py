@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -12,6 +13,8 @@ from ..core.curvature import shape_operator_curvatures
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
 from ..core.fourier_sft import SFT
 from ..core.rotation import recover_rotation_angle, rotated_grid
+
+logger = logging.getLogger(__name__)
 
 
 def circle_cutter(arr: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
@@ -176,7 +179,7 @@ def analysis(
 
                     np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
                 except ValueError:
-                    print("Thickness could not be calculated. That could be an indication that the curvature is too high or that lambdas are too small.")
+                    logger.warning(f"frame {frame}: thickness could not be calculated - this can indicate the curvature is too high or lambda_x/lambda_y are too small.")
 
         if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
             # H, K, k1, k2 are rotation-invariant scalars: evaluating at

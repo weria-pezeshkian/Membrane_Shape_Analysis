@@ -45,8 +45,6 @@ def sft(args: List[str]) -> None:
     ns = parser.parse_args(args)
     arg_helper.validate_rotation_args(parser, ns)
 
-    logging.basicConfig(level=logging.INFO)
-
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
 
     if ns.trajectory is None or ns.structure is None:
@@ -56,7 +54,11 @@ def sft(args: List[str]) -> None:
 
     replay_path = ns.out_replay or arg_helper.default_replay_name(ns.out)
     arg_helper.write_replay_file(replay_path, parser, ns)
-    arg_helper.attach_replay_log_handler(replay_path)
+    arg_helper.attach_replay_log_handler(replay_path, logger_name="MDAnalysis")
+    arg_helper.attach_replay_log_handler(
+        replay_path, logger_name="CALM",
+        console_level=logging.INFO if ns.loud else logging.WARNING,
+    )
 
     if ns.clear:
         for filename in os.listdir(ns.out):
@@ -64,7 +66,7 @@ def sft(args: List[str]) -> None:
                 file_path = os.path.join(ns.out, filename)
                 try:
                     os.remove(file_path)
-                except Exception as e:
+                except OSError as e:
                     print(f"Error deleting {file_path}: {e}")
 
     try:

@@ -112,15 +112,15 @@ def _trajectory_hole_union(
 ) -> tuple:
     """Per-layer (upper, lower) mask, True where a grid point was unsupported by the fit (--Remove-TMD) in ANY visualized frame.
 
-    Atom names are set once for the whole topology, not per frame, so a
-    hole that only shows up in some frames (e.g. a moving TMD) still needs
-    marking for the whole trajectory - the union, not any single frame's
-    mask.
+    Atom names are set once for the whole topology, not per frame, so this
+    unions every visualized frame's hole mask into one mask that marks the
+    whole trajectory: a point flagged in even a single frame (e.g. a
+    moving TMD passing over it) stays marked for the whole video.
 
     Rotation-aware (per-frame lookup via `lookup_mask_at_rotated_grid`) if
     --rotate was used: `hole_mask` was computed on the unrotated, as-fit
-    grid at build time, and must be remapped onto each frame's rotated
-    output grid before use (see `map/plot.py` for the same pattern).
+    grid at build time, and is remapped onto each frame's rotated output
+    grid before use.
     """
     rotate = rotation_was_used(sft)
     thetas = recover_all_rotation_angles(sft) if rotate else None
@@ -156,17 +156,17 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: Optional[SFT] =
 
     Grid points that are NaN in any frame (e.g. outside the inscribed
     circle after --rotate's `circle_cutter` masking) are dropped from the
-    atom count entirely, rather than written as NaN coordinates, which
-    MDAnalysis's GRO writer rejects. Since which points are NaN can differ
-    per frame (box size can drift under NPT), a trajectory's fixed atom
-    count uses the intersection of every frame's valid points.
+    atom count entirely, so MDAnalysis's GRO writer always receives real
+    coordinates. A trajectory's fixed atom count uses the intersection of
+    every frame's valid points, since which points are NaN can differ per
+    frame (box size can drift under NPT).
 
     If `sft` is given and has a hole_mask (--Remove-TMD was used to
     build), grid points with no real fitting support in any frame (see
     `_trajectory_hole_union`) are kept but renamed from atom name "C" to
     "S", so they can be filtered out in VMD with "not name S" without
-    changing the atom count. Z_fitted's values are never altered for
-    holes either way, only the atom name.
+    changing the atom count. Z_fitted's values are copied unchanged either
+    way; only the atom name differs.
     """
     dim_file = os.path.join(curvature_dir, "dimensions.csv")
     box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1,
@@ -201,8 +201,8 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: Optional[SFT] =
         return np.vstack([
             np.column_stack([X_valid,
                              Y_valid,
-                             z_array[l][valid]])
-            for l in range(n_layers)
+                             z_array[layer][valid]])
+            for layer in range(n_layers)
         ])
 
     z_values = np.load(z_files[0]) * 10
@@ -223,9 +223,9 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: Optional[SFT] =
         upper_union, lower_union = _trajectory_hole_union(sft, z_files, (Nx, Ny))
         hole_by_layer = [upper_union, lower_union, upper_union | lower_union][:n_layers]
         name_blocks = []
-        for l in range(n_layers):
+        for layer in range(n_layers):
             block = np.full(n_valid, "C", dtype="<U1")
-            block[hole_by_layer[l][valid]] = "S"
+            block[hole_by_layer[layer][valid]] = "S"
             name_blocks.append(block)
         u.atoms.names = np.concatenate(name_blocks).tolist()
     else:

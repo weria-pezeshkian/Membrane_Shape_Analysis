@@ -1,17 +1,26 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
 
 def get_fourier_modes(
-    box_size: Sequence[float], lambda_x: Optional[float] = None, lambda_y: Optional[float] = None
+    box_size: Sequence[float],
+    lambda_x: Optional[float] = None,
+    lambda_y: Optional[float] = None,
+    diagnostics: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[int, int]:
     """Mode counts (Nx, Ny) for a box, from wavelength scales lambda_x/lambda_y (nm).
 
     Nx = int(Lx / (lambda_x * 10)), floored to 1; Ny likewise. Defaults to
     (3, 3) if a wavelength isn't given.
+
+    Runs inside a per-frame worker process (via `_one_frame`). When
+    `diagnostics` is given, a `(level, message)` pair is appended to it
+    whenever Nx or Ny had to be floored to 1; the caller collects these
+    across frames and logs them once back in the main process, keeping
+    every write to the replay log single-process.
     """
     Lx, Ly = box_size[:2]
 
@@ -22,7 +31,8 @@ def get_fourier_modes(
         Nx = int(Lx / lambda_x_A)
         if Nx == 0:
             Nx = 1
-            print("WARNING: lambda_x is too large, leading to an Nx of 0, corrected to Nx = 1")
+            if diagnostics is not None:
+                diagnostics.append(("warning", "lambda_x is too large for this box (Nx would be 0) - corrected to Nx=1"))
 
     if lambda_y is None:
         Ny = 3
@@ -31,7 +41,8 @@ def get_fourier_modes(
         Ny = int(Ly / lambda_y_A)
         if Ny == 0:
             Ny = 1
-            print("WARNING: lambda_y is too large, leading to an Ny of 0, corrected to Ny = 1")
+            if diagnostics is not None:
+                diagnostics.append(("warning", "lambda_y is too large for this box (Ny would be 0) - corrected to Ny=1"))
     return Nx, Ny
 
 

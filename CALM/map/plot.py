@@ -55,11 +55,17 @@ def _frame_filtered_glob(pattern_path: str, frame_numbers: Optional[Iterable[int
 
 
 def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> Tuple[np.ndarray, np.ndarray]:
-    """(upper, lower) hole masks for one frame, remapped onto the output grid if theta != 0."""
+    """(upper, lower) hole masks for one frame, remapped onto the output grid if theta != 0.
+
+    Callers only reach this once they've already confirmed `sft.hole_mask
+    is not None`; the assert documents and enforces that precondition.
+    """
+    assert sft.hole_mask is not None
     upper, lower = sft.hole_mask[frame_idx]
     if theta == 0.0:
         return upper, lower
 
+    assert sft.dimensions is not None
     Lx, Ly = sft.dimensions[frame_idx, 0], sft.dimensions[frame_idx, 1]
     gridsize = upper.shape[0]
     x = np.linspace(0, Lx, gridsize, endpoint=False)
@@ -86,24 +92,23 @@ def _load_and_mask(
     axis 0, each "upper", "lower", "union", or None (skip that layer).
 
     Uses a plain np.mean, not np.nanmean: a NaN at a given point in any one
-    frame makes the averaged point NaN too, rather than silently averaging
-    over whichever frames had data there.
+    frame makes the averaged point NaN too.
     """
     if not files:
         raise FileNotFoundError(f"No files matching '{pattern}' found in {Dir}")
 
-    have_holes = sft is not None and sft.hole_mask is not None
-    thetas = recover_all_rotation_angles(sft) if have_holes and rotation_was_used(sft) else None
+    sft_with_holes = sft if (sft is not None and sft.hole_mask is not None) else None
+    thetas = recover_all_rotation_angles(sft_with_holes) if sft_with_holes is not None and rotation_was_used(sft_with_holes) else None
 
     frames = []
     for f in files:
         arr = np.load(f)
-        if have_holes:
-            matches = np.nonzero(sft.frame_indices == _frame_number(f))[0]
+        if sft_with_holes is not None:
+            matches = np.nonzero(sft_with_holes.frame_indices == _frame_number(f))[0]
             if matches.size:
                 idx = matches[0]
                 theta = thetas[idx] if thetas is not None else 0.0
-                upper_hole, lower_hole = _hole_masks_for_frame(sft, idx, theta)
+                upper_hole, lower_hole = _hole_masks_for_frame(sft_with_holes, idx, theta)
                 union_hole = upper_hole | lower_hole
                 arr = arr.copy()
                 if layer_sources is None:

@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 from ..core.fourier_sft import SFT
 from ..core.manual import add_manual
@@ -30,22 +31,37 @@ def _available_frame_numbers(Dir: str, mode: str) -> List[int]:
 
 
 def _windows(frame_numbers: List[int], window: int) -> List[List[int]]:
-    """One centered window (of frame numbers) per entry in `frame_numbers`.
+    """One `window`-sized window (list of frame numbers) per entry in `frame_numbers`, built by position.
 
-    Windows are built by position in `frame_numbers`, not by numeric
-    distance, so a strided/gapped sequence still averages the N nearest
-    computed frames rather than however many happen to fall within a
-    numeric range. Windows shrink at the sequence's edges. `window` is
-    clamped to at least 1.
+    Position-based (rather than raw frame-number distance) so a
+    strided/gapped sequence averages the N nearest computed frames. Edge
+    entries share the same boundary window.
     """
-    window = max(1, int(window))
-    half = window // 2
     n = len(frame_numbers)
-    return [frame_numbers[max(0, i - half):min(n, i + half + 1)] for i in range(n)]
+    window = max(1, min(int(window), n))
+    half = window // 2
+    result = []
+    for i in range(n):
+        lo = i - half
+        hi = lo + window
+        if lo < 0:
+            lo, hi = 0, window
+        elif hi > n:
+            lo, hi = n - window, n
+        result.append(frame_numbers[lo:hi])
+    return result
 
 
-def _auto_minmax(Dir: str, mode: str) -> Tuple[float, float]:
-    """The same auto color-scale draw() derives when minmax is None, computed over the full (unwindowed) trajectory."""
+def _windowed_minmax(Dir: str, mode: str, windows: List[List[int]]) -> Tuple[float, float]:
+    """Color-scale range spanning every rolling window's averaged data, excluding grid points NaN in the full-trajectory average.
+
+    A grid point NaN'd by a hole mask in even one frame across the whole
+    trajectory poisons the full-trajectory average at that point (plain
+    np.mean, not nanmean - see _load_and_mask). A shorter window may not
+    include that particular frame, so the point isn't NaN there and can
+    still report a value - but one that's on the same unreliable point, so
+    it's excluded from the scale here too.
+    """
     if not Dir.endswith("/"):
         Dir += "/"
     try:
@@ -57,10 +73,18 @@ def _auto_minmax(Dir: str, mode: str) -> Tuple[float, float]:
     layer_sources = None if mode == "thickness" else (
         ["upper", "upper", "lower", "lower", "union", "union"] if mode == "principal" else ["upper", "lower", "union"]
     )
-    arr = _load_and_mask(_frame_filtered_glob(Dir + pattern, None), pattern, Dir, sft, layer_sources)
-    valid = arr[~np.isnan(arr)]
 
-    Minimum, Maximum = float(valid.min()), float(valid.max())
+    full_avg = _load_and_mask(_frame_filtered_glob(Dir + pattern, None), pattern, Dir, sft, layer_sources)
+    exclude = np.isnan(full_avg)
+
+    Minimum, Maximum = np.inf, -np.inf
+    for win in windows:
+        arr = _load_and_mask(_frame_filtered_glob(Dir + pattern, win), pattern, Dir, sft, layer_sources)
+        valid = arr[~exclude & ~np.isnan(arr)]
+        if valid.size:
+            Minimum = min(Minimum, float(valid.min()))
+            Maximum = max(Maximum, float(valid.max()))
+
     if Minimum == Maximum:
         Maximum = Minimum + 1e-6
     return Minimum, Maximum
@@ -85,17 +109,17 @@ def draw_dynamic(
     if mode not in _MODE_PATTERNS:
         raise ValueError("mode must be 'mean', 'gaussian', 'principal', or 'thickness'")
 
-    fixed_minmax = list(minmax) if minmax is not None else list(_auto_minmax(Dir, mode))
-
     frame_numbers = _available_frame_numbers(Dir, mode)
     if not frame_numbers:
         raise FileNotFoundError(f"No frames found for mode '{mode}' in {Dir}")
     windows = _windows(frame_numbers, window)
 
+    fixed_minmax = list(minmax) if minmax is not None else list(_windowed_minmax(Dir, mode, windows))
+
     tmp_dir = tempfile.mkdtemp(prefix="dynamic_plot_")
     try:
         frame_paths = []
-        for i, win in enumerate(windows):
+        for i, win in tqdm(enumerate(windows),total=len(windows)):
             frame_path = os.path.join(tmp_dir, f"frame_{i:06d}.png")
             draw(
                 Dir, mode=mode, minmax=fixed_minmax, filename=frame_path,

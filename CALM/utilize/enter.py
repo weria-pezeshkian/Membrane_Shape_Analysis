@@ -5,6 +5,7 @@ import sys
 from importlib.metadata import version
 
 from CALM.utilize.write_ndx import write_ndx
+
 from ..core.manual import add_manual
 from .get_vmd_visualization import write_xtc
 
