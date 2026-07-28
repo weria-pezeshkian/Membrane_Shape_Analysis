@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 
 
 def get_fourier_modes(
     box_size: Sequence[float],
-    lambda_x: Optional[float] = None,
-    lambda_y: Optional[float] = None,
-    diagnostics: Optional[List[Tuple[str, str]]] = None,
-) -> Tuple[int, int]:
+    lambda_x: float | None = None,
+    lambda_y: float | None = None,
+    diagnostics: list[tuple[str, str]] | None = None,
+) -> tuple[int, int]:
     """Mode counts (Nx, Ny) for a box, from wavelength scales lambda_x/lambda_y (nm).
 
     Nx = int(Lx / (lambda_x * 10)), floored to 1; Ny likewise. Defaults to
@@ -32,7 +32,9 @@ def get_fourier_modes(
         if Nx == 0:
             Nx = 1
             if diagnostics is not None:
-                diagnostics.append(("warning", "lambda_x is too large for this box (Nx would be 0) - corrected to Nx=1"))
+                diagnostics.append((
+                    "warning", "lambda_x is too large for this box (Nx would be 0) - corrected to Nx=1"
+                ))
 
     if lambda_y is None:
         Ny = 3
@@ -42,7 +44,9 @@ def get_fourier_modes(
         if Ny == 0:
             Ny = 1
             if diagnostics is not None:
-                diagnostics.append(("warning", "lambda_y is too large for this box (Ny would be 0) - corrected to Ny=1"))
+                diagnostics.append((
+                    "warning", "lambda_y is too large for this box (Ny would be 0) - corrected to Ny=1"
+                ))
     return Nx, Ny
 
 
@@ -62,7 +66,9 @@ class Fourier_Series_Function:
         self.Anm = Anm
 
     def Z(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        g = 0
+        # np.cos/np.sin always produce float64 terms, so the accumulator is
+        # forced to dtype=float here to match, independent of x's own dtype.
+        g = np.zeros_like(x, dtype=float)
         for i in range(-self.Nx, self.Nx + 1):
             for j in range(-self.Ny, self.Ny + 1):
                 idx_i = i + self.Nx

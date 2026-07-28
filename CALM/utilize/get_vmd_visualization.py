@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import glob
 import os
-from typing import List, Optional
 
 import MDAnalysis as mda
 import numpy as np
@@ -36,6 +35,7 @@ def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
         return False
 
     thetas = recover_all_rotation_angles(sft)
+    assert sft.dimensions is not None
     cx = sft.dimensions[:, 0] / 2.0
     cy = sft.dimensions[:, 1] / 2.0
     radius = fixed_circle_radius(sft)
@@ -63,7 +63,8 @@ def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
         "",
         "set nf [molinfo $molid get numframes]",
         'if {$nf != [llength $frame_theta_deg]} {',
-        '    puts "WARNING: molecule has $nf frames but this script has [llength $frame_theta_deg] - check your -F/-S/-U match the analyze run."',
+        '    puts "WARNING: molecule has $nf frames but this script has '
+        '[llength $frame_theta_deg] - check your -F/-S/-U match the analyze run."',
         "}",
         "",
         "# Representation restricted to the shared circle. selupdate isn't enough",
@@ -94,7 +95,8 @@ def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
         '    mol modselect $repid $molid "same residue as (sqr(x-$cx)+sqr(y-$cy) <= sqr($radius))"',
         "}",
         "",
-        'puts "Done: rotated all atoms for $nf frames; representation $repid shows residues within radius $radius of each frame\'s own box center."',
+        'puts "Done: rotated all atoms for $nf frames; representation $repid shows '
+        'residues within radius $radius of each frame\'s own box center."',
     ]
 
     with open(out_path, "w", encoding="utf-8") as f:
@@ -108,9 +110,10 @@ def _frame_number(path: str) -> int:
 
 
 def _trajectory_hole_union(
-    sft: SFT, z_files: List[str], grid_shape: tuple
+    sft: SFT, z_files: list[str], grid_shape: tuple
 ) -> tuple:
-    """Per-layer (upper, lower) mask, True where a grid point was unsupported by the fit (--Remove-TMD) in ANY visualized frame.
+    """Per-layer (upper, lower) mask, True where a grid point was unsupported
+    by the fit (--Remove-TMD) in ANY visualized frame.
 
     Atom names are set once for the whole topology, not per frame, so this
     unions every visualized frame's hole mask into one mask that marks the
@@ -128,6 +131,8 @@ def _trajectory_hole_union(
     upper_union = np.zeros(grid_shape, dtype=bool)
     lower_union = np.zeros(grid_shape, dtype=bool)
 
+    assert sft.frame_indices is not None
+    assert sft.hole_mask is not None
     for z_file in z_files:
         matches = np.nonzero(sft.frame_indices == _frame_number(z_file))[0]
         if not matches.size:
@@ -136,6 +141,8 @@ def _trajectory_hole_union(
         upper, lower = sft.hole_mask[idx]
 
         if rotate:
+            assert sft.dimensions is not None
+            assert thetas is not None
             Lx, Ly = sft.dimensions[idx, 0], sft.dimensions[idx, 1]
             gridsize = upper.shape[0]
             x = np.linspace(0, Lx, gridsize, endpoint=False)
@@ -151,7 +158,7 @@ def _trajectory_hole_union(
     return upper_union, lower_union
 
 
-def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: Optional[SFT] = None) -> None:
+def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = None) -> None:
     """Build a pseudo-universe from *_Z_fitted.npy files; write GRO (first frame), XTC trajectory, and average GRO.
 
     Grid points that are NaN in any frame (e.g. outside the inscribed
@@ -258,7 +265,7 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: Optional[SFT] =
     u.atoms.write(avg_gro_path)
 
 
-def write_xtc(args: List[str]) -> None:
+def write_xtc(args: list[str]) -> None:
     """CLI entry: export a 'CALM analyze full' run's fitted surface as GRO + XTC for VMD."""
     parser = argparse.ArgumentParser(description="Export the fitted surface as a GRO + XTC trajectory for VMD")
     parser.add_argument("-i", "--input", help="directory with *_Z_fitted.npy and dimensions.csv")

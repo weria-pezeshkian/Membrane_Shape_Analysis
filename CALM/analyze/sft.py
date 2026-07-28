@@ -5,7 +5,6 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import List
 
 import MDAnalysis as mda
 
@@ -28,7 +27,7 @@ def build_sft(args: argparse.Namespace, universe: mda.Universe) -> SFT:
     return built
 
 
-def sft(args: List[str]) -> None:
+def sft(args: list[str]) -> None:
     """CLI entry: build and save the SFT (A_mn/q_mn/dimensions) from a
     trajectory. This is the starting point for 'CALM analyze full' and,
     eventually, 'CALM calibrate'."""

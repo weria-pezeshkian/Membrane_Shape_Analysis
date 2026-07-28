@@ -8,7 +8,9 @@ import pytest
 from CALM.core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
 
 
-def make_surface(Nx: int = 2, Ny: int = 2, Lx: float = 100.0, Ly: float = 80.0, seed: int = 0) -> Fourier_Series_Function:
+def make_surface(
+    Nx: int = 2, Ny: int = 2, Lx: float = 100.0, Ly: float = 80.0, seed: int = 0
+) -> Fourier_Series_Function:
     rng = np.random.default_rng(seed)
     f = Fourier_Series_Function(Lx, Ly, Nx, Ny)
     f.setAnm(rng.uniform(-1.0, 1.0, size=f.Anm.shape))

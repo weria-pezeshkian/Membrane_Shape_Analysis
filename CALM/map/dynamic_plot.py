@@ -4,7 +4,6 @@ import argparse
 import os
 import shutil
 import tempfile
-from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -22,7 +21,7 @@ _MODE_PATTERNS = {
 }
 
 
-def _available_frame_numbers(Dir: str, mode: str) -> List[int]:
+def _available_frame_numbers(Dir: str, mode: str) -> list[int]:
     """Sorted, de-duplicated frame numbers with saved output for `mode`."""
     if not Dir.endswith("/"):
         Dir += "/"
@@ -30,7 +29,7 @@ def _available_frame_numbers(Dir: str, mode: str) -> List[int]:
     return sorted({_frame_number(f) for f in files})
 
 
-def _windows(frame_numbers: List[int], window: int) -> List[List[int]]:
+def _windows(frame_numbers: list[int], window: int) -> list[list[int]]:
     """One `window`-sized window (list of frame numbers) per entry in `frame_numbers`, built by position.
 
     Position-based (rather than raw frame-number distance) so a
@@ -52,8 +51,9 @@ def _windows(frame_numbers: List[int], window: int) -> List[List[int]]:
     return result
 
 
-def _windowed_minmax(Dir: str, mode: str, windows: List[List[int]]) -> Tuple[float, float]:
-    """Color-scale range spanning every rolling window's averaged data, excluding grid points NaN in the full-trajectory average.
+def _windowed_minmax(Dir: str, mode: str, windows: list[list[int]]) -> tuple[float, float]:
+    """Color-scale range spanning every rolling window's averaged data,
+    excluding grid points NaN in the full-trajectory average.
 
     A grid point NaN'd by a hole mask in even one frame across the whole
     trajectory poisons the full-trajectory average at that point (plain
@@ -96,7 +96,7 @@ def draw_dynamic(
     out_gif: str = "dynamic.gif",
     window: int = 5,
     spf: float = 0.2,
-    minmax: Optional[List[float]] = None,
+    minmax: list[float] | None = None,
     show_vectors: bool = True,
 ) -> None:
     """Render a GIF: one frame per trajectory frame, each a rolling-window average of nearby frames.
@@ -128,19 +128,29 @@ def draw_dynamic(
             frame_paths.append(frame_path)
 
         duration_ms = max(20, int(round(spf * 1000)))  # >= 20ms to avoid viewer clamping to 0
-        images = [Image.open(p).convert("P", palette=Image.ADAPTIVE, colors=256) for p in frame_paths]
+        images = [Image.open(p).convert("P", palette=Image.Palette.ADAPTIVE, colors=256) for p in frame_paths]
         images[0].save(out_gif, save_all=True, append_images=images[1:],
                       duration=duration_ms, loop=0, optimize=False, disposal=2)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def dynamic_plot(argv: List[str]) -> None:
-    """CLI entry: render a rolling-window-averaged curvature/thickness video from a 'CALM analyze full' output directory."""
+def dynamic_plot(argv: list[str]) -> None:
+    """CLI entry: render a rolling-window-averaged curvature/thickness video
+    from a 'CALM analyze full' output directory."""
     parser = argparse.ArgumentParser(description="Render a rolling-window-averaged curvature/thickness video")
-    parser.add_argument('-i', '--numpys_directory', type=str, required=True, help="'CALM analyze full' output directory")
-    parser.add_argument('--mode', choices=["mean", "gaussian", "principal", "thickness"], default="mean", help="quantity to plot (default: mean)")
-    parser.add_argument('-o', '--outfile', type=str, default="dynamic.gif", help="output GIF path (default: dynamic.gif)")
+    parser.add_argument(
+        '-i', '--numpys_directory', type=str, required=True,
+        help="'CALM analyze full' output directory",
+    )
+    parser.add_argument(
+        '--mode', choices=["mean", "gaussian", "principal", "thickness"], default="mean",
+        help="quantity to plot (default: mean)",
+    )
+    parser.add_argument(
+        '-o', '--outfile', type=str, default="dynamic.gif",
+        help="output GIF path (default: dynamic.gif)",
+    )
     parser.add_argument('--window', type=int, default=5, help="rolling window size in frames (default: 5)")
     parser.add_argument('--spf', type=float, default=0.2, help="seconds per video frame (default: 0.2)")
     parser.add_argument('--minimum', type=float, default=None, help="fix the color scale's lower bound")

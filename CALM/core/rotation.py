@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -42,8 +42,10 @@ def recover_rotation_angle(
     )
 
 
-def recover_all_rotation_angles(sft: "SFT") -> np.ndarray:
+def recover_all_rotation_angles(sft: SFT) -> np.ndarray:
     """`recover_rotation_angle` for every frame in an SFT with q_mn/dimensions loaded."""
+    assert sft.q_mn is not None
+    assert sft.dimensions is not None
     n_frames, _, M, N = sft.q_mn.shape
     Nx = (M - 1) // 2
     Ny = (N - 1) // 2
@@ -53,7 +55,7 @@ def recover_all_rotation_angles(sft: "SFT") -> np.ndarray:
     ])
 
 
-def rotation_was_used(sft: "SFT", tolerance: float = ROTATION_ANGLE_TOLERANCE) -> bool:
+def rotation_was_used(sft: SFT, tolerance: float = ROTATION_ANGLE_TOLERANCE) -> bool:
     """Whether --rotate was used to build this SFT.
 
     q_mn is always saved regardless of --rotate (see `_one_frame` in
@@ -64,7 +66,7 @@ def rotation_was_used(sft: "SFT", tolerance: float = ROTATION_ANGLE_TOLERANCE) -
     return bool(np.any(np.abs(recover_all_rotation_angles(sft)) > tolerance))
 
 
-def fixed_circle_radius(sft: "SFT") -> float:
+def fixed_circle_radius(sft: SFT) -> float:
     """Radius of the largest same-centered circle that fits inside every frame's box.
 
     Box size can drift per frame (NPT); each frame's own circle radius is
@@ -72,12 +74,13 @@ def fixed_circle_radius(sft: "SFT") -> float:
     `analyze/analyze.py`). Since all such circles share the same center,
     the region valid across every frame is the smallest of these radii.
     """
+    assert sft.dimensions is not None
     return float(np.min(np.minimum(sft.dimensions[:, 0], sft.dimensions[:, 1])) / 2.0)
 
 
 def rotated_grid(
     X: np.ndarray, Y: np.ndarray, cx: float, cy: float, angle: float
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Map output grid point (X, Y) to the as-fit coordinates it corresponds to under rotation.
 
     This is the one rotation mechanism used throughout CALM: fitted data

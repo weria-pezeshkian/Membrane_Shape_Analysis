@@ -5,8 +5,8 @@ import glob
 import logging
 import os
 import warnings
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
 
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
@@ -34,7 +34,7 @@ def normalize(v: np.ndarray) -> np.ndarray:
     return np.divide(v, norm, where=norm > 0)
 
 
-def get_XY(box_size: np.ndarray, gridsize: int) -> Tuple[np.ndarray, np.ndarray]:
+def get_XY(box_size: np.ndarray, gridsize: int) -> tuple[np.ndarray, np.ndarray]:
     x = np.linspace(0, box_size[0], gridsize)
     y = np.linspace(0, box_size[1], gridsize)
     X, Y = np.meshgrid(x, y)
@@ -45,7 +45,7 @@ def _frame_number(path: str) -> int:
     return int(Path(path).stem.split("_")[0])
 
 
-def _frame_filtered_glob(pattern_path: str, frame_numbers: Optional[Iterable[int]]) -> List[str]:
+def _frame_filtered_glob(pattern_path: str, frame_numbers: Iterable[int] | None) -> list[str]:
     """Sorted glob of `pattern_path`, kept to files whose frame number is in `frame_numbers` (all, if None)."""
     files = sorted(glob.glob(pattern_path))
     if frame_numbers is None:
@@ -54,7 +54,7 @@ def _frame_filtered_glob(pattern_path: str, frame_numbers: Optional[Iterable[int
     return [f for f in files if _frame_number(f) in keep]
 
 
-def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> Tuple[np.ndarray, np.ndarray]:
+def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> tuple[np.ndarray, np.ndarray]:
     """(upper, lower) hole masks for one frame, remapped onto the output grid if theta != 0.
 
     Callers only reach this once they've already confirmed `sft.hole_mask
@@ -78,11 +78,11 @@ def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> Tuple[np.nd
 
 
 def _load_and_mask(
-    files: List[str],
+    files: list[str],
     pattern: str,
     Dir: str,
-    sft: Optional[SFT],
-    layer_sources: Optional[List[Optional[str]]],
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
 ) -> np.ndarray:
     """Load and mean-average a set of per-frame .npy files, applying the (optional) hole mask per frame first.
 
@@ -98,12 +98,15 @@ def _load_and_mask(
         raise FileNotFoundError(f"No files matching '{pattern}' found in {Dir}")
 
     sft_with_holes = sft if (sft is not None and sft.hole_mask is not None) else None
-    thetas = recover_all_rotation_angles(sft_with_holes) if sft_with_holes is not None and rotation_was_used(sft_with_holes) else None
+    thetas = None
+    if sft_with_holes is not None and rotation_was_used(sft_with_holes):
+        thetas = recover_all_rotation_angles(sft_with_holes)
 
     frames = []
     for f in files:
         arr = np.load(f)
         if sft_with_holes is not None:
+            assert sft_with_holes.frame_indices is not None
             matches = np.nonzero(sft_with_holes.frame_indices == _frame_number(f))[0]
             if matches.size:
                 idx = matches[0]
@@ -129,11 +132,11 @@ def draw(
     layer1: str = "Upper",
     layer2: str = "Lower",
     layer3: str = "Middle",
-    minmax: Optional[List[float]] = None,
+    minmax: list[float] | None = None,
     filename: str = "",
     show_vectors: bool = True,
     title_pad: int = 12,
-    frame_numbers: Optional[Iterable[int]] = None,
+    frame_numbers: Iterable[int] | None = None,
 ) -> None:
     """Render mean curvature or thickness.
 
@@ -169,7 +172,10 @@ def draw(
             contour_set.set_clip_path(circle)
 
     if mode == "thickness":
-        thickness_mean = _load_and_mask(_frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers), "*_thickness.npy", Dir, sft, layer_sources=None)
+        thickness_mean = _load_and_mask(
+            _frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers),
+            "*_thickness.npy", Dir, sft, layer_sources=None,
+        )
         gridsize = thickness_mean.shape[-1]
         X, Y = get_XY(box_size, gridsize)
 
@@ -188,7 +194,7 @@ def draw(
         _clip_to_circle(contour, ax)
         ax.set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.87, 0.1, 0.03, 0.8])
+        cbar_ax = fig.add_axes((0.87, 0.1, 0.03, 0.8))
         cbar = fig.colorbar(contour, cax=cbar_ax)
         cbar.set_label("Thickness (nm)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -222,7 +228,9 @@ def draw(
     else:
         curvature_layer_sources = ["upper", "lower", "union"]
 
-    curvature_mean = _load_and_mask(_frame_filtered_glob(Dir + pattern, frame_numbers), pattern, Dir, sft, curvature_layer_sources)
+    curvature_mean = _load_and_mask(
+        _frame_filtered_glob(Dir + pattern, frame_numbers), pattern, Dir, sft, curvature_layer_sources
+    )
 
     gridsize = curvature_mean.shape[-1]
     X, Y = get_XY(box_size, gridsize)
@@ -294,13 +302,13 @@ def draw(
         axes[2].set_title(f"{layer2} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
         axes[3].set_title(f"{layer3} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.054, 0.15, 0.02, 0.7])
+        cbar_ax = fig.add_axes((0.054, 0.15, 0.02, 0.7))
         fig.colorbar(contour0, cax=cbar_ax).set_label("Thickness (nm)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
         cbar_ax.yaxis.set_ticks_position('left')
         cbar_ax.yaxis.set_label_position('left')
 
-        cbar_ax2 = fig.add_axes([0.88, 0.15, 0.02, 0.7])
+        cbar_ax2 = fig.add_axes((0.88, 0.15, 0.02, 0.7))
         cbar2 = fig.colorbar(contour1, cax=cbar_ax2)
         cbar2.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
         cbar2.ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
@@ -318,7 +326,7 @@ def draw(
             _clip_to_circle(c, axes[i])
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.90, 0.08, 0.02, 0.8])
+        cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -335,7 +343,7 @@ def draw(
             _clip_to_circle(c, axes[i])
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.90, 0.08, 0.02, 0.8])
+        cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -368,7 +376,7 @@ def draw(
                           dirs_k2[i][::step, ::step, 0], dirs_k2[i][::step, ::step, 1],
                           color="black", scale=30, width=0.002, alpha=0.6)
 
-        cbar_ax = fig.add_axes([0.93, 0.08, 0.02, 0.8])
+        cbar_ax = fig.add_axes((0.93, 0.08, 0.02, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -388,11 +396,14 @@ def draw(
         plt.close()
 
 
-def plot(args: List[str]) -> None:
+def plot(args: list[str]) -> None:
     """CLI entry: plot mean curvature or thickness from a 'CALM analyze full' output directory."""
     parser = argparse.ArgumentParser(description="Plot mean curvature or thickness")
     parser.add_argument('-i', '--numpys_directory', type=str, help="'CALM analyze full' output directory")
-    parser.add_argument('--mode', choices=["mean", "gaussian", "principal", "thickness"], default="mean", help="quantity to plot (default: mean)")
+    parser.add_argument(
+        '--mode', choices=["mean", "gaussian", "principal", "thickness"], default="mean",
+        help="quantity to plot (default: mean)",
+    )
     parser.add_argument('-o', '--outfile', type=str, default="mean.png", help="output image path (default: mean.png)")
     parser.add_argument('--minimum', type=float, default=None, help="fix the color scale's lower bound")
     parser.add_argument('--maximum', type=float, default=None, help="fix the color scale's upper bound")

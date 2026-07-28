@@ -81,6 +81,17 @@ ruff check CALM/
 mypy CALM/ --ignore-missing-imports
 ```
 
+To run these automatically before every commit:
+
+```console
+pre-commit install
+```
+
+Run it with your virtual environment active - the mypy hook runs against
+your own installed environment (not an isolated one), since it needs
+CALM's real dependencies (MDAnalysis, numpy, scipy, ...) available to type
+against.
+
 ## License
 
 GPLv3, see [LICENSE](LICENSE).

@@ -61,6 +61,7 @@ def get_components(
             f"min_balance={min_balance} across percentiles "
             f"{low_percentile}-{high_percentile}."
         )
+    assert best_cutoff is not None
     return best_components, best_cutoff
 
 

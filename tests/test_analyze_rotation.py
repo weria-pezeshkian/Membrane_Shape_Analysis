@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pytest
 
 from CALM.analyze.analyze import _rotate_direction_vectors, analysis, circle_cutter
 from CALM.core.curvature import shape_operator_curvatures

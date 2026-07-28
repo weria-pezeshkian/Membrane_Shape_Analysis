@@ -6,6 +6,7 @@ import shutil
 import textwrap
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 
 class ManualAction(argparse.Action):
@@ -16,9 +17,9 @@ class ManualAction(argparse.Action):
         option_strings: list[str],
         dest: str = argparse.SUPPRESS,
         default: str = argparse.SUPPRESS,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
-        self.manual_name = kwargs.pop("manual_name")
+        self.manual_name: str = kwargs.pop("manual_name")
         kwargs.setdefault("nargs", 0)
         super().__init__(option_strings, dest=dest, default=default, **kwargs)
 

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import List, Optional, Tuple
+from collections.abc import Sequence
 
+import MDAnalysis as mda
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
@@ -49,7 +50,7 @@ def circle_cutter(arr: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
 
 def periodic_gradient(
     Z: np.ndarray, dx: float, dy: float, periodic_x: bool = True, periodic_y: bool = True
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Return (dZ/dy, dZ/dx) of grid Z (axis 0 = y, axis 1 = x), central-differenced with wraparound where periodic."""
     if periodic_x:
         dz_dx = (np.roll(Z, -1, axis=1) - np.roll(Z, 1, axis=1)) / (2 * dx)
@@ -71,7 +72,8 @@ def f(
     nx: float, ny: float, nz: float,
     Lx: float, Ly: float,
 ) -> float:
-    """Root function for brentq: signed distance along a normal ray between a query point and the interpolated surface."""
+    """Root function for brentq: signed distance along a normal ray between
+    a query point and the interpolated surface."""
     xq = mx + t * nx
     yq = my + t * ny
     zq = mz + t * nz
@@ -91,12 +93,18 @@ def _rotate_direction_vectors(vecs: np.ndarray, angle: float) -> np.ndarray:
 
 
 def analysis(
-    universe: Optional[object],
+    universe: mda.Universe | None,
     sft: SFT,
-    methods: List[str],
-    args: Optional[argparse.Namespace] = None,
+    methods: Sequence[str],
+    args: argparse.Namespace,
 ) -> None:
     """Compute the requested `methods` for every frame in `sft` and save each to `args.out`."""
+    # sft is always fully populated here: built fresh by build_sft or loaded
+    # by SFT.from_directory, both of which set every one of these fields.
+    assert sft.frame_indices is not None
+    assert sft.dimensions is not None
+    assert sft.A_mn is not None
+    assert sft.q_mn is not None
     rotated = args.rotate
 
     for i, frame in tqdm(enumerate(sft.frame_indices), total=len(sft.frame_indices)):
@@ -169,8 +177,9 @@ def analysis(
                             x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
                             nvecx, nvecy, nvecz = N[i, j]
 
-                            l1 = brentq(f, 0.0, t_max, args=(interp_upper, x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1]))
-                            l2 = brentq(f, -t_max, 0.0, args=(interp_lower, x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1]))
+                            brentq_args = (x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1])
+                            l1 = brentq(f, 0.0, t_max, args=(interp_upper, *brentq_args))
+                            l2 = brentq(f, -t_max, 0.0, args=(interp_lower, *brentq_args))
 
                             thickness_map[i, j] = l1 - l2
 
@@ -179,7 +188,10 @@ def analysis(
 
                     np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
                 except ValueError:
-                    logger.warning(f"frame {frame}: thickness could not be calculated - this can indicate the curvature is too high or lambda_x/lambda_y are too small.")
+                    logger.warning(
+                        f"frame {frame}: thickness could not be calculated - this can "
+                        "indicate the curvature is too high or lambda_x/lambda_y are too small."
+                    )
 
         if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
             # H, K, k1, k2 are rotation-invariant scalars: evaluating at

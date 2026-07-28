@@ -19,7 +19,6 @@ import numpy as np
 from CALM.core import fourier_build as fb
 from CALM.core.fourier_build import (
     _close_enclosed_gaps,
-    _fetch_dynamic_positions,
     _hole_mask_for_layer,
     _tmd_protein_atoms_xy,
     _tmd_threshold,
@@ -171,7 +170,7 @@ def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: 
     grid = np.linspace(0, Lx, 60, endpoint=False)
     center_idx = np.argmin(np.abs(grid - Lx / 2))
 
-    assert hole_mask[0, center_idx, center_idx] == True  # upper: gap correctly flagged
+    assert hole_mask[0, center_idx, center_idx]  # upper: gap correctly flagged
 
     # Returned hole_stats give calc_fourier something to log; totals must
     # match what actually got saved.
@@ -290,7 +289,7 @@ def test_one_frame_flags_a_gap_far_enough_from_lipid_with_no_protein_present(tmp
     grid = np.linspace(0, Lx, 60, endpoint=False)
     center_idx = np.argmin(np.abs(grid - Lx / 2))
 
-    assert hole_mask[0, center_idx, center_idx] == True  # gap flagged with no protein anywhere
+    assert hole_mask[0, center_idx, center_idx]  # gap flagged with no protein anywhere
     assert hole_mask[0].mean() < 0.05  # rest of the leaflet stays clean
 
 
@@ -316,8 +315,8 @@ def test_hole_mask_flags_region_with_no_nearby_atoms() -> None:
     mask = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold=4.0)
 
     center_idx = np.argmin(np.abs(grid - Lx / 2))
-    assert mask[center_idx, center_idx] == True  # inside the gap -> hole
-    assert mask[0, 0] == False  # densely covered corner -> not a hole
+    assert mask[center_idx, center_idx]  # inside the gap -> hole
+    assert not mask[0, 0]  # densely covered corner -> not a hole
 
 
 def test_hole_mask_respects_periodic_boundary() -> None:
@@ -334,8 +333,100 @@ def test_hole_mask_respects_periodic_boundary() -> None:
     mask_tight = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold=5.0)
     mask_loose_but_still_periodic = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold=1.0)
 
-    assert mask_tight[0, 0] == False  # within periodic distance -> not a hole
-    assert mask_loose_but_still_periodic[0, 0] == True  # periodic distance exceeds this tighter threshold
+    assert not mask_tight[0, 0]  # within periodic distance -> not a hole
+    assert mask_loose_but_still_periodic[0, 0]  # periodic distance exceeds this tighter threshold
+
+
+# ---- _init_worker: the one real-file-backed entry point other tests bypass ----
+
+def test_init_worker_builds_static_leaflets_from_a_real_ndx_group(tmp_path: Path) -> None:
+    # Every other test sets _worker_state directly and never calls
+    # _init_worker, so this is the only coverage for its static-ndx branch
+    # (assert ndx_groups is not None) - and the only test that round-trips
+    # through a real on-disk structure file rather than an in-memory Universe.
+    u = mda.Universe.empty(n_atoms=2, trajectory=True)
+    u.add_TopologyAttr("name", ["P", "P"])
+    u.atoms.positions = [[10.0, 10.0, 70.0], [20.0, 20.0, 30.0]]
+    u.dimensions = [100.0, 100.0, 100.0, 90.0, 90.0, 90.0]
+    gro_path = tmp_path / "structure.gro"
+    u.atoms.write(str(gro_path))
+
+    try:
+        fb._init_worker(
+            structure=str(gro_path),
+            trajectory=str(gro_path),
+            ndx_groups={"Upper": [1], "Lower": [2]},  # 1-based, as in a real .ndx file
+            dynamic_select=False,
+            center=None,
+            rotation_direction=None,
+            rotate=False,
+        )
+        layer_group = fb._worker_state["layer_group"]
+        layer_group_2 = fb._worker_state["layer_group_2"]
+        assert layer_group.positions[0, 2] == 70.0
+        assert layer_group_2.positions[0, 2] == 30.0
+    finally:
+        fb._worker_state.clear()
+
+
+def test_init_worker_leaves_leaflets_unset_for_dynamic_selection(tmp_path: Path) -> None:
+    u = mda.Universe.empty(n_atoms=2, trajectory=True)
+    u.add_TopologyAttr("name", ["P", "P"])
+    u.atoms.positions = [[10.0, 10.0, 70.0], [20.0, 20.0, 30.0]]
+    u.dimensions = [100.0, 100.0, 100.0, 90.0, 90.0, 90.0]
+    gro_path = tmp_path / "structure.gro"
+    u.atoms.write(str(gro_path))
+
+    try:
+        fb._init_worker(
+            structure=str(gro_path),
+            trajectory=str(gro_path),
+            ndx_groups=None,
+            dynamic_select=True,
+            center=None,
+            rotation_direction=None,
+            rotate=False,
+        )
+        assert fb._worker_state["layer_group"] is None
+        assert fb._worker_state["layer_group_2"] is None
+    finally:
+        fb._worker_state.clear()
+
+
+def test_calc_fourier_runs_end_to_end_with_a_dynamic_selection(tmp_path: Path) -> None:
+    # calc_fourier itself has no other test coverage - this exercises its
+    # real ProcessPoolExecutor path end to end, including the
+    # dynamic-selection branch's assert dynamic_selection is not None.
+    xs, ys = np.meshgrid(np.arange(0, 100.0, 10.0), np.arange(0, 100.0, 10.0))
+    xy = np.column_stack([xs.ravel(), ys.ravel()])
+    n = xy.shape[0]
+    positions = np.vstack([
+        np.column_stack([xy, np.full(n, 70.0)]),
+        np.column_stack([xy, np.full(n, 30.0)]),
+    ])
+    u = mda.Universe.empty(n_atoms=positions.shape[0], trajectory=True)
+    u.add_TopologyAttr("name", ["P"] * positions.shape[0])
+    u.atoms.positions = positions
+    u.dimensions = [100.0, 100.0, 100.0, 90.0, 90.0, 90.0]
+
+    gro_path = tmp_path / "structure.gro"
+    u.atoms.write(str(gro_path))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    args = SimpleNamespace(
+        Until=None, index="name P", From=0, Step=1, Workers=1,
+        structure=str(gro_path), trajectory=str(gro_path),
+        center=None, rotation_direction=None, rotate=False,
+        out=str(out_dir), lambda_x=None, lambda_y=None, gridsize=10,
+        remove_tmd=False, regularize=False, min_balance=0.6, margin=2.0,
+    )
+
+    fb.calc_fourier(args, mda.Universe(str(gro_path)))
+
+    assert (out_dir / "raw_sft" / "0_A_mn.npy").exists()
+    assert (out_dir / "raw_sft" / "0_q_mn.npy").exists()
+    assert (out_dir / "raw_sft" / "0_dimensions.npy").exists()
 
 
 # ---- _one_frame's dynamic_select path ----

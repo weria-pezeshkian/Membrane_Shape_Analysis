@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
-
 import numpy as np
 
 
@@ -12,7 +10,7 @@ def fit_coefficients(
     Nx: int,
     Ny: int,
     regularize: bool = False,
-    diagnostics: Optional[List[Tuple[str, str]]] = None,
+    diagnostics: list[tuple[str, str]] | None = None,
 ) -> np.ndarray:
     """Least-squares Fourier coefficients (Anm) reproducing z at given (x, y) points.
 

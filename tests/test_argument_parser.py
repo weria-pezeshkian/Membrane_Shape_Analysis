@@ -81,7 +81,9 @@ def test_apply_replay_proceeds_silently_when_checksums_match(tmp_path: Path, mon
     assert result.trajectory == str(traj)
 
 
-def test_apply_replay_aborts_when_checksum_mismatched_and_not_confirmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_replay_aborts_when_checksum_mismatched_and_not_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     traj = tmp_path / "traj.xtc"
     traj.write_bytes(b"original bytes")
 
@@ -99,7 +101,9 @@ def test_apply_replay_aborts_when_checksum_mismatched_and_not_confirmed(tmp_path
         arg_helper.apply_replay(parser, pre_ns, ["-o", str(tmp_path), "-f", str(traj)])
 
 
-def test_apply_replay_proceeds_when_checksum_mismatched_and_confirmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_replay_proceeds_when_checksum_mismatched_and_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     traj = tmp_path / "traj.xtc"
     traj.write_bytes(b"original bytes")
 

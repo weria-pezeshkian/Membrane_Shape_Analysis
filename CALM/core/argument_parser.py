@@ -6,7 +6,6 @@ import logging
 import shlex
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 
 def default_replay_name(out_dir: str | None) -> str:
@@ -16,7 +15,7 @@ def default_replay_name(out_dir: str | None) -> str:
         return str(Path(out_dir) / name)
     return name
 
-def none_or_int(x: str) -> Optional[int]:
+def none_or_int(x: str) -> int | None:
     # Enables faithful round-trip for --Until None
     return None if x.lower() == "none" else int(x)
 
@@ -124,7 +123,9 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
         # Multi-value options
         if action.nargs in ("+", "*") or isinstance(cur, (list, tuple)):
             if cur is None:
-                out.append(f"# {opt} is None (unset) - omitted, an empty '{opt}' would not replay (nargs requires a value)")
+                out.append(
+                    f"# {opt} is None (unset) - omitted, an empty '{opt}' would not replay (nargs requires a value)"
+                )
                 continue
             parts = [opt] + [str(x) for x in cur]
             out.append(" ".join(shlex.quote(p) for p in parts))
@@ -163,7 +164,10 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument('-f', '--trajectory', type=str, default=None, help="trajectory file (.xtc)")
     parser.add_argument('-s', '--structure', type=str, default=None, help="structure file (.tpr)")
-    parser.add_argument('-n', '--index', type=str, help="index file (Upper/Lower groups) or dynamic selection string, e.g. 'name PO4'")
+    parser.add_argument(
+        '-n', '--index', type=str,
+        help="index file (Upper/Lower groups) or dynamic selection string, e.g. 'name PO4'",
+    )
     parser.add_argument('-o', '--out', type=str, required=True, help="output directory")
     parser.add_argument('-F', '--From', default=0, type=int, help="first frame, inclusive (default: 0)")
     parser.add_argument('-U', '--Until', default=None, type=none_or_int, help="last frame, exclusive (default: end)")
@@ -172,17 +176,42 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--lambda_y', type=float, default=None, help="Fourier wavelength scale in y (nm)")
     parser.add_argument('--gridsize', default=100, type=int, help="grid points per side (default: 100)")
     parser.add_argument('-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on")
-    parser.add_argument('--rotate', default=False, action="store_true", help="rotation alignment per frame; requires --center")
-    parser.add_argument('--rotation-direction', default=None, type=str, help="MDAnalysis selection defining the rotation reference direction; requires --rotate")
-    parser.add_argument('--Remove-TMD', dest='remove_tmd', default=False, action="store_true", help="flag unsupported grid points as holes; requires --center (see --man)")
-    parser.add_argument('--regularization', dest='regularize', default=False, action="store_true", help="enable Tikhonov regularization of the fit (see --man)")
-    parser.add_argument('--min-balance', dest='min_balance', default=0.6, type=float, help="leaflet-split balance threshold for dynamic -n (default: 0.6, see --man)")
-    parser.add_argument('--margin', dest='margin', default=2.0, type=float, help="leaflet margin-filter ratio for dynamic -n (default: 2.0, see --man)")
+    parser.add_argument(
+        '--rotate', default=False, action="store_true",
+        help="rotation alignment per frame; requires --center",
+    )
+    parser.add_argument(
+        '--rotation-direction', default=None, type=str,
+        help="MDAnalysis selection defining the rotation reference direction; requires --rotate",
+    )
+    parser.add_argument(
+        '--Remove-TMD', dest='remove_tmd', default=False, action="store_true",
+        help="flag unsupported grid points as holes; requires --center (see --man)",
+    )
+    parser.add_argument(
+        '--regularization', dest='regularize', default=False, action="store_true",
+        help="enable Tikhonov regularization of the fit (see --man)",
+    )
+    parser.add_argument(
+        '--min-balance', dest='min_balance', default=0.6, type=float,
+        help="leaflet-split balance threshold for dynamic -n (default: 0.6, see --man)",
+    )
+    parser.add_argument(
+        '--margin', dest='margin', default=2.0, type=float,
+        help="leaflet margin-filter ratio for dynamic -n (default: 2.0, see --man)",
+    )
     parser.add_argument("--replay", help="load arguments from a replay file")
     parser.add_argument("--out-replay", default=None, help="path to write this run's replay file")
     parser.add_argument('-W', '--Workers', default=1, type=int, help="parallel workers (default: 1)")
-    parser.add_argument('-c', '--clear', default=False, action=argparse.BooleanOptionalAction, help="remove existing .npy files in --out before running")
-    parser.add_argument('--loud', default=False, action="store_true", help="also print info-level log messages to the console (default: only warnings/errors print; info-level messages still go to the replay log)")
+    parser.add_argument(
+        '-c', '--clear', default=False, action=argparse.BooleanOptionalAction,
+        help="remove existing .npy files in --out before running",
+    )
+    parser.add_argument(
+        '--loud', default=False, action="store_true",
+        help="also print info-level log messages to the console (default: only warnings/errors "
+             "print; info-level messages still go to the replay log)",
+    )
 
 
 def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
@@ -207,7 +236,8 @@ def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespa
 
 
 def _read_recorded_checksums(path: str) -> dict[str, str]:
-    """Sha256 checksums recorded in a replay file's header (see `write_replay_file`), keyed by 'trajectory'/'structure'."""
+    """Sha256 checksums recorded in a replay file's header (see `write_replay_file`),
+    keyed by 'trajectory'/'structure'."""
     recorded: dict[str, str] = {}
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         for label, dest in (("Trajectory", "trajectory"), ("Structure", "structure")):
@@ -218,7 +248,8 @@ def _read_recorded_checksums(path: str) -> dict[str, str]:
 
 
 def _verify_replay_checksums(replay_path: str, ns: argparse.Namespace) -> None:
-    """Interactively confirm before continuing if a replayed run's -f/-s files no longer match the checksums recorded in `replay_path`.
+    """Interactively confirm before continuing if a replayed run's -f/-s files
+    no longer match the checksums recorded in `replay_path`.
 
     Requires a 'y'/'yes' answer on stdin to proceed; anything else
     (including no stdin to read, e.g. a non-interactive batch job) aborts
@@ -254,7 +285,9 @@ def _verify_replay_checksums(replay_path: str, ns: argparse.Namespace) -> None:
         raise SystemExit("Aborted: replayed input file(s) changed since the replay file was recorded.")
 
 
-def apply_replay(parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, remaining: list[str]) -> argparse.Namespace:
+def apply_replay(
+    parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, remaining: list[str]
+) -> argparse.Namespace:
     """Re-parse args with any --replay file's tokens prepended (so
     user-supplied CLI args on top of a replay still take priority)."""
     replayed: list[str] = []
@@ -284,7 +317,7 @@ def attach_replay_log_handler(
     replay_path: str,
     logger_name: str = "MDAnalysis",
     level: int = logging.INFO,
-    console_level: Optional[int] = None,
+    console_level: int | None = None,
 ) -> logging.Handler:
     """Append `logger_name`'s log records (default: MDAnalysis's own logging,
     at INFO and above) to the replay file as '#'-prefixed comment lines, so

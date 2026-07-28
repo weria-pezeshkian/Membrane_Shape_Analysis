@@ -55,8 +55,8 @@ def test_regularization_bounds_curvature_in_overfit_regime() -> None:
     # Few atoms (M=200) relative to a fine-resolution fit (Length close to
     # M) makes the plain (regularize=False) fit produce unphysically large
     # curvature; regularized should stay bounded for the same noisy data.
-    from CALM.core.fourier_core import get_fourier_modes
     from CALM.core.curvature import shape_operator_curvatures
+    from CALM.core.fourier_core import get_fourier_modes
 
     Lx = Ly = 100.0
     M = 200

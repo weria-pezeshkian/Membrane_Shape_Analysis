@@ -5,7 +5,6 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import List
 
 import MDAnalysis as mda
 
@@ -27,7 +26,7 @@ METHODS = (
 )
 
 
-def full(args: List[str]) -> None:
+def full(args: list[str]) -> None:
     """CLI entry: run the full geometric analysis pipeline (thickness,
     curvature, ...) that 'CALM map' can plot.
 

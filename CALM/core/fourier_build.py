@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TypedDict, cast
 
 import MDAnalysis as mda
 import numpy as np
@@ -23,6 +23,25 @@ from ..core.packing import median_multiple_threshold
 logger = logging.getLogger(__name__)
 
 
+class _LayerHoleStats(TypedDict):
+    near_protein: int
+    far_fallback_only: int
+    closed_gap: int
+    total: int
+
+
+class _HoleStats(TypedDict):
+    n_grid: int
+    upper: _LayerHoleStats
+    lower: _LayerHoleStats
+
+
+class _FrameResult(TypedDict):
+    frame: int
+    diagnostics: list[tuple[str, str]]
+    hole_stats: _HoleStats | None
+
+
 class Rotation_and_Center_tracker:
     """Recenters a Universe on `sel1` each frame, and optionally tracks its
     rotation relative to frame 0 (by `sel2`'s direction if given, otherwise
@@ -32,7 +51,7 @@ class Rotation_and_Center_tracker:
         self,
         u: mda.Universe,
         sel1: str = "protein",
-        sel2: Optional[str] = None,
+        sel2: str | None = None,
         rotate: bool = False,
     ) -> None:
         self.u = u
@@ -153,10 +172,10 @@ class Rotation_and_Center_tracker:
         )
 
 
-def _read_ndx(filename: str) -> Dict[str, List[int]]:
+def _read_ndx(filename: str) -> dict[str, list[int]]:
     # TODO: confirm whether MDAnalysis has a built-in reader for this format
     # now, and replace this with it if so.
-    groups: Dict[str, List[int]] = {}
+    groups: dict[str, list[int]] = {}
     with open(filename) as f:
         group_name = None
         for line in f:
@@ -277,8 +296,8 @@ def _fourier_by_layer(
     Nx: int = 3,
     Ny: int = 3,
     regularize: bool = False,
-    diagnostics: Optional[List[Tuple[str, str]]] = None,
-) -> Tuple[Fourier_Series_Function, np.ndarray]:
+    diagnostics: list[tuple[str, str]] | None = None,
+) -> tuple[Fourier_Series_Function, np.ndarray]:
     """Fit `layer_group`'s Fourier surface and return (fourier, q), q being the (qx, qy) meshgrid for its modes."""
     Lx = box_size[0]
     Ly = box_size[1]
@@ -298,7 +317,7 @@ def _fourier_by_layer(
     qx = 2 * np.pi * m / Lx
     qy = 2 * np.pi * n / Ly
 
-    q = np.meshgrid(qx, qy, indexing="ij")
+    q = np.asarray(np.meshgrid(qx, qy, indexing="ij"))
 
     return fourier, q
 
@@ -306,16 +325,16 @@ def _fourier_by_layer(
 # Per-worker-process state, populated once by _init_worker at pool startup
 # (not once per frame) so ProcessPoolExecutor never has to pickle the
 # Universe/AtomGroups/tracker into _one_frame's arguments.
-_worker_state: Dict[str, object] = {}
+_worker_state: dict[str, object] = {}
 
 
 def _init_worker(
     structure: str,
     trajectory: str,
-    ndx_groups: Optional[Dict[str, List[int]]],
+    ndx_groups: dict[str, list[int]] | None,
     dynamic_select: bool,
-    center: Optional[str],
-    rotation_direction: Optional[str],
+    center: str | None,
+    rotation_direction: str | None,
     rotate: bool,
 ) -> None:
     """ProcessPoolExecutor initializer: opens this worker's own Universe once.
@@ -330,6 +349,7 @@ def _init_worker(
     u = mda.Universe(structure, trajectory)
 
     if not dynamic_select:
+        assert ndx_groups is not None
         layer_group = u.atoms[[x - 1 for x in ndx_groups["Upper"]]]#TODO, check if this should be u.atoms.indices
         layer_group_2 = u.atoms[[x - 1 for x in ndx_groups["Lower"]]]
     else:
@@ -347,7 +367,7 @@ def _init_worker(
 
 def _fetch_dynamic_positions(
     frame: int, *, dynamic_selection: str
-) -> Tuple[int, np.ndarray, np.ndarray]:
+) -> tuple[int, np.ndarray, np.ndarray]:
     """Fetch one frame's dynamic-selection positions and box dimensions.
 
     Independent per frame, safe to run across workers in any order.
@@ -356,18 +376,18 @@ def _fetch_dynamic_positions(
     sequential tracking pass that consumes the results
     (`_track_dynamic_leaflets`) needs trajectory order.
     """
-    universe = _worker_state["universe"]
+    universe = cast(mda.Universe, _worker_state["universe"])
     universe.trajectory[frame]
     selection = universe.select_atoms(dynamic_selection)
     return frame, selection.positions.copy(), np.array(universe.dimensions, dtype=np.float64)
 
 
 def _track_dynamic_leaflets(
-    ordered_results: List[Tuple[int, np.ndarray, np.ndarray]],
+    ordered_results: list[tuple[int, np.ndarray, np.ndarray]],
     selection_global_indices: np.ndarray,
     min_balance: float,
     margin: float = 2.0,
-) -> Dict[int, Tuple[List[int], List[int]]]:
+) -> dict[int, tuple[list[int], list[int]]]:
     """Sequential leaflet-tracking pass over trajectory-ordered per-frame positions.
 
     The first frame is clustered fresh via `get_components`; every later
@@ -388,7 +408,7 @@ def _track_dynamic_leaflets(
 
     Returns {frame: (upper_global_indices, lower_global_indices)}.
     """
-    out: Dict[int, Tuple[List[int], List[int]]] = {}
+    out: dict[int, tuple[list[int], list[int]]] = {}
     prev_upper = prev_lower = None
     cutoff = None
 
@@ -398,6 +418,7 @@ def _track_dynamic_leaflets(
             (c0, c1), cutoff = get_components(matrix, min_balance=min_balance)
             upper, lower = _label_by_z(c0, c1, positions)
         else:
+            assert prev_lower is not None and cutoff is not None
             upper, lower = track_components(positions, dimensions, prev_upper, prev_lower, cutoff)
 
         upper, lower = apply_margin_filter(positions, dimensions, upper, lower, margin=margin)
@@ -416,15 +437,15 @@ def _one_frame(
     *,
     out_dir: str,
     dynamic_select: bool,
-    dynamic_leaflets: Optional[Dict[int, Tuple[List[int], List[int]]]],
+    dynamic_leaflets: dict[int, tuple[list[int], list[int]]] | None,
     until: int,
-    Nx: Optional[float] = 3,
-    Ny: Optional[float] = 3,
+    Nx: float | None = 3,
+    Ny: float | None = 3,
     sqrt_n_atoms: int = 100,
     remove_tmd: bool = False,
     regularize: bool = False,
     tmd_far_multiple: float = 5.0,
-) -> Dict[str, object]:
+) -> _FrameResult:
     """Fit one frame's Fourier surfaces (and optional hole mask) and save its raw_sft output.
 
     Returns `{"frame": frame, "diagnostics": [(level, message), ...],
@@ -433,11 +454,13 @@ def _one_frame(
     everything worth logging is collected here and handed back rather than
     logged directly, keeping every write to the replay log single-process.
     """
-    diagnostics: List[Tuple[str, str]] = []
-    universe = _worker_state["universe"]
-    layer_group = _worker_state["layer_group"]
-    layer_group_2 = _worker_state["layer_group_2"]
-    rotation_and_center = _worker_state["rotation_and_center"]
+    diagnostics: list[tuple[str, str]] = []
+    universe = cast(mda.Universe, _worker_state["universe"])
+    layer_group = cast(mda.core.groups.AtomGroup, _worker_state["layer_group"])
+    layer_group_2 = cast(mda.core.groups.AtomGroup, _worker_state["layer_group_2"])
+    rotation_and_center = cast(
+        "Rotation_and_Center_tracker | None", _worker_state["rotation_and_center"]
+    )
 
     num_digits = len(str(abs(until)))
     ts = universe.trajectory[frame]
@@ -453,6 +476,7 @@ def _one_frame(
         # Leaflets for this frame were already determined by the sequential
         # _track_dynamic_leaflets pass in calc_fourier, as 0-based global
         # atom indices.
+        assert dynamic_leaflets is not None
         upper_index, lower_index = dynamic_leaflets[frame]
         layer_group = universe.atoms[upper_index]
         layer_group_2 = universe.atoms[lower_index]
@@ -468,12 +492,16 @@ def _one_frame(
             rotation_and_center._get_vec(base=False)
             q_angle = rotation_and_center._get_rotation_angle()
 
-    fourier1, q = _fourier_by_layer(layer_group, dimensions[:3], Nx, Ny, regularize=regularize, diagnostics=diagnostics)
-    fourier2, _ = _fourier_by_layer(layer_group_2, dimensions[:3], Nx, Ny, regularize=regularize, diagnostics=diagnostics)
+    fourier1, q = _fourier_by_layer(
+        layer_group, dimensions[:3], Nx, Ny, regularize=regularize, diagnostics=diagnostics
+    )
+    fourier2, _ = _fourier_by_layer(
+        layer_group_2, dimensions[:3], Nx, Ny, regularize=regularize, diagnostics=diagnostics
+    )
     fouriermiddle = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
     fouriermiddle.setAnm(average_coefficients(fourier1.Anm, fourier2.Anm))
 
-    hole_stats: Optional[Dict[str, object]] = None
+    hole_stats: _HoleStats | None = None
     if remove_tmd:
         # One threshold shared by both leaflets. The Nyquist term
         # (_tmd_threshold) reflects the fit's chosen resolution; capping it
@@ -499,6 +527,7 @@ def _one_frame(
         # or farther from any lipid than `far_threshold`.
         # rotation_and_center is always a real tracker object here, since
         # argument_parser requires --center whenever --Remove-TMD is used.
+        assert rotation_and_center is not None
         tmd_xy = _tmd_protein_atoms_xy(rotation_and_center.sel1, universe, fourier1, fourier2)
         dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
 
@@ -519,13 +548,17 @@ def _one_frame(
             "n_grid": int(hole_upper.size),
             "upper": {
                 "near_protein": int((near_protein & (dist_upper > threshold)).sum()),
-                "far_fallback_only": int(((dist_upper > far_threshold) & ~near_protein & (dist_upper > threshold)).sum()),
+                "far_fallback_only": int(
+                    ((dist_upper > far_threshold) & ~near_protein & (dist_upper > threshold)).sum()
+                ),
                 "closed_gap": int(hole_upper.sum()) - n_before_upper,
                 "total": int(hole_upper.sum()),
             },
             "lower": {
                 "near_protein": int((near_protein & (dist_lower > threshold)).sum()),
-                "far_fallback_only": int(((dist_lower > far_threshold) & ~near_protein & (dist_lower > threshold)).sum()),
+                "far_fallback_only": int(
+                    ((dist_lower > far_threshold) & ~near_protein & (dist_lower > threshold)).sum()
+                ),
                 "closed_gap": int(hole_lower.sum()) - n_before_lower,
                 "total": int(hole_lower.sum()),
             },
@@ -572,7 +605,9 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
         dynamic_select = False
         dynamic_selection = None
     except FileNotFoundError:
-        logger.info("No ndx file found at the given --index path; treating it as a dynamic MDAnalysis selection instead.")
+        logger.info(
+            "No ndx file found at the given --index path; treating it as a dynamic MDAnalysis selection instead."
+        )
         dynamic_select = True
         dynamic_selection = ndx
         ndx_groups = None
@@ -586,7 +621,10 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
     with ProcessPoolExecutor(
         max_workers=args.Workers,
         initializer=_init_worker,
-        initargs=(args.structure, args.trajectory, ndx_groups, dynamic_select, args.center, args.rotation_direction, args.rotate),
+        initargs=(
+            args.structure, args.trajectory, ndx_groups, dynamic_select,
+            args.center, args.rotation_direction, args.rotate,
+        ),
     ) as ex:
         dynamic_leaflets = None
         if dynamic_select:
@@ -594,10 +632,13 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
             # selection positions independently. Then a cheap sequential
             # pass in this process turns those into a stable per-frame
             # leaflet assignment - see _track_dynamic_leaflets.
+            assert dynamic_selection is not None
             fetch = partial(_fetch_dynamic_positions, dynamic_selection=dynamic_selection)
             ordered_results = list(ex.map(fetch, frames))
             selection_global_indices = u.select_atoms(dynamic_selection).atoms.indices
-            dynamic_leaflets = _track_dynamic_leaflets(ordered_results, selection_global_indices, args.min_balance, margin=args.margin)
+            dynamic_leaflets = _track_dynamic_leaflets(
+                ordered_results, selection_global_indices, args.min_balance, margin=args.margin
+            )
 
         fn = partial(_one_frame,
                     out_dir=args.out,
@@ -612,9 +653,9 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
                     )
 
         futures = [ex.submit(fn, x) for x in frames]
-        hole_totals: Optional[Dict[str, object]] = None
+        hole_totals: _HoleStats | None = None
         for future in futures:
-            result = future.result()  # surfaces exceptions raised in worker processes
+            result: _FrameResult = future.result()  # surfaces exceptions raised in worker processes
             frame_num = result["frame"]
             for level, message in result["diagnostics"]:
                 log_fn = logger.warning if level == "warning" else logger.info
@@ -628,15 +669,22 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
                 f"{stats['upper']['total']}/{stats['n_grid']} upper and "
                 f"{stats['lower']['total']}/{stats['n_grid']} lower grid points as holes "
                 f"(near-protein upper/lower: {stats['upper']['near_protein']}/{stats['lower']['near_protein']}, "
-                f"far-fallback-only upper/lower: {stats['upper']['far_fallback_only']}/{stats['lower']['far_fallback_only']}, "
+                f"far-fallback-only upper/lower: "
+                f"{stats['upper']['far_fallback_only']}/{stats['lower']['far_fallback_only']}, "
                 f"enclosed gaps closed upper/lower: {stats['upper']['closed_gap']}/{stats['lower']['closed_gap']})"
             )
             if hole_totals is None:
-                hole_totals = {"n_grid": 0, "upper": {k: 0 for k in stats["upper"]}, "lower": {k: 0 for k in stats["lower"]}}
+                hole_totals = {
+                    "n_grid": 0,
+                    "upper": {"near_protein": 0, "far_fallback_only": 0, "closed_gap": 0, "total": 0},
+                    "lower": {"near_protein": 0, "far_fallback_only": 0, "closed_gap": 0, "total": 0},
+                }
             hole_totals["n_grid"] += stats["n_grid"]
-            for layer in ("upper", "lower"):
-                for key, value in stats[layer].items():
-                    hole_totals[layer][key] += value
+            layer_pairs = ((stats["upper"], hole_totals["upper"]), (stats["lower"], hole_totals["lower"]))
+            for stats_layer, totals_layer in layer_pairs:
+                totals_layer_dict = cast(dict, totals_layer)
+                for key, value in stats_layer.items():
+                    totals_layer_dict[key] += value
 
         if hole_totals is not None:
             logger.info(

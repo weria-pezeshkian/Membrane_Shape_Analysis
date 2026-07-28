@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import numpy as np
