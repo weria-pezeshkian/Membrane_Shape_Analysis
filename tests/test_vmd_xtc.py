@@ -1,7 +1,8 @@
 """Tests for get_vmd_visualisation's handling of NaN grid points (from
-circle_cutter masking in analyze/analyze.py when --rotate is used), and for
-build_rotation_tcl / write_xtc's auto-detection of whether q_mn shows a real
-rotation was used.
+circle_cutter masking in analyze/analyze.py when --rotate is used), for
+build_rotation_tcl / vmd_xtc's auto-detection of whether q_mn shows a real
+rotation was used, and for _trajectory_hole_union's per-trajectory hole
+combining (including gaps created by the union itself).
 """
 
 from __future__ import annotations
@@ -13,11 +14,12 @@ import numpy as np
 import pytest
 
 from CALM.core.fourier_sft import SFT
-from CALM.utilize.get_vmd_visualization import build_rotation_tcl, get_vmd_visualisation, write_xtc
-
-
-def _write_frame(in_dir: Path, frame: int, z: np.ndarray, dims_line: str) -> None:
-    np.save(in_dir / f"{frame}_Z_fitted.npy", z)
+from CALM.utilize.vmd_xtc import (
+    _trajectory_hole_union,
+    build_rotation_tcl,
+    get_vmd_visualisation,
+    vmd_xtc,
+)
 
 
 def test_nan_grid_points_are_dropped_not_written(tmp_path: Path) -> None:
@@ -119,7 +121,7 @@ def test_build_rotation_tcl_skips_when_no_rotation_used(tmp_path: Path) -> None:
     assert not out_path.exists()
 
 
-def test_write_xtc_generates_tcl_only_when_rotation_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_vmd_xtc_generates_tcl_only_when_rotation_present(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     in_dir = tmp_path / "in"
     out_dir = tmp_path / "out"
     in_dir.mkdir()
@@ -134,7 +136,7 @@ def test_write_xtc_generates_tcl_only_when_rotation_present(tmp_path: Path, caps
     sft = _make_sft([0.4])
     sft.write(in_dir)
 
-    write_xtc(["-i", str(in_dir), "-o", str(out_dir)])
+    vmd_xtc(["-i", str(in_dir), "-o", str(out_dir)])
 
     assert (out_dir / "rotate_and_select.tcl").exists()
     assert "Rotation detected" in capsys.readouterr().out
@@ -257,3 +259,37 @@ def test_hole_mask_lookup_is_rotation_aware(tmp_path: Path) -> None:
     # A hole exactly at the rotation pivot is invariant under rotation about
     # that same pivot - it must still be flagged post-rotation-remap.
     assert upper_names[center_idx, center_idx] == "S"
+
+
+def test_trajectory_hole_union_closes_gaps_created_by_the_union_itself(tmp_path: Path) -> None:
+    # Each frame's own hole mask has a single gap in an otherwise complete
+    # ring around the center cell - at a DIFFERENT ring position per frame -
+    # so neither frame's own mask encloses the center (a gap in the ring
+    # connects it to the exterior). The union of the two masks fills both
+    # gaps at once, completing the ring and enclosing the center: a small
+    # island that no single frame's own build-time closing pass ever saw.
+    gridsize = 5
+    ring = [(1, 1), (1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2), (3, 3)]
+
+    hole0 = np.zeros((gridsize, gridsize), dtype=bool)
+    for i, j in ring:
+        if (i, j) != (1, 2):
+            hole0[i, j] = True
+
+    hole1 = np.zeros((gridsize, gridsize), dtype=bool)
+    for i, j in ring:
+        if (i, j) != (3, 2):
+            hole1[i, j] = True
+
+    sft = _make_sft([0.0, 0.0], Lx=100.0, Ly=100.0)
+    sft.hole_mask = np.stack([np.stack([hole0, hole0]), np.stack([hole1, hole1])])
+
+    z_files = []
+    for i in range(2):
+        path = tmp_path / f"{i}_Z_fitted.npy"
+        np.save(path, np.zeros((3, gridsize, gridsize)))
+        z_files.append(str(path))
+
+    upper_union, lower_union = _trajectory_hole_union(sft, sorted(z_files), (gridsize, gridsize))
+    assert upper_union[2, 2]
+    assert lower_union[2, 2]

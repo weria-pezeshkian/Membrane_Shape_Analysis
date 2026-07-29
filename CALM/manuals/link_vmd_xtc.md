@@ -1,4 +1,4 @@
-# CALM link write_xtc
+# CALM link vmd_xtc
 
 Build a GRO + XTC trajectory of the fitted surface from `CALM analyze full`
 output, so it can be loaded in VMD alongside (or instead of) the original
@@ -7,7 +7,7 @@ simulation trajectory.
 ## Usage
 
 ```
-CALM link write_xtc -i full_out_dir -o vmd_out_dir
+CALM link vmd_xtc -i full_out_dir -o vmd_out_dir
 ```
 
 ## Arguments
@@ -34,3 +34,8 @@ CALM link write_xtc -i full_out_dir -o vmd_out_dir
   the fit, and restricts the display representation to the region that
   stays meaningful across every frame (a fixed-radius circle around each
   frame's own box center).
+
+## See also
+
+`CALM link vmd_vectors` builds on this command's output, drawing
+principal-direction arrows against `average_structure.gro`/`trajectory.xtc`.

@@ -116,6 +116,29 @@ def test_draw_dynamic_fixes_thickness_scale_across_windows(tmp_path: Path) -> No
     assert len({tuple(tm) for tm in thickness_minmax_per_call}) == 1
 
 
+def _write_principal_frames(d: Path, n_frames: int, gridsize: int = 10) -> None:
+    rng = np.random.default_rng(2)
+    for i in range(n_frames):
+        np.save(d / f"{i}_principal_curvatures.npy", rng.uniform(-0.1, 0.1, size=(6, gridsize, gridsize)))
+        vecs = rng.normal(size=(6, gridsize, gridsize, 3))
+        vecs /= np.linalg.norm(vecs, axis=-1, keepdims=True)
+        np.save(d / f"{i}_principal_dirs.npy", vecs)
+
+
+def test_draw_dynamic_uses_each_windows_own_frame_for_vectors(tmp_path: Path) -> None:
+    # The vector overlay must reflect that video frame's own instantaneous
+    # directions, never the rolling window used for the curvature background.
+    n_frames = 6
+    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_principal_frames(tmp_path, n_frames)
+
+    with patch("CALM.map.dynamic_plot.draw", wraps=draw) as mock_draw:
+        draw_dynamic(str(tmp_path), mode="principal", out_gif=str(tmp_path / "out.gif"), window=3, spf=0.05)
+
+    vector_frames = [call.kwargs["vector_frame"] for call in mock_draw.call_args_list]
+    assert vector_frames == list(range(n_frames))
+
+
 def test_draw_dynamic_raises_for_missing_mode_files(tmp_path: Path) -> None:
     _write_dimensions_csv(tmp_path, 2, 100.0, 80.0)
     with pytest.raises(FileNotFoundError):

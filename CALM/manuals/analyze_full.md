@@ -105,7 +105,7 @@ Only used when building the fit (not with `--sft`).
   The result is saved as `holemask.npy` alongside
   `Amn.npy`/`qmn.npy`/`dimensions.npy`. This run's own numeric analysis
   (thickness, curvature, ...) doesn't use it; it only takes effect later,
-  when `CALM map plot`/`dynamic_plot` or `CALM link write_xtc` reads this
+  when `CALM map plot`/`dynamic_plot` or `CALM link vmd_xtc` reads this
   output and masks or excludes the flagged points.
 
 ## Replay

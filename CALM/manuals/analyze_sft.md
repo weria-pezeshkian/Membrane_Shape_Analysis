@@ -89,7 +89,7 @@ CALM analyze sft -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" [options]
   The result is saved as `holemask.npy` alongside
   `Amn.npy`/`qmn.npy`/`dimensions.npy`; this command's own output doesn't
   otherwise use it. It only takes effect later, when a `CALM analyze full`,
-  `CALM map plot`/`dynamic_plot`, or `CALM link write_xtc` run reads this
+  `CALM map plot`/`dynamic_plot`, or `CALM link vmd_xtc` run reads this
   output (directly or via `--sft`) and masks or excludes the flagged
   points.
 

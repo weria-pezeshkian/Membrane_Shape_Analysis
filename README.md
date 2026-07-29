@@ -56,8 +56,10 @@ overview, or jump straight to a command below.
   pipeline.
   - [`link write_ndx`](CALM/manuals/link_write_ndx.md) - detect the two
     leaflets in a selection and write a GROMACS index file.
-  - [`link write_xtc`](CALM/manuals/link_write_xtc.md) - export the
+  - [`link vmd_xtc`](CALM/manuals/link_vmd_xtc.md) - export the
     fitted surface as a GRO + XTC trajectory for VMD.
+  - [`link vmd_vectors`](CALM/manuals/link_vmd_vectors.md) - write VMD TCL
+    scripts drawing principal-direction arrows in real space.
 - [`map`](CALM/manuals/map.md) - turn analysis output into plots and
   videos.
   - [`map plot`](CALM/manuals/map_plot.md) - plot mean curvature or

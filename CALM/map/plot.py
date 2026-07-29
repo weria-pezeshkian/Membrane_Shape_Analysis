@@ -5,6 +5,7 @@ import glob
 import logging
 import os
 import warnings
+from collections import deque
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -77,22 +78,19 @@ def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> tuple[np.nd
     return upper, lower
 
 
-def _load_and_mask(
+def _masked_frame_stack(
     files: list[str],
     pattern: str,
     Dir: str,
     sft: SFT | None,
     layer_sources: Sequence[str | None] | None,
 ) -> np.ndarray:
-    """Load and mean-average a set of per-frame .npy files, applying the (optional) hole mask per frame first.
+    """Stack of every file in `files`, loaded and hole-masked (NaN'd) per frame, one frame per leading index.
 
     `layer_sources` is None if the array has no leading layer axis (e.g.
     thickness), in which case the union (upper OR lower) hole mask is
     applied directly; otherwise it is a list, one entry per layer along
     axis 0, each "upper", "lower", "union", or None (skip that layer).
-
-    Uses a plain np.mean, not np.nanmean: a NaN at a given point in any one
-    frame makes the averaged point NaN too.
     """
     if not files:
         raise FileNotFoundError(f"No files matching '{pattern}' found in {Dir}")
@@ -123,7 +121,109 @@ def _load_and_mask(
                             arr[layer_idx][sources[source]] = np.nan
         frames.append(arr)
 
-    return np.mean(np.asarray(frames), axis=0)
+    return np.asarray(frames)
+
+
+def _load_and_mask(
+    files: list[str],
+    pattern: str,
+    Dir: str,
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
+) -> np.ndarray:
+    """Load and mean-average a set of per-frame .npy files, applying the (optional) hole mask per frame first.
+
+    Uses a plain np.mean, not np.nanmean: a NaN at a given point in any one
+    frame makes the averaged point NaN too.
+    """
+    return np.mean(_masked_frame_stack(files, pattern, Dir, sft, layer_sources), axis=0)
+
+
+def _average_principal_directions(
+    files: list[str],
+    pattern: str,
+    Dir: str,
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
+) -> np.ndarray:
+    """Nematic-tensor average of a set of per-frame unit tangent-vector fields (shape (..., 3) per frame).
+
+    A principal direction's sign is arbitrary per point per frame (it's an
+    eigenvector). This sums each point's outer product n (x) n across frames
+    - sign-invariant, since (-n)(-n)^T equals n n^T - and takes the dominant
+    eigenvector of that summed 3x3 tensor as the consensus direction. The
+    result is signed to match the first frame's own direction at that point.
+    A single file's own direction is recovered exactly (the dominant
+    eigenvector of n (x) n, signed to match n itself, is n). Follows the same
+    all-or-nothing NaN rule as `_load_and_mask`: a point NaN in any one frame
+    stays NaN here.
+    """
+    stack = _masked_frame_stack(files, pattern, Dir, sft, layer_sources)
+    nan_mask = np.isnan(stack).any(axis=(0, -1))
+    filled = np.where(np.isnan(stack), 0.0, stack)
+
+    tensor = np.einsum("f...a,f...b->...ab", filled, filled)
+    _, eigvecs = np.linalg.eigh(tensor)
+    dominant = eigvecs[..., -1]
+
+    sign = np.sign(np.sum(dominant * filled[0], axis=-1))
+    sign = np.where(sign == 0, 1.0, sign)
+    dominant = dominant * sign[..., None]
+
+    dominant[nan_mask] = np.nan
+    return dominant
+
+
+def _align_signs_to_lower_z(dirs_slice: np.ndarray, flat_tol: float = 1e-9) -> np.ndarray:
+    """Sign-align a (Ny, Nx, 3) unit-direction field so neighboring arrows point consistently.
+
+    A principal direction's sign is arbitrary (it's an eigenvector), so
+    naively drawing each grid point's own stored direction can flip sign
+    between neighbors that represent the same physical axis, looking
+    disordered. This picks one consistent sign per point in two stages:
+
+    1. Wherever a point's z-component has a definite sign (`abs(dz) >
+       flat_tol`), it's flipped, if needed, to point toward lower z - a
+       physically meaningful, unambiguous choice.
+    2. Points with `abs(dz) <= flat_tol` (locally flat, where z can't
+       disambiguate) are flipped to match the first already-oriented
+       4-connected, periodic neighbor reached by breadth-first search
+       outward from every point resolved in stage 1. A point with no
+       oriented neighbor reachable this way (e.g. an entirely flat, isolated
+       region) keeps its original sign.
+
+    `NaN` points (holes, outside the --rotate circle) are skipped and left
+    as `NaN`.
+    """
+    ny, nx = dirs_slice.shape[:2]
+    aligned = dirs_slice.copy()
+    valid = ~np.isnan(aligned).any(axis=-1)
+
+    oriented = np.zeros((ny, nx), dtype=bool)
+    for i in range(ny):
+        for j in range(nx):
+            if not valid[i, j]:
+                continue
+            dz = aligned[i, j, 2]
+            if dz > flat_tol:
+                aligned[i, j] *= -1
+                oriented[i, j] = True
+            elif dz < -flat_tol:
+                oriented[i, j] = True
+
+    queue = deque((i, j) for i in range(ny) for j in range(nx) if oriented[i, j])
+    while queue:
+        i, j = queue.popleft()
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ni, nj = (i + di) % ny, (j + dj) % nx
+            if not valid[ni, nj] or oriented[ni, nj]:
+                continue
+            if np.dot(aligned[ni, nj], aligned[i, j]) < 0:
+                aligned[ni, nj] *= -1
+            oriented[ni, nj] = True
+            queue.append((ni, nj))
+
+    return aligned
 
 
 def _auto_minmax(arr: np.ndarray) -> tuple[float, float]:
@@ -157,6 +257,7 @@ def draw(
     show_vectors: bool = True,
     title_pad: int = 12,
     frame_numbers: Iterable[int] | None = None,
+    vector_frame: int | None = None,
 ) -> None:
     """Render mean curvature or thickness.
 
@@ -166,6 +267,14 @@ def draw(
     fixes the thickness subpanel's own color scale in `--mode mean` (auto-scaled
     from its own data when omitted); it has no effect in `--mode thickness`,
     which uses `minmax` directly since thickness is the only panel drawn there.
+
+    `vector_frame`, in `--mode principal`, selects that single frame's own
+    principal directions for the vector overlay (`dynamic_plot` sets this to
+    each video frame's own trajectory frame number, so the overlay always
+    shows that frame's own instantaneous directions, while the curvature
+    background it's drawn over keeps averaging over `frame_numbers` as usual).
+    In `--mode principal`, each direction field is also sign-aligned
+    (`_align_signs_to_lower_z`) before display.
     """
     fontsize = 20
 
@@ -272,11 +381,12 @@ def draw(
         curvature_k1 = [curvature_mean[0], curvature_mean[2], curvature_mean[4]]
         curvature_k2 = [curvature_mean[1], curvature_mean[3], curvature_mean[5]]
 
-        dir_files = _frame_filtered_glob(Dir + "*_principal_dirs.npy", frame_numbers)
-        dir_mean = _load_and_mask(dir_files, "*_principal_dirs.npy", Dir, sft, curvature_layer_sources)
+        dir_frame_numbers = [vector_frame] if vector_frame is not None else frame_numbers
+        dir_files = _frame_filtered_glob(Dir + "*_principal_dirs.npy", dir_frame_numbers)
+        dir_mean = _average_principal_directions(dir_files, "*_principal_dirs.npy", Dir, sft, curvature_layer_sources)
 
-        dirs_k1 = [normalize(dir_mean[0]), normalize(dir_mean[2]), normalize(dir_mean[4])]
-        dirs_k2 = [normalize(dir_mean[1]), normalize(dir_mean[3]), normalize(dir_mean[5])]
+        dirs_k1 = [normalize(_align_signs_to_lower_z(dir_mean[i])) for i in (0, 2, 4)]
+        dirs_k2 = [normalize(_align_signs_to_lower_z(dir_mean[i])) for i in (1, 3, 5)]
 
     if minmax is None:
         if mode == "principal":

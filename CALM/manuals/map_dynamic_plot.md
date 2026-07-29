@@ -42,3 +42,6 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
 - In `--mode mean` with thickness data present, the thickness panel gets its
   own fixed color scale (spanning every window's thickness data), computed
   and held fixed the same way as the curvature scale.
+- In `--mode principal` with `--vectors`, the arrows always show that video
+  frame's own instantaneous principal directions; the curvature color field
+  behind them is window-averaged.

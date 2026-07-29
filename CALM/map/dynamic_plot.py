@@ -106,7 +106,10 @@ def draw_dynamic(
     differs. The color scale is fixed once for the whole video (see
     `minmax`), not recomputed per frame, so it doesn't flicker. In `--mode
     mean` with thickness data present, the thickness subpanel gets its own
-    fixed scale the same way.
+    fixed scale the same way. In `--mode principal`, the vector overlay
+    (`vector_frame`) always shows that video frame's own instantaneous
+    directions, while the curvature color background behind it keeps
+    averaging over the window as usual.
     """
     if mode not in _MODE_PATTERNS:
         raise ValueError("mode must be 'mean', 'gaussian', 'principal', or 'thickness'")
@@ -130,6 +133,7 @@ def draw_dynamic(
             draw(
                 Dir, mode=mode, minmax=fixed_minmax, thickness_minmax=fixed_thickness_minmax,
                 filename=frame_path, show_vectors=show_vectors, frame_numbers=win,
+                vector_frame=frame_numbers[i],
             )
             frame_paths.append(frame_path)
 

@@ -19,7 +19,8 @@ import numpy as np
 import pytest
 
 from CALM.core.fourier_sft import SFT
-from CALM.map.plot import _load_and_mask, draw
+from CALM.map import plot as plot_module
+from CALM.map.plot import _align_signs_to_lower_z, _average_principal_directions, _load_and_mask, draw
 
 
 def _make_q_mn(Lx: float, Ly: float, Nx: int, Ny: int, theta: float) -> np.ndarray:
@@ -230,3 +231,143 @@ def test_hole_mask_lookup_is_rotation_aware(tmp_path: Path) -> None:
     # A hole exactly at the pivot is invariant under rotation around that
     # same pivot: it must still show up as NaN post-rotation.
     assert np.isnan(result[0, center_idx, center_idx])
+
+
+def _write_principal_dirs(tmp_path: Path, frame: int, vecs: np.ndarray) -> None:
+    """vecs: a single unit 3-vector broadcast to all 6 slices and the whole (1,1) grid."""
+    arr = np.tile(vecs, (6, 1, 1, 1))
+    np.save(tmp_path / f"{frame}_principal_dirs.npy", arr)
+
+
+def test_average_principal_directions_constant_direction_across_frames(tmp_path: Path) -> None:
+    v = np.array([[[1.0, 0.0, 0.0]]])
+    _write_principal_dirs(tmp_path, 0, v)
+    _write_principal_dirs(tmp_path, 1, v)
+
+    files = sorted(str(p) for p in tmp_path.glob("*_principal_dirs.npy"))
+    result = _average_principal_directions(
+        files, "pattern", str(tmp_path), sft=None, layer_sources=["upper", "upper", "lower", "lower", "union", "union"]
+    )
+    assert np.allclose(np.abs(result[0, 0, 0]), [1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_average_principal_directions_recovers_axis_despite_sign_flip(tmp_path: Path) -> None:
+    # Same physical axis, opposite eigenvector sign in each frame - a plain
+    # vector mean would cancel to zero; the nematic average must not.
+    v = np.array([[[0.0, 1.0, 0.0]]])
+    _write_principal_dirs(tmp_path, 0, v)
+    _write_principal_dirs(tmp_path, 1, -v)
+
+    files = sorted(str(p) for p in tmp_path.glob("*_principal_dirs.npy"))
+    result = _average_principal_directions(
+        files, "pattern", str(tmp_path), sft=None, layer_sources=["upper", "upper", "lower", "lower", "union", "union"]
+    )
+    assert np.allclose(np.abs(result[0, 0, 0]), [0.0, 1.0, 0.0], atol=1e-6)
+
+
+def test_average_principal_directions_single_file_passes_through_unchanged(tmp_path: Path) -> None:
+    v = np.array([[[0.6, 0.8, 0.0]]])
+    _write_principal_dirs(tmp_path, 0, v)
+
+    files = sorted(str(p) for p in tmp_path.glob("*_principal_dirs.npy"))
+    result = _average_principal_directions(
+        files, "pattern", str(tmp_path), sft=None, layer_sources=["upper", "upper", "lower", "lower", "union", "union"]
+    )
+    assert np.allclose(result[0, 0, 0], [0.6, 0.8, 0.0], atol=1e-6)
+
+
+def test_average_principal_directions_poisons_on_any_nan(tmp_path: Path) -> None:
+    v = np.array([[[1.0, 0.0, 0.0]]])
+    nan_v = np.full((1, 1, 3), np.nan)
+    _write_principal_dirs(tmp_path, 0, v)
+    _write_principal_dirs(tmp_path, 1, nan_v)
+
+    files = sorted(str(p) for p in tmp_path.glob("*_principal_dirs.npy"))
+    result = _average_principal_directions(
+        files, "pattern", str(tmp_path), sft=None, layer_sources=["upper", "upper", "lower", "lower", "union", "union"]
+    )
+    assert np.isnan(result[0, 0, 0]).all()
+
+
+def test_draw_principal_mode_vector_frame_uses_only_that_frame(tmp_path: Path) -> None:
+    n_frames = 3
+    gridsize = 5
+    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    rng = np.random.default_rng(0)
+    for i in range(n_frames):
+        np.save(tmp_path / f"{i}_principal_curvatures.npy", rng.uniform(-0.1, 0.1, size=(6, gridsize, gridsize)))
+        vecs = rng.normal(size=(6, gridsize, gridsize, 3))
+        vecs /= np.linalg.norm(vecs, axis=-1, keepdims=True)
+        np.save(tmp_path / f"{i}_principal_dirs.npy", vecs)
+
+    with patch.object(
+        plot_module, "_average_principal_directions", wraps=plot_module._average_principal_directions
+    ) as mock_avg:
+        draw(str(tmp_path), mode="principal", filename=str(tmp_path / "out.png"), vector_frame=1)
+
+    dir_files_arg = mock_avg.call_args[0][0]
+    assert [Path(f).stem.split("_")[0] for f in dir_files_arg] == ["1"]
+
+
+# ---- _align_signs_to_lower_z: sign-consistent direction fields ----
+
+def test_align_signs_flips_to_point_toward_lower_z() -> None:
+    dirs = np.zeros((3, 3, 3))
+    dirs[:, :] = [0.0, 0.0, 1.0]  # every point currently points to higher z
+
+    aligned = _align_signs_to_lower_z(dirs)
+
+    assert np.all(aligned[..., 2] < 0)
+    assert np.allclose(aligned, [0.0, 0.0, -1.0])
+
+
+def test_align_signs_propagates_to_a_flat_neighbor() -> None:
+    dirs = np.full((3, 3, 3), np.nan)
+    dirs[1, 0] = [1.0, 0.0, -0.5]  # oriented (dz < 0 already)
+    dirs[1, 1] = [-1.0, 0.0, 0.0]  # flat (dz == 0), pointing opposite in x
+
+    aligned = _align_signs_to_lower_z(dirs)
+
+    # (1, 1)'s only valid neighbor is (1, 0); its dot product with the
+    # unflipped direction is negative, so it flips to align.
+    assert aligned[1, 1, 0] > 0
+    assert np.allclose(aligned[1, 0], [1.0, 0.0, -0.5])
+
+
+def test_align_signs_leaves_an_isolated_flat_region_unchanged() -> None:
+    dirs = np.zeros((3, 3, 3))
+    dirs[:, :, 0] = 1.0  # flat everywhere (dz == 0): no point anywhere can seed an orientation
+
+    aligned = _align_signs_to_lower_z(dirs)
+
+    assert np.allclose(aligned, dirs)
+
+
+def test_align_signs_leaves_nan_points_as_nan() -> None:
+    dirs = np.full((3, 3, 3), np.nan)
+    dirs[0, 0] = [0.0, 0.0, 1.0]
+
+    aligned = _align_signs_to_lower_z(dirs)
+
+    assert np.isnan(aligned[1, 1]).all()
+    assert np.allclose(aligned[0, 0], [0.0, 0.0, -1.0])
+
+
+def test_draw_principal_mode_sign_aligns_before_display(tmp_path: Path) -> None:
+    n_frames = 2
+    gridsize = 5
+    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    rng = np.random.default_rng(0)
+    for i in range(n_frames):
+        np.save(tmp_path / f"{i}_principal_curvatures.npy", rng.uniform(-0.1, 0.1, size=(6, gridsize, gridsize)))
+        vecs = rng.normal(size=(6, gridsize, gridsize, 3))
+        vecs /= np.linalg.norm(vecs, axis=-1, keepdims=True)
+        np.save(tmp_path / f"{i}_principal_dirs.npy", vecs)
+
+    with patch.object(
+        plot_module, "_align_signs_to_lower_z", wraps=plot_module._align_signs_to_lower_z
+    ) as mock_align:
+        draw(str(tmp_path), mode="principal", filename=str(tmp_path / "out.png"))
+
+    # Once per (layer, k) slice actually displayed: 3 layers x 2 (k1, k2).
+    assert mock_align.call_count == 6

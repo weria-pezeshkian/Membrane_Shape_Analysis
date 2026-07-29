@@ -109,11 +109,17 @@ def _thickness_root(
 
 
 def _rotate_direction_vectors(vecs: np.ndarray, angle: float) -> np.ndarray:
-    """Rotate an array of 2D tangent-plane direction vectors (shape (..., 2)) by `angle`."""
+    """Rotate an array of tangent-plane direction vectors (shape (..., 2) or (..., 3)) by `angle` about z.
+
+    A z-axis rotation leaves a 3rd (z) component unchanged; only x, y rotate.
+    """
     vx = vecs[..., 0]
     vy = vecs[..., 1]
     cos_a, sin_a = np.cos(angle), np.sin(angle)
-    return np.stack([cos_a * vx - sin_a * vy, sin_a * vx + cos_a * vy], axis=-1)
+    rotated_xy = np.stack([cos_a * vx - sin_a * vy, sin_a * vx + cos_a * vy], axis=-1)
+    if vecs.shape[-1] == 2:
+        return rotated_xy
+    return np.concatenate([rotated_xy, vecs[..., 2:3]], axis=-1)
 
 
 def analysis(

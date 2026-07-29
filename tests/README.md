@@ -25,11 +25,15 @@ pytest
 - `test_argument_parser.py` - `write_replay_file` and replay-checksum
   verification.
 - `test_calibrate.py` - the `calibrate` CLI scaffold.
-- `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, and
-  rendering.
+- `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic
+  direction averaging, sign alignment, and rendering.
 - `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video.
-- `test_get_vmd_visualization.py` - `get_vmd_visualisation`'s NaN-grid-point
-  handling.
+- `test_vmd_xtc.py` - `get_vmd_visualisation`'s NaN-grid-point handling,
+  `vmd_xtc`'s rotation-TCL auto-detection, and `_trajectory_hole_union`'s
+  per-trajectory hole combining.
+- `test_vmd_vectors.py` - `vmd_vectors`'s static/dynamic principal-direction
+  TCL scripts: arrow endpoints, `--which`/`--layer` filtering, `--Remove-TMD`
+  hole exclusion, and `--scale`.
 - `test_write_ndx.py` - `utilize/write_ndx.py`'s CLI/file-I/O wrapper.
 
 ## Conventions

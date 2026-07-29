@@ -7,6 +7,7 @@ import os
 import MDAnalysis as mda
 import numpy as np
 
+from ..core.fourier_build import _close_enclosed_gaps
 from ..core.fourier_sft import SFT
 from ..core.manual import add_manual
 from ..core.rotation import (
@@ -15,6 +16,7 @@ from ..core.rotation import (
     recover_all_rotation_angles,
     rotation_was_used,
 )
+from ..map.plot import _frame_number
 
 
 def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
@@ -105,10 +107,6 @@ def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
     return True
 
 
-def _frame_number(path: str) -> int:
-    return int(os.path.basename(path).split("_")[0])
-
-
 def _trajectory_hole_union(
     sft: SFT, z_files: list[str], grid_shape: tuple
 ) -> tuple:
@@ -124,6 +122,13 @@ def _trajectory_hole_union(
     --rotate was used: `hole_mask` was computed on the unrotated, as-fit
     grid at build time, and is remapped onto each frame's rotated output
     grid before use.
+
+    Each frame's own mask was already closed (`_close_enclosed_gaps`) at
+    build time, but combining different frames' masks with OR - and, under
+    --rotate, remapping each onto the output grid - can each carve out new
+    small enclosed gaps that no single frame's own closing pass ever saw.
+    Applying `_close_enclosed_gaps` again here, to the combined result,
+    closes those too.
     """
     rotate = rotation_was_used(sft)
     thetas = recover_all_rotation_angles(sft) if rotate else None
@@ -155,7 +160,7 @@ def _trajectory_hole_union(
         upper_union |= upper
         lower_union |= lower
 
-    return upper_union, lower_union
+    return _close_enclosed_gaps(upper_union), _close_enclosed_gaps(lower_union)
 
 
 def _build_coords(
@@ -267,12 +272,12 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = No
     u.atoms.write(avg_gro_path)
 
 
-def write_xtc(args: list[str]) -> None:
+def vmd_xtc(args: list[str]) -> None:
     """CLI entry: export a 'CALM analyze full' run's fitted surface as GRO + XTC for VMD."""
     parser = argparse.ArgumentParser(description="Export the fitted surface as a GRO + XTC trajectory for VMD")
     parser.add_argument("-i", "--input", help="directory with *_Z_fitted.npy and dimensions.csv")
     parser.add_argument("-o", "--output", help="output directory")
-    add_manual(parser, "link_write_xtc")
+    add_manual(parser, "link_vmd_xtc")
     ns = parser.parse_args(args)
 
     os.makedirs(ns.output, exist_ok=True)
