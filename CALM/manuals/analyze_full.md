@@ -72,7 +72,8 @@ Only used when building the fit (not with `--sft`).
 Only used when building the fit (not with `--sft`).
 
 - `-C`, `--center` - MDAnalysis selection to center each frame on.
-  Required by `--rotate` and `--Remove-TMD`.
+  Required by `--rotate`. Also used by `--Remove-TMD` to identify protein
+  atoms, unless `--Remove-TMD` is given its own selection.
 - `--rotate` - apply per-frame rotation alignment. Requires `--center`.
 - `--rotation-direction` - MDAnalysis selection whose center of geometry
   defines the reference direction for rotation. Requires `--rotate`.
@@ -82,11 +83,17 @@ Only used when building the fit (not with `--sft`).
 Only used when building the fit (not with `--sft`).
 
 - `--Remove-TMD` - flag grid points unsupported by nearby lipids as holes.
+  Takes an optional MDAnalysis selection identifying protein atoms, e.g.
+  `--Remove-TMD 'name BB SC1'`. Given bare, `--center`'s selection is used
+  for this instead, and `--center` is then required. A selection of its own
+  is useful when there are multiple, disconnected transmembrane regions and
+  a single `--center` selection would be ambiguous to center on.
+
   A grid point is flagged as a hole in a leaflet when it's farther from
   that leaflet's own atoms than a shared threshold, and either:
-  1. it's within that same threshold of a `--center` atom currently
-     embedded in the membrane (z between the fitted Upper and Lower
-     surfaces at that atom's own x, y); or
+  1. it's within that same threshold of a protein atom (from the selection
+     above) currently embedded in the membrane (z between the fitted Upper
+     and Lower surfaces at that atom's own x, y); or
   2. it's farther than 5x the threshold from that leaflet's own atoms.
 
   The threshold is shared by both leaflets: a multiple of lipid spacing
@@ -95,7 +102,7 @@ Only used when building the fit (not with `--sft`).
   non-hole grid point fully enclosed by hole cells - accounting for the
   box's periodic boundary - is folded into the hole as well.
 
-  Requires `--center`. The result is saved as `holemask.npy` alongside
+  The result is saved as `holemask.npy` alongside
   `Amn.npy`/`qmn.npy`/`dimensions.npy`. This run's own numeric analysis
   (thickness, curvature, ...) doesn't use it; it only takes effect later,
   when `CALM map plot`/`dynamic_plot` or `CALM link write_xtc` reads this

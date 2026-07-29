@@ -126,6 +126,25 @@ def _load_and_mask(
     return np.mean(np.asarray(frames), axis=0)
 
 
+def _auto_minmax(arr: np.ndarray) -> tuple[float, float]:
+    """Min/max of `arr`'s non-NaN values, widened by a hair if they're equal."""
+    valid = arr[~np.isnan(arr)]
+    Minimum, Maximum = float(np.min(valid)), float(np.max(valid))
+    if Minimum == Maximum:
+        Maximum = Minimum + 1e-6
+    return Minimum, Maximum
+
+
+def _clip_to_circle(contour_set, ax, circle_radius: float | None, box_size: np.ndarray) -> None:
+    """Confine a contourf's rendering to the shared circle; outside is left as plain white background."""
+    if circle_radius is not None:
+        circle = mpatches.Circle(
+            (box_size[0] / 2.0, box_size[1] / 2.0), circle_radius,
+            transform=ax.transData,
+        )
+        contour_set.set_clip_path(circle)
+
+
 def draw(
     Dir: str,
     mode: str = "mean",
@@ -133,6 +152,7 @@ def draw(
     layer2: str = "Lower",
     layer3: str = "Middle",
     minmax: list[float] | None = None,
+    thickness_minmax: list[float] | None = None,
     filename: str = "",
     show_vectors: bool = True,
     title_pad: int = 12,
@@ -142,7 +162,10 @@ def draw(
 
     `frame_numbers`, if given, restricts averaging to that subset of frames
     instead of every frame found in `Dir` (used by `dynamic_plot` to average
-    over a rolling window instead of the whole trajectory).
+    over a rolling window instead of the whole trajectory). `thickness_minmax`
+    fixes the thickness subpanel's own color scale in `--mode mean` (auto-scaled
+    from its own data when omitted); it has no effect in `--mode thickness`,
+    which uses `minmax` directly since thickness is the only panel drawn there.
     """
     fontsize = 20
 
@@ -162,15 +185,6 @@ def draw(
     except FileNotFoundError:
         pass
 
-    def _clip_to_circle(contour_set, ax) -> None:
-        """Confine a contourf's rendering to the shared circle; outside is left as plain white background."""
-        if circle_radius is not None:
-            circle = mpatches.Circle(
-                (box_size[0] / 2.0, box_size[1] / 2.0), circle_radius,
-                transform=ax.transData,
-            )
-            contour_set.set_clip_path(circle)
-
     if mode == "thickness":
         thickness_mean = _load_and_mask(
             _frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers),
@@ -179,19 +193,13 @@ def draw(
         gridsize = thickness_mean.shape[-1]
         X, Y = get_XY(box_size, gridsize)
 
-        if minmax is None:
-            valid_vals = thickness_mean[~np.isnan(thickness_mean)]
-            Minimum, Maximum = np.min(valid_vals), np.max(valid_vals)
-            if Minimum == Maximum:
-                Maximum = Minimum + 1e-6
-        else:
-            Minimum, Maximum = minmax
+        Minimum, Maximum = minmax if minmax is not None else _auto_minmax(thickness_mean)
 
         fig, ax = plt.subplots(figsize=(12, 10))
         fig.subplots_adjust(left=0.1, right=0.85, bottom=0.1, top=0.92)
 
         contour = ax.contourf(X, Y, thickness_mean, cmap="viridis", levels=np.linspace(Minimum, Maximum, 20))
-        _clip_to_circle(contour, ax)
+        _clip_to_circle(contour, ax, circle_radius, box_size)
         ax.set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((0.87, 0.1, 0.03, 0.8))
@@ -236,6 +244,7 @@ def draw(
     X, Y = get_XY(box_size, gridsize)
 
     have_thickness = False
+    thickness_min = thickness_max = 0.0
 
     if mode == "mean":
         curvature_data1 = curvature_mean[0]
@@ -249,6 +258,9 @@ def draw(
         have_thickness = bool(thickness_files)
         if have_thickness:
             thickness_mean = _load_and_mask(thickness_files, "*_thickness.npy", Dir, sft, layer_sources=None)
+            thickness_min, thickness_max = (
+                thickness_minmax if thickness_minmax is not None else _auto_minmax(thickness_mean)
+            )
 
     elif mode == "gaussian":
         curvature_data1 = curvature_mean[0]
@@ -287,16 +299,17 @@ def draw(
         axes = axes.flatten()
         fig.subplots_adjust(left=0.07, right=0.89, bottom=0.03, top=0.97)
 
-        contour0 = axes[0].contourf(X, Y, thickness_mean, cmap="viridis")
-        _clip_to_circle(contour0, axes[0])
+        thickness_levels = np.linspace(thickness_min, thickness_max, 20)
+        contour0 = axes[0].contourf(X, Y, thickness_mean, cmap="viridis", levels=thickness_levels)
+        _clip_to_circle(contour0, axes[0], circle_radius, box_size)
         axes[0].set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         contour1 = axes[1].contourf(X, Y, curvature_data1, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour1, axes[1])
+        _clip_to_circle(contour1, axes[1], circle_radius, box_size)
         contour2 = axes[2].contourf(X, Y, curvature_data2, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour2, axes[2])
+        _clip_to_circle(contour2, axes[2], circle_radius, box_size)
         contour3 = axes[3].contourf(X, Y, curvature_data3, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour3, axes[3])
+        _clip_to_circle(contour3, axes[3], circle_radius, box_size)
 
         axes[1].set_title(f"{layer1} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
         axes[2].set_title(f"{layer2} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
@@ -323,7 +336,7 @@ def draw(
 
         for i in range(3):
             c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, axes[i])
+            _clip_to_circle(c, axes[i], circle_radius, box_size)
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
@@ -340,7 +353,7 @@ def draw(
 
         for i in range(3):
             c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, axes[i])
+            _clip_to_circle(c, axes[i], circle_radius, box_size)
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
@@ -355,7 +368,7 @@ def draw(
         for i in range(3):
             ax = axes[0, i]
             c = ax.contourf(X, Y, curvature_k1[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, ax)
+            _clip_to_circle(c, ax, circle_radius, box_size)
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Bilayer: k1",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
@@ -367,7 +380,7 @@ def draw(
         for i in range(3):
             ax = axes[1, i]
             c = ax.contourf(X, Y, curvature_k2[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, ax)
+            _clip_to_circle(c, ax, circle_radius, box_size)
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Bilayer: k2",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:

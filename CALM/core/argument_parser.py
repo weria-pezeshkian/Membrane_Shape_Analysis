@@ -120,6 +120,16 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
                 out.append(f"# {opt} is True (cannot be expressed without a --no-* option)")
             continue
 
+        # nargs='?' with const=True: bare flag => True, given a value => that value
+        if action.nargs == "?" and action.const is True:
+            if cur is False:
+                out.append(f"# {opt} is False (bare flag omitted from replay)")
+            elif cur is True:
+                out.append(shlex.quote(opt))
+            else:
+                out.append(" ".join(shlex.quote(p) for p in (opt, str(cur))))
+            continue
+
         # Multi-value options
         if action.nargs in ("+", "*") or isinstance(cur, (list, tuple)):
             if cur is None:
@@ -185,8 +195,11 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
         help="MDAnalysis selection defining the rotation reference direction; requires --rotate",
     )
     parser.add_argument(
-        '--Remove-TMD', dest='remove_tmd', default=False, action="store_true",
-        help="flag unsupported grid points as holes; requires --center (see --man)",
+        '--Remove-TMD', dest='remove_tmd', nargs='?', const=True, default=False, metavar='SELECTION',
+        help="flag unsupported grid points as holes. With no value, protein "
+             "atoms for hole detection come from --center's selection, which "
+             "is then required; given a value (e.g. 'name BB SC1'), that "
+             "selection is used instead and --center is not required (see --man)",
     )
     parser.add_argument(
         '--regularization', dest='regularize', default=False, action="store_true",
@@ -222,14 +235,12 @@ def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespa
             parser.error("--rotate requires --center")
         if ns.rotation_direction is not None:
             parser.error("--rotation-direction requires --center")
-        if ns.remove_tmd:
+        if ns.remove_tmd is True:
             parser.error(
-                "--Remove-TMD requires --center: it uses the --center "
-                "selection (e.g. 'name BB') to identify which of those "
-                "atoms are actually embedded in the membrane right now, "
-                "and only counts a grid point as a hole if it's both "
-                "unsupported by lipids AND spatially plausible as "
-                "protein-displaced."
+                "--Remove-TMD with no selection requires --center: --center's "
+                "selection identifies which atoms are protein for hole "
+                "detection. Give --Remove-TMD its own selection instead "
+                "(e.g. --Remove-TMD 'name BB SC1') to run it without --center."
             )
     if ns.rotation_direction is not None and not ns.rotate:
         parser.error("--rotation-direction requires --rotate")

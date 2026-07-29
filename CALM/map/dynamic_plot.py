@@ -104,7 +104,9 @@ def draw_dynamic(
     Reuses `map/plot.py`'s `draw()` for all loading, rotation-awareness,
     hole-masking, and rendering - only the frame subset given to each call
     differs. The color scale is fixed once for the whole video (see
-    `minmax`), not recomputed per frame, so it doesn't flicker.
+    `minmax`), not recomputed per frame, so it doesn't flicker. In `--mode
+    mean` with thickness data present, the thickness subpanel gets its own
+    fixed scale the same way.
     """
     if mode not in _MODE_PATTERNS:
         raise ValueError("mode must be 'mean', 'gaussian', 'principal', or 'thickness'")
@@ -116,14 +118,18 @@ def draw_dynamic(
 
     fixed_minmax = list(minmax) if minmax is not None else list(_windowed_minmax(Dir, mode, windows))
 
+    fixed_thickness_minmax = None
+    if mode == "mean" and _available_frame_numbers(Dir, "thickness"):
+        fixed_thickness_minmax = list(_windowed_minmax(Dir, "thickness", windows))
+
     tmp_dir = tempfile.mkdtemp(prefix="dynamic_plot_")
     try:
         frame_paths = []
         for i, win in tqdm(enumerate(windows),total=len(windows)):
             frame_path = os.path.join(tmp_dir, f"frame_{i:06d}.png")
             draw(
-                Dir, mode=mode, minmax=fixed_minmax, filename=frame_path,
-                show_vectors=show_vectors, frame_numbers=win,
+                Dir, mode=mode, minmax=fixed_minmax, thickness_minmax=fixed_thickness_minmax,
+                filename=frame_path, show_vectors=show_vectors, frame_numbers=win,
             )
             frame_paths.append(frame_path)
 

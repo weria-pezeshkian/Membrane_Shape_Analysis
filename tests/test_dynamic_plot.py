@@ -59,6 +59,12 @@ def _write_mean_curvature_frames(d: Path, n_frames: int, gridsize: int = 10) -> 
         np.save(d / f"{i}_mean_curvature.npy", rng.uniform(-0.1, 0.1, size=(3, gridsize, gridsize)))
 
 
+def _write_thickness_frames(d: Path, n_frames: int, gridsize: int = 10) -> None:
+    rng = np.random.default_rng(1)
+    for i in range(n_frames):
+        np.save(d / f"{i}_thickness.npy", rng.uniform(3.0, 5.0, size=(gridsize, gridsize)))
+
+
 def test_draw_frame_numbers_filters_files_passed_to_load_and_mask(tmp_path: Path) -> None:
     _write_dimensions_csv(tmp_path, 3, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, 3)
@@ -94,6 +100,20 @@ def test_draw_dynamic_renders_one_frame_per_available_frame(tmp_path: Path) -> N
 
     assert out_gif.exists()
     assert mock_draw.call_count == n_frames
+
+
+def test_draw_dynamic_fixes_thickness_scale_across_windows(tmp_path: Path) -> None:
+    n_frames = 6
+    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_mean_curvature_frames(tmp_path, n_frames)
+    _write_thickness_frames(tmp_path, n_frames)
+
+    with patch("CALM.map.dynamic_plot.draw", wraps=draw) as mock_draw:
+        draw_dynamic(str(tmp_path), mode="mean", out_gif=str(tmp_path / "out.gif"), window=3, spf=0.05)
+
+    thickness_minmax_per_call = [call.kwargs["thickness_minmax"] for call in mock_draw.call_args_list]
+    assert all(tm is not None for tm in thickness_minmax_per_call)
+    assert len({tuple(tm) for tm in thickness_minmax_per_call}) == 1
 
 
 def test_draw_dynamic_raises_for_missing_mode_files(tmp_path: Path) -> None:

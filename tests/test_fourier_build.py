@@ -3,6 +3,9 @@
 - _hole_mask_for_layer: periodic nearest-atom distance masking
 - _close_enclosed_gaps: periodic-boundary-aware enclosed-region closing
 - _one_frame's dynamic_select path
+- _one_frame's remove_tmd selection resolution: bare (True) falls back to
+  --center's selection, a string uses that selection directly with no
+  --center required
 - _fetch_dynamic_positions / _track_dynamic_leaflets: the two-phase dynamic
   leaflet detection pipeline (parallel position-fetch + sequential,
   history-aware leaflet tracking)
@@ -50,12 +53,24 @@ def test_close_enclosed_gaps_fills_an_interior_island() -> None:
 
 def test_close_enclosed_gaps_fills_an_island_touching_the_array_edge() -> None:
     # The island touches (0,0); its periodic neighbor across the wraparound
-    # is also hole, so it is enclosed all the way around.
+    # is also hole, so it is enclosed all the way around. Sized to close
+    # fully at the conservative default of 1 iteration (a single cell or
+    # small gap; a wider one may only close partially at this setting).
+    hole = np.ones((10, 10), dtype=bool)
+    hole[0:2, 0:2] = False
+
+    result = _close_enclosed_gaps(hole)
+    assert result[0:2, 0:2].all()
+
+
+def test_close_enclosed_gaps_wider_gap_needs_more_iterations() -> None:
+    # A 3x3 gap only partially closes at the conservative default of 1
+    # iteration, but fully closes once given enough iterations to bridge it.
     hole = np.ones((10, 10), dtype=bool)
     hole[0:3, 0:3] = False
 
-    result = _close_enclosed_gaps(hole)
-    assert result[0:3, 0:3].all()
+    assert not _close_enclosed_gaps(hole, iterations=1)[0:3, 0:3].all()
+    assert _close_enclosed_gaps(hole, iterations=3)[0:3, 0:3].all()
 
 
 def test_close_enclosed_gaps_leaves_a_periodically_open_strip_alone() -> None:
@@ -182,6 +197,65 @@ def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: 
     # hole flagged there is a false positive.
     far_from_gap = np.hypot(*(np.meshgrid(grid, grid) - np.array([Lx / 2, Ly / 2])[:, None, None])) > 60
     assert not hole_mask[1][far_from_gap].any()
+
+
+def test_one_frame_uses_its_own_tmd_selection_with_no_center_at_all(tmp_path: Path) -> None:
+    # --Remove-TMD given its own selection (a string, not True) identifies
+    # protein atoms from that selection directly and works with
+    # rotation_and_center being None, decoupling the gate from --center -
+    # useful for multiple, disconnected transmembrane regions where a
+    # single --center selection would be ambiguous to center on.
+    Lx = Ly = Lz = 300.0
+    rng = np.random.default_rng(1)
+    spacing = 8.0
+    xs, ys = np.meshgrid(np.arange(0, Lx, spacing), np.arange(0, Ly, spacing))
+    pts = np.column_stack([xs.ravel(), ys.ravel()]) + rng.normal(0, 1.0, size=(xs.size, 2))
+    pts = np.mod(pts, [Lx, Ly])
+    center = np.array([Lx / 2, Ly / 2])
+    keep = np.linalg.norm(pts - center, axis=1) > 15.0
+
+    upper_xy = pts[keep]
+    lower_xy = pts
+    protein_xy = center + np.array([[0.0, 0.0], [3.0, 0.0], [-3.0, 0.0], [0.0, 3.0]])
+    protein_z = np.full(len(protein_xy), 50.0)
+
+    positions = np.vstack([
+        np.column_stack([upper_xy, np.full(len(upper_xy), 70.0)]),
+        np.column_stack([lower_xy, np.full(len(lower_xy), 30.0)]),
+        np.column_stack([protein_xy, protein_z]),
+    ])
+    names = ["P"] * (len(upper_xy) + len(lower_xy)) + ["BB"] * len(protein_xy)
+    u = mda.Universe.empty(n_atoms=positions.shape[0], trajectory=True)
+    u.add_TopologyAttr("name", names)
+    u.atoms.positions = positions
+    u.dimensions = [Lx, Ly, Lz, 90.0, 90.0, 90.0]
+
+    fb._worker_state["universe"] = u
+    fb._worker_state["layer_group"] = u.atoms[: len(upper_xy)]
+    fb._worker_state["layer_group_2"] = u.atoms[len(upper_xy):len(upper_xy) + len(lower_xy)]
+    fb._worker_state["rotation_and_center"] = None
+    try:
+        result = fb._one_frame(
+            0,
+            out_dir=str(tmp_path),
+            dynamic_select=False,
+            dynamic_leaflets=None,
+            until=1,
+            Nx=5.0, Ny=5.0,
+            sqrt_n_atoms=60,
+            remove_tmd="name BB",
+            regularize=False,
+        )
+    finally:
+        fb._worker_state.clear()
+
+    hole_mask = np.load(tmp_path / "raw_sft" / "0_hole_mask.npy")
+    grid = np.linspace(0, Lx, 60, endpoint=False)
+    center_idx = np.argmin(np.abs(grid - Lx / 2))
+
+    assert hole_mask[0, center_idx, center_idx]  # gap correctly flagged via the separate selection
+    stats = result["hole_stats"]
+    assert stats["upper"]["total"] == int(hole_mask[0].sum())
 
 
 def test_one_frame_does_not_flag_fully_dense_disordered_leaflet_as_holes(tmp_path: Path) -> None:

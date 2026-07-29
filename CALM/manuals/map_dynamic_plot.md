@@ -39,7 +39,6 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
 
 - Rotation-awareness and `--Remove-TMD` hole-mask handling are identical to
   `CALM map plot`, applied per window.
-- In `--mode mean` with thickness data present, the thickness panel's color
-  scale is not fixed across frames (matplotlib auto-ranges it from each
-  window's own data, the same as `CALM map plot` does for a single image) -
-  its brightness may shift slightly between frames.
+- In `--mode mean` with thickness data present, the thickness panel gets its
+  own fixed color scale (spanning every window's thickness data), computed
+  and held fixed the same way as the curvature scale.

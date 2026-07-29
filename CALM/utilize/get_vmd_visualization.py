@@ -158,6 +158,16 @@ def _trajectory_hole_union(
     return upper_union, lower_union
 
 
+def _build_coords(
+    z_array: np.ndarray, X_valid: np.ndarray, Y_valid: np.ndarray, valid: np.ndarray, n_layers: int
+) -> np.ndarray:
+    """Stack (x, y, z) coordinates for every valid grid point, one block per layer."""
+    return np.vstack([
+        np.column_stack([X_valid, Y_valid, z_array[layer][valid]])
+        for layer in range(n_layers)
+    ])
+
+
 def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = None) -> None:
     """Build a pseudo-universe from *_Z_fitted.npy files; write GRO (first frame), XTC trajectory, and average GRO.
 
@@ -204,16 +214,8 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = No
     X_valid, Y_valid = X[valid], Y[valid]
     n_valid = int(valid.sum())
 
-    def build_coords(z_array: np.ndarray) -> np.ndarray:
-        return np.vstack([
-            np.column_stack([X_valid,
-                             Y_valid,
-                             z_array[layer][valid]])
-            for layer in range(n_layers)
-        ])
-
     z_values = np.load(z_files[0]) * 10
-    coords = build_coords(z_values)
+    coords = _build_coords(z_values, X_valid, Y_valid, valid, n_layers)
 
     resindices = np.repeat(np.arange(n_layers), n_valid)
     u = mda.Universe.empty(
@@ -257,11 +259,11 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = No
             z_values = np.load(z_file) * 10
             avg_z += z_values
 
-            u.atoms.positions = build_coords(z_values)
+            u.atoms.positions = _build_coords(z_values, X_valid, Y_valid, valid, n_layers)
             writer.write(u.atoms)
 
     avg_z /= len(z_files)
-    u.atoms.positions = build_coords(avg_z)
+    u.atoms.positions = _build_coords(avg_z, X_valid, Y_valid, valid, n_layers)
     u.atoms.write(avg_gro_path)
 
 

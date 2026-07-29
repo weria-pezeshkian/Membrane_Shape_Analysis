@@ -18,6 +18,10 @@ from CALM.core import argument_parser as arg_helper
 from CALM.core.manual import add_manual
 
 
+def _fail_if_called(*args: object, **kwargs: object) -> str:
+    raise AssertionError("input() should not be called when checksums match")
+
+
 def test_write_replay_file_does_not_crash_on_suppress_defaulted_actions(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
     arg_helper.add_build_arguments(parser)
@@ -71,14 +75,50 @@ def test_apply_replay_proceeds_silently_when_checksums_match(tmp_path: Path, mon
     replay_path = tmp_path / "replay.log"
     arg_helper.write_replay_file(str(replay_path), parser, ns)
 
-    def _fail_if_called(*args: object, **kwargs: object) -> str:
-        raise AssertionError("input() should not be called when checksums match")
-
     monkeypatch.setattr("builtins.input", _fail_if_called)
 
     pre_ns = argparse.Namespace(replay=str(replay_path))
     result = arg_helper.apply_replay(parser, pre_ns, ["-o", str(tmp_path), "-f", str(traj)])
     assert result.trajectory == str(traj)
+
+
+def test_remove_tmd_parses_bare_as_true_and_with_value_as_the_string(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser)
+
+    assert parser.parse_args(["-o", str(tmp_path)]).remove_tmd is False
+    assert parser.parse_args(["-o", str(tmp_path), "--Remove-TMD"]).remove_tmd is True
+    ns = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD", "name BB SC1"])
+    assert ns.remove_tmd == "name BB SC1"
+
+
+def test_validate_rotation_args_requires_center_only_for_bare_remove_tmd(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser)
+
+    bare = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD"])
+    with pytest.raises(SystemExit):
+        arg_helper.validate_rotation_args(parser, bare)
+
+    with_selection = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD", "name BB SC1"])
+    arg_helper.validate_rotation_args(parser, with_selection)  # does not raise
+
+
+def test_write_replay_file_round_trips_all_three_remove_tmd_states(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser)
+
+    cases = [
+        (["-o", str(tmp_path)], False),
+        (["-o", str(tmp_path), "-C", "name BB", "--Remove-TMD"], True),
+        (["-o", str(tmp_path), "--Remove-TMD", "name BB SC1"], "name BB SC1"),
+    ]
+    for argv, expected in cases:
+        ns = parser.parse_args(argv)
+        replay_path = tmp_path / "replay.log"
+        arg_helper.write_replay_file(str(replay_path), parser, ns)
+        replayed = parser.parse_args(arg_helper.load_replay_args(str(replay_path)))
+        assert replayed.remove_tmd == expected
 
 
 def test_apply_replay_aborts_when_checksum_mismatched_and_not_confirmed(

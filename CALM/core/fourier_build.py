@@ -231,28 +231,17 @@ def _grid_to_atom_distances(
     return distances.reshape(X.shape)
 
 
-def _close_enclosed_gaps(hole: np.ndarray) -> np.ndarray:
-    """Extend `hole` to include non-hole regions enclosed by hole cells, using periodic boundary connectivity.
+def _close_enclosed_gaps(hole: np.ndarray, iterations: int = 1) -> np.ndarray:
+    """Extend `hole` with a periodic-boundary-aware morphological closing (dilate then erode).
 
-    Tiles the non-hole mask 3x3 to resolve periodic connectivity, then
-    marks a connected non-hole component as a hole when its pixels stay
-    entirely within the center tile (it never reaches, via wraparound,
-    into open area outside that one period).
+    Tiles `hole` 3x3 to resolve periodic connectivity, then applies
+    `scipy.ndimage.binary_closing` with `iterations` steps, merging hole
+    cells across non-hole gaps up to about that many cells wide.
     """
-    valid = ~hole
-    H, W = valid.shape
-    tiled = np.tile(valid, (3, 3))
-    labeled, _ = ndimage.label(tiled)
-    center = labeled[H:2 * H, W:2 * W]
-
-    result = hole.copy()
-    for lab in np.unique(center):
-        if lab == 0:
-            continue
-        rows, cols = np.nonzero(labeled == lab)
-        if rows.min() >= H and rows.max() < 2 * H and cols.min() >= W and cols.max() < 2 * W:
-            result |= (center == lab)
-    return result
+    H, W = hole.shape
+    tiled = np.tile(hole, (3, 3))
+    closed = ndimage.binary_closing(tiled, iterations=iterations)
+    return closed[H:2 * H, W:2 * W]
 
 
 def _hole_mask_for_layer(
@@ -442,7 +431,7 @@ def _one_frame(
     Nx: float | None = 3,
     Ny: float | None = 3,
     sqrt_n_atoms: int = 100,
-    remove_tmd: bool = False,
+    remove_tmd: bool | str = False,
     regularize: bool = False,
     tmd_far_multiple: float = 5.0,
 ) -> _FrameResult:
@@ -522,13 +511,18 @@ def _one_frame(
         far_threshold = threshold * tmd_far_multiple
 
         # A grid point counts as a hole when it is unsupported by lipids
-        # (the distance test) and either within `threshold` of a --center
+        # (the distance test) and either within `threshold` of a protein
         # atom currently embedded in the membrane (_tmd_protein_atoms_xy),
-        # or farther from any lipid than `far_threshold`.
-        # rotation_and_center is always a real tracker object here, since
-        # argument_parser requires --center whenever --Remove-TMD is used.
-        assert rotation_and_center is not None
-        tmd_xy = _tmd_protein_atoms_xy(rotation_and_center.sel1, universe, fourier1, fourier2)
+        # or farther from any lipid than `far_threshold`. The protein
+        # selection is remove_tmd's own value when --Remove-TMD was given
+        # one, and --center's selection (rotation_and_center.sel1) when
+        # --Remove-TMD was given bare (remove_tmd is True).
+        if remove_tmd is True:
+            assert rotation_and_center is not None
+            tmd_selection = rotation_and_center.sel1
+        else:
+            tmd_selection = remove_tmd
+        tmd_xy = _tmd_protein_atoms_xy(tmd_selection, universe, fourier1, fourier2)
         dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
 
         near_protein = dist_to_protein <= threshold

@@ -60,6 +60,9 @@ Issues = "https://github.com/weria-pezeshkian/Membrane_Shape_Analysis/issues"
 [tool.setuptools]
 license-files = ["LICENSE"]
 
+[tool.setuptools.packages.find]
+include = ["CALM*"]
+
 [tool.setuptools.package-data]
 "CALM.manuals" = ["*.md"]
 
