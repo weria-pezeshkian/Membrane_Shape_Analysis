@@ -5,10 +5,12 @@ import sys
 from importlib.metadata import version
 
 from CALM.utilize.write_ndx import write_ndx
-from ..core.manual import add_manual
-from .get_vmd_visualization import write_xtc
 
-MODULES = ["write_ndx", "write_xtc"]
+from ..core.manual import add_manual
+from .vmd_vectors import vmd_vectors
+from .vmd_xtc import vmd_xtc
+
+MODULES = ["write_ndx", "vmd_xtc", "vmd_vectors"]
 
 
 def run_module(module_name: str, args: list[str]) -> None:
@@ -16,8 +18,10 @@ def run_module(module_name: str, args: list[str]) -> None:
     module_name = module_name.lower()
     if module_name == "write_ndx":
         write_ndx(args)
-    elif module_name == "write_xtc":
-        write_xtc(args)
+    elif module_name == "vmd_xtc":
+        vmd_xtc(args)
+    elif module_name == "vmd_vectors":
+        vmd_vectors(args)
     else:
         print(f"Unknown module: {module_name}")
 

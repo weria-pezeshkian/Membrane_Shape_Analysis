@@ -5,9 +5,9 @@ from importlib.metadata import version
 
 from CALM.analyze.enter import Analyze
 from CALM.calibrate.enter import Calibrate
+from CALM.core.manual import add_manual
 from CALM.map.enter import Map
 from CALM.utilize.enter import Link
-from CALM.core.manual import add_manual
 
 PYTHON_MODULES = ["calibrate", "analyze", "link", "map"]
 

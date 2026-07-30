@@ -14,7 +14,10 @@ CALM link <command> [args...]
 
 - `write_ndx` - detect the two leaflets in a selection and write a GROMACS
   index file (`Upper`/`Lower` groups).
-- `write_xtc` - build a GRO + XTC trajectory of the fitted surface from
+- `vmd_xtc` - build a GRO + XTC trajectory of the fitted surface from
   `CALM analyze full` output, for visualization in VMD.
+- `vmd_vectors` - write VMD TCL scripts drawing principal-direction arrows in
+  real space, from `vmd_xtc`'s output plus `CALM analyze full --method
+  principal_directions`.
 
 Run `CALM link <command> --man` for a command's full manual.

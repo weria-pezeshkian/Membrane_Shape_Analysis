@@ -6,6 +6,7 @@ import shutil
 import textwrap
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 
 class ManualAction(argparse.Action):
@@ -16,9 +17,9 @@ class ManualAction(argparse.Action):
         option_strings: list[str],
         dest: str = argparse.SUPPRESS,
         default: str = argparse.SUPPRESS,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
-        self.manual_name = kwargs.pop("manual_name")
+        self.manual_name: str = kwargs.pop("manual_name")
         kwargs.setdefault("nargs", 0)
         super().__init__(option_strings, dest=dest, default=default, **kwargs)
 
@@ -49,13 +50,15 @@ def load_manual_markdown(name: str) -> str:
         local_path = Path(__file__).resolve().parent.parent / "manuals" / filename
         if local_path.exists():
             return local_path.read_text(encoding="utf-8")
-        raise FileNotFoundError(f"CALM manual not found: {filename}")
+        raise FileNotFoundError(f"CALM manual not found: {filename}") from None
 
 
 def render_markdown_for_terminal(markdown: str) -> str:
-    """Dependency-free Markdown renderer for command manuals: keeps code
+    """Render a command manual's Markdown for terminal output: keeps code
     blocks readable, converts headings to terminal-style section headers,
-    and strips inline Markdown markers. Not a general Markdown renderer."""
+    and strips inline Markdown markers. Handles the specific subset of
+    Markdown CALM's manuals use (headings, bullets, numbered lists, code
+    fences, inline emphasis/links)."""
     width = shutil.get_terminal_size((100, 24)).columns
     width = max(72, min(width, 120))
 

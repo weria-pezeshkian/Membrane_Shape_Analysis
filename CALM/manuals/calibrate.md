@@ -6,8 +6,7 @@ submodules - unlike `analyze`/`map`/`link`, `CALM calibrate` takes its
 flags directly.
 
 This command is currently a scaffold: it parses arguments and loads the
-SFT, but the physics itself is not yet implemented (see `CALM/calibrate/
-calibrate.py`).
+SFT, but the physics itself is not yet implemented.
 
 ## Usage
 
@@ -29,5 +28,5 @@ CALM calibrate -i sft_dir --radius 5.0 -o calibration.json
 - Do not feed an SFT built with `--regularization` into a kappa/sigma
   calibration: Tikhonov regularization biases each mode's Anm toward zero
   in proportion to curvature, which would circularly contaminate any
-  fluctuation-spectrum-based fit. `SFT.regularized` records whether a given
-  build used it.
+  fluctuation-spectrum-based fit. Whether a given build used it is recorded
+  in `regularized.npy` alongside the SFT's other output files.

@@ -5,8 +5,9 @@ import glob
 import logging
 import os
 import warnings
+from collections import deque
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
 
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
@@ -34,7 +35,7 @@ def normalize(v: np.ndarray) -> np.ndarray:
     return np.divide(v, norm, where=norm > 0)
 
 
-def get_XY(box_size: np.ndarray, gridsize: int) -> Tuple[np.ndarray, np.ndarray]:
+def get_XY(box_size: np.ndarray, gridsize: int) -> tuple[np.ndarray, np.ndarray]:
     x = np.linspace(0, box_size[0], gridsize)
     y = np.linspace(0, box_size[1], gridsize)
     X, Y = np.meshgrid(x, y)
@@ -45,7 +46,7 @@ def _frame_number(path: str) -> int:
     return int(Path(path).stem.split("_")[0])
 
 
-def _frame_filtered_glob(pattern_path: str, frame_numbers: Optional[Iterable[int]]) -> List[str]:
+def _frame_filtered_glob(pattern_path: str, frame_numbers: Iterable[int] | None) -> list[str]:
     """Sorted glob of `pattern_path`, kept to files whose frame number is in `frame_numbers` (all, if None)."""
     files = sorted(glob.glob(pattern_path))
     if frame_numbers is None:
@@ -54,12 +55,18 @@ def _frame_filtered_glob(pattern_path: str, frame_numbers: Optional[Iterable[int
     return [f for f in files if _frame_number(f) in keep]
 
 
-def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> Tuple[np.ndarray, np.ndarray]:
-    """(upper, lower) hole masks for one frame, remapped onto the output grid if theta != 0."""
+def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> tuple[np.ndarray, np.ndarray]:
+    """(upper, lower) hole masks for one frame, remapped onto the output grid if theta != 0.
+
+    Callers only reach this once they've already confirmed `sft.hole_mask
+    is not None`; the assert documents and enforces that precondition.
+    """
+    assert sft.hole_mask is not None
     upper, lower = sft.hole_mask[frame_idx]
     if theta == 0.0:
         return upper, lower
 
+    assert sft.dimensions is not None
     Lx, Ly = sft.dimensions[frame_idx, 0], sft.dimensions[frame_idx, 1]
     gridsize = upper.shape[0]
     x = np.linspace(0, Lx, gridsize, endpoint=False)
@@ -71,39 +78,38 @@ def _hole_masks_for_frame(sft: SFT, frame_idx: int, theta: float) -> Tuple[np.nd
     return upper, lower
 
 
-def _load_and_mask(
-    files: List[str],
+def _masked_frame_stack(
+    files: list[str],
     pattern: str,
     Dir: str,
-    sft: Optional[SFT],
-    layer_sources: Optional[List[Optional[str]]],
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
 ) -> np.ndarray:
-    """Load and mean-average a set of per-frame .npy files, applying the (optional) hole mask per frame first.
+    """Stack of every file in `files`, loaded and hole-masked (NaN'd) per frame, one frame per leading index.
 
     `layer_sources` is None if the array has no leading layer axis (e.g.
     thickness), in which case the union (upper OR lower) hole mask is
     applied directly; otherwise it is a list, one entry per layer along
     axis 0, each "upper", "lower", "union", or None (skip that layer).
-
-    Uses a plain np.mean, not np.nanmean: a NaN at a given point in any one
-    frame makes the averaged point NaN too, rather than silently averaging
-    over whichever frames had data there.
     """
     if not files:
         raise FileNotFoundError(f"No files matching '{pattern}' found in {Dir}")
 
-    have_holes = sft is not None and sft.hole_mask is not None
-    thetas = recover_all_rotation_angles(sft) if have_holes and rotation_was_used(sft) else None
+    sft_with_holes = sft if (sft is not None and sft.hole_mask is not None) else None
+    thetas = None
+    if sft_with_holes is not None and rotation_was_used(sft_with_holes):
+        thetas = recover_all_rotation_angles(sft_with_holes)
 
     frames = []
     for f in files:
         arr = np.load(f)
-        if have_holes:
-            matches = np.nonzero(sft.frame_indices == _frame_number(f))[0]
+        if sft_with_holes is not None:
+            assert sft_with_holes.frame_indices is not None
+            matches = np.nonzero(sft_with_holes.frame_indices == _frame_number(f))[0]
             if matches.size:
                 idx = matches[0]
                 theta = thetas[idx] if thetas is not None else 0.0
-                upper_hole, lower_hole = _hole_masks_for_frame(sft, idx, theta)
+                upper_hole, lower_hole = _hole_masks_for_frame(sft_with_holes, idx, theta)
                 union_hole = upper_hole | lower_hole
                 arr = arr.copy()
                 if layer_sources is None:
@@ -115,7 +121,128 @@ def _load_and_mask(
                             arr[layer_idx][sources[source]] = np.nan
         frames.append(arr)
 
-    return np.mean(np.asarray(frames), axis=0)
+    return np.asarray(frames)
+
+
+def _load_and_mask(
+    files: list[str],
+    pattern: str,
+    Dir: str,
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
+) -> np.ndarray:
+    """Load and mean-average a set of per-frame .npy files, applying the (optional) hole mask per frame first.
+
+    Uses a plain np.mean, not np.nanmean: a NaN at a given point in any one
+    frame makes the averaged point NaN too.
+    """
+    return np.mean(_masked_frame_stack(files, pattern, Dir, sft, layer_sources), axis=0)
+
+
+def _average_principal_directions(
+    files: list[str],
+    pattern: str,
+    Dir: str,
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
+) -> np.ndarray:
+    """Nematic-tensor average of a set of per-frame unit tangent-vector fields (shape (..., 3) per frame).
+
+    A principal direction's sign is arbitrary per point per frame (it's an
+    eigenvector). This sums each point's outer product n (x) n across frames
+    - sign-invariant, since (-n)(-n)^T equals n n^T - and takes the dominant
+    eigenvector of that summed 3x3 tensor as the consensus direction. The
+    result is signed to match the first frame's own direction at that point.
+    A single file's own direction is recovered exactly (the dominant
+    eigenvector of n (x) n, signed to match n itself, is n). Follows the same
+    all-or-nothing NaN rule as `_load_and_mask`: a point NaN in any one frame
+    stays NaN here.
+    """
+    stack = _masked_frame_stack(files, pattern, Dir, sft, layer_sources)
+    nan_mask = np.isnan(stack).any(axis=(0, -1))
+    filled = np.where(np.isnan(stack), 0.0, stack)
+
+    tensor = np.einsum("f...a,f...b->...ab", filled, filled)
+    _, eigvecs = np.linalg.eigh(tensor)
+    dominant = eigvecs[..., -1]
+
+    sign = np.sign(np.sum(dominant * filled[0], axis=-1))
+    sign = np.where(sign == 0, 1.0, sign)
+    dominant = dominant * sign[..., None]
+
+    dominant[nan_mask] = np.nan
+    return dominant
+
+
+def _align_signs_to_lower_z(dirs_slice: np.ndarray, flat_tol: float = 1e-9) -> np.ndarray:
+    """Sign-align a (Ny, Nx, 3) unit-direction field so neighboring arrows point consistently.
+
+    A principal direction's sign is arbitrary (it's an eigenvector), so
+    naively drawing each grid point's own stored direction can flip sign
+    between neighbors that represent the same physical axis, looking
+    disordered. This picks one consistent sign per point in two stages:
+
+    1. Wherever a point's z-component has a definite sign (`abs(dz) >
+       flat_tol`), it's flipped, if needed, to point toward lower z - a
+       physically meaningful, unambiguous choice.
+    2. Points with `abs(dz) <= flat_tol` (locally flat, where z can't
+       disambiguate) are flipped to match the first already-oriented
+       4-connected, periodic neighbor reached by breadth-first search
+       outward from every point resolved in stage 1. A point with no
+       oriented neighbor reachable this way (e.g. an entirely flat, isolated
+       region) keeps its original sign.
+
+    `NaN` points (holes, outside the --rotate circle) are skipped and left
+    as `NaN`.
+    """
+    ny, nx = dirs_slice.shape[:2]
+    aligned = dirs_slice.copy()
+    valid = ~np.isnan(aligned).any(axis=-1)
+
+    oriented = np.zeros((ny, nx), dtype=bool)
+    for i in range(ny):
+        for j in range(nx):
+            if not valid[i, j]:
+                continue
+            dz = aligned[i, j, 2]
+            if dz > flat_tol:
+                aligned[i, j] *= -1
+                oriented[i, j] = True
+            elif dz < -flat_tol:
+                oriented[i, j] = True
+
+    queue = deque((i, j) for i in range(ny) for j in range(nx) if oriented[i, j])
+    while queue:
+        i, j = queue.popleft()
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ni, nj = (i + di) % ny, (j + dj) % nx
+            if not valid[ni, nj] or oriented[ni, nj]:
+                continue
+            if np.dot(aligned[ni, nj], aligned[i, j]) < 0:
+                aligned[ni, nj] *= -1
+            oriented[ni, nj] = True
+            queue.append((ni, nj))
+
+    return aligned
+
+
+def _auto_minmax(arr: np.ndarray) -> tuple[float, float]:
+    """Min/max of `arr`'s non-NaN values, widened by a hair if they're equal."""
+    valid = arr[~np.isnan(arr)]
+    Minimum, Maximum = float(np.min(valid)), float(np.max(valid))
+    if Minimum == Maximum:
+        Maximum = Minimum + 1e-6
+    return Minimum, Maximum
+
+
+def _clip_to_circle(contour_set, ax, circle_radius: float | None, box_size: np.ndarray) -> None:
+    """Confine a contourf's rendering to the shared circle; outside is left as plain white background."""
+    if circle_radius is not None:
+        circle = mpatches.Circle(
+            (box_size[0] / 2.0, box_size[1] / 2.0), circle_radius,
+            transform=ax.transData,
+        )
+        contour_set.set_clip_path(circle)
 
 
 def draw(
@@ -124,17 +251,30 @@ def draw(
     layer1: str = "Upper",
     layer2: str = "Lower",
     layer3: str = "Middle",
-    minmax: Optional[List[float]] = None,
+    minmax: list[float] | None = None,
+    thickness_minmax: list[float] | None = None,
     filename: str = "",
     show_vectors: bool = True,
     title_pad: int = 12,
-    frame_numbers: Optional[Iterable[int]] = None,
+    frame_numbers: Iterable[int] | None = None,
+    vector_frame: int | None = None,
 ) -> None:
     """Render mean curvature or thickness.
 
     `frame_numbers`, if given, restricts averaging to that subset of frames
     instead of every frame found in `Dir` (used by `dynamic_plot` to average
-    over a rolling window instead of the whole trajectory).
+    over a rolling window instead of the whole trajectory). `thickness_minmax`
+    fixes the thickness subpanel's own color scale in `--mode mean` (auto-scaled
+    from its own data when omitted); it has no effect in `--mode thickness`,
+    which uses `minmax` directly since thickness is the only panel drawn there.
+
+    `vector_frame`, in `--mode principal`, selects that single frame's own
+    principal directions for the vector overlay (`dynamic_plot` sets this to
+    each video frame's own trajectory frame number, so the overlay always
+    shows that frame's own instantaneous directions, while the curvature
+    background it's drawn over keeps averaging over `frame_numbers` as usual).
+    In `--mode principal`, each direction field is also sign-aligned
+    (`_align_signs_to_lower_z`) before display.
     """
     fontsize = 20
 
@@ -154,36 +294,24 @@ def draw(
     except FileNotFoundError:
         pass
 
-    def _clip_to_circle(contour_set, ax) -> None:
-        """Confine a contourf's rendering to the shared circle; outside is left as plain white background."""
-        if circle_radius is not None:
-            circle = mpatches.Circle(
-                (box_size[0] / 2.0, box_size[1] / 2.0), circle_radius,
-                transform=ax.transData,
-            )
-            contour_set.set_clip_path(circle)
-
     if mode == "thickness":
-        thickness_mean = _load_and_mask(_frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers), "*_thickness.npy", Dir, sft, layer_sources=None)
+        thickness_mean = _load_and_mask(
+            _frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers),
+            "*_thickness.npy", Dir, sft, layer_sources=None,
+        )
         gridsize = thickness_mean.shape[-1]
         X, Y = get_XY(box_size, gridsize)
 
-        if minmax is None:
-            valid_vals = thickness_mean[~np.isnan(thickness_mean)]
-            Minimum, Maximum = np.min(valid_vals), np.max(valid_vals)
-            if Minimum == Maximum:
-                Maximum = Minimum + 1e-6
-        else:
-            Minimum, Maximum = minmax
+        Minimum, Maximum = minmax if minmax is not None else _auto_minmax(thickness_mean)
 
         fig, ax = plt.subplots(figsize=(12, 10))
         fig.subplots_adjust(left=0.1, right=0.85, bottom=0.1, top=0.92)
 
         contour = ax.contourf(X, Y, thickness_mean, cmap="viridis", levels=np.linspace(Minimum, Maximum, 20))
-        _clip_to_circle(contour, ax)
+        _clip_to_circle(contour, ax, circle_radius, box_size)
         ax.set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.87, 0.1, 0.03, 0.8])
+        cbar_ax = fig.add_axes((0.87, 0.1, 0.03, 0.8))
         cbar = fig.colorbar(contour, cax=cbar_ax)
         cbar.set_label("Thickness (nm)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -217,12 +345,15 @@ def draw(
     else:
         curvature_layer_sources = ["upper", "lower", "union"]
 
-    curvature_mean = _load_and_mask(_frame_filtered_glob(Dir + pattern, frame_numbers), pattern, Dir, sft, curvature_layer_sources)
+    curvature_mean = _load_and_mask(
+        _frame_filtered_glob(Dir + pattern, frame_numbers), pattern, Dir, sft, curvature_layer_sources
+    )
 
     gridsize = curvature_mean.shape[-1]
     X, Y = get_XY(box_size, gridsize)
 
     have_thickness = False
+    thickness_min = thickness_max = 0.0
 
     if mode == "mean":
         curvature_data1 = curvature_mean[0]
@@ -236,6 +367,9 @@ def draw(
         have_thickness = bool(thickness_files)
         if have_thickness:
             thickness_mean = _load_and_mask(thickness_files, "*_thickness.npy", Dir, sft, layer_sources=None)
+            thickness_min, thickness_max = (
+                thickness_minmax if thickness_minmax is not None else _auto_minmax(thickness_mean)
+            )
 
     elif mode == "gaussian":
         curvature_data1 = curvature_mean[0]
@@ -247,11 +381,12 @@ def draw(
         curvature_k1 = [curvature_mean[0], curvature_mean[2], curvature_mean[4]]
         curvature_k2 = [curvature_mean[1], curvature_mean[3], curvature_mean[5]]
 
-        dir_files = _frame_filtered_glob(Dir + "*_principal_dirs.npy", frame_numbers)
-        dir_mean = _load_and_mask(dir_files, "*_principal_dirs.npy", Dir, sft, curvature_layer_sources)
+        dir_frame_numbers = [vector_frame] if vector_frame is not None else frame_numbers
+        dir_files = _frame_filtered_glob(Dir + "*_principal_dirs.npy", dir_frame_numbers)
+        dir_mean = _average_principal_directions(dir_files, "*_principal_dirs.npy", Dir, sft, curvature_layer_sources)
 
-        dirs_k1 = [normalize(dir_mean[0]), normalize(dir_mean[2]), normalize(dir_mean[4])]
-        dirs_k2 = [normalize(dir_mean[1]), normalize(dir_mean[3]), normalize(dir_mean[5])]
+        dirs_k1 = [normalize(_align_signs_to_lower_z(dir_mean[i])) for i in (0, 2, 4)]
+        dirs_k2 = [normalize(_align_signs_to_lower_z(dir_mean[i])) for i in (1, 3, 5)]
 
     if minmax is None:
         if mode == "principal":
@@ -274,28 +409,29 @@ def draw(
         axes = axes.flatten()
         fig.subplots_adjust(left=0.07, right=0.89, bottom=0.03, top=0.97)
 
-        contour0 = axes[0].contourf(X, Y, thickness_mean, cmap="viridis")
-        _clip_to_circle(contour0, axes[0])
+        thickness_levels = np.linspace(thickness_min, thickness_max, 20)
+        contour0 = axes[0].contourf(X, Y, thickness_mean, cmap="viridis", levels=thickness_levels)
+        _clip_to_circle(contour0, axes[0], circle_radius, box_size)
         axes[0].set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         contour1 = axes[1].contourf(X, Y, curvature_data1, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour1, axes[1])
+        _clip_to_circle(contour1, axes[1], circle_radius, box_size)
         contour2 = axes[2].contourf(X, Y, curvature_data2, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour2, axes[2])
+        _clip_to_circle(contour2, axes[2], circle_radius, box_size)
         contour3 = axes[3].contourf(X, Y, curvature_data3, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour3, axes[3])
+        _clip_to_circle(contour3, axes[3], circle_radius, box_size)
 
         axes[1].set_title(f"{layer1} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
         axes[2].set_title(f"{layer2} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
         axes[3].set_title(f"{layer3} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.054, 0.15, 0.02, 0.7])
+        cbar_ax = fig.add_axes((0.054, 0.15, 0.02, 0.7))
         fig.colorbar(contour0, cax=cbar_ax).set_label("Thickness (nm)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
         cbar_ax.yaxis.set_ticks_position('left')
         cbar_ax.yaxis.set_label_position('left')
 
-        cbar_ax2 = fig.add_axes([0.88, 0.15, 0.02, 0.7])
+        cbar_ax2 = fig.add_axes((0.88, 0.15, 0.02, 0.7))
         cbar2 = fig.colorbar(contour1, cax=cbar_ax2)
         cbar2.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
         cbar2.ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
@@ -310,10 +446,10 @@ def draw(
 
         for i in range(3):
             c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, axes[i])
+            _clip_to_circle(c, axes[i], circle_radius, box_size)
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.90, 0.08, 0.02, 0.8])
+        cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -327,10 +463,10 @@ def draw(
 
         for i in range(3):
             c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, axes[i])
+            _clip_to_circle(c, axes[i], circle_radius, box_size)
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes([0.90, 0.08, 0.02, 0.8])
+        cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -342,7 +478,7 @@ def draw(
         for i in range(3):
             ax = axes[0, i]
             c = ax.contourf(X, Y, curvature_k1[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, ax)
+            _clip_to_circle(c, ax, circle_radius, box_size)
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Bilayer: k1",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
@@ -354,7 +490,7 @@ def draw(
         for i in range(3):
             ax = axes[1, i]
             c = ax.contourf(X, Y, curvature_k2[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, ax)
+            _clip_to_circle(c, ax, circle_radius, box_size)
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Bilayer: k2",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
@@ -363,7 +499,7 @@ def draw(
                           dirs_k2[i][::step, ::step, 0], dirs_k2[i][::step, ::step, 1],
                           color="black", scale=30, width=0.002, alpha=0.6)
 
-        cbar_ax = fig.add_axes([0.93, 0.08, 0.02, 0.8])
+        cbar_ax = fig.add_axes((0.93, 0.08, 0.02, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
@@ -383,11 +519,14 @@ def draw(
         plt.close()
 
 
-def plot(args: List[str]) -> None:
+def plot(args: list[str]) -> None:
     """CLI entry: plot mean curvature or thickness from a 'CALM analyze full' output directory."""
     parser = argparse.ArgumentParser(description="Plot mean curvature or thickness")
     parser.add_argument('-i', '--numpys_directory', type=str, help="'CALM analyze full' output directory")
-    parser.add_argument('--mode', choices=["mean", "gaussian", "principal", "thickness"], default="mean", help="quantity to plot (default: mean)")
+    parser.add_argument(
+        '--mode', choices=["mean", "gaussian", "principal", "thickness"], default="mean",
+        help="quantity to plot (default: mean)",
+    )
     parser.add_argument('-o', '--outfile', type=str, default="mean.png", help="output image path (default: mean.png)")
     parser.add_argument('--minimum', type=float, default=None, help="fix the color scale's lower bound")
     parser.add_argument('--maximum', type=float, default=None, help="fix the color scale's upper bound")

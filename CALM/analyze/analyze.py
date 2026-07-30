@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from typing import List, Optional, Tuple
+import logging
+from collections.abc import Sequence
 
+import MDAnalysis as mda
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
@@ -12,6 +14,8 @@ from ..core.curvature import shape_operator_curvatures
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
 from ..core.fourier_sft import SFT
 from ..core.rotation import recover_rotation_angle, rotated_grid
+
+logger = logging.getLogger(__name__)
 
 
 def circle_cutter(arr: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
@@ -46,7 +50,7 @@ def circle_cutter(arr: np.ndarray, dimensions: np.ndarray) -> np.ndarray:
 
 def periodic_gradient(
     Z: np.ndarray, dx: float, dy: float, periodic_x: bool = True, periodic_y: bool = True
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Return (dZ/dy, dZ/dx) of grid Z (axis 0 = y, axis 1 = x), central-differenced with wraparound where periodic."""
     if periodic_x:
         dz_dx = (np.roll(Z, -1, axis=1) - np.roll(Z, 1, axis=1)) / (2 * dx)
@@ -68,7 +72,8 @@ def f(
     nx: float, ny: float, nz: float,
     Lx: float, Ly: float,
 ) -> float:
-    """Root function for brentq: signed distance along a normal ray between a query point and the interpolated surface."""
+    """Root function for brentq: signed distance along a normal ray between
+    a query point and the interpolated surface."""
     xq = mx + t * nx
     yq = my + t * ny
     zq = mz + t * nz
@@ -79,21 +84,57 @@ def f(
     return zq - interp(yq, xq, grid=False)[()]
 
 
+def _thickness_root(
+    interp: RectBivariateSpline,
+    mx: float, my: float, mz: float,
+    nx: float, ny: float, nz: float,
+    Lx: float, Ly: float,
+    t_max_base: float,
+    upper: bool,
+) -> float | None:
+    """Root of `f` along the local normal ray, widening the search bracket up to 3 times if the previous one fails to bracket a root.
+
+    Returns None if every widened bracket (t_max_base, 2x, 4x, 8x) still
+    fails to bracket a root.
+    """
+    t_max = t_max_base
+    for _ in range(4):
+        try:
+            if upper:
+                return brentq(f, 0.0, t_max, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
+            return brentq(f, -t_max, 0.0, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
+        except ValueError:
+            t_max *= 2
+    return None
+
+
 def _rotate_direction_vectors(vecs: np.ndarray, angle: float) -> np.ndarray:
-    """Rotate an array of 2D tangent-plane direction vectors (shape (..., 2)) by `angle`."""
+    """Rotate an array of tangent-plane direction vectors (shape (..., 2) or (..., 3)) by `angle` about z.
+
+    A z-axis rotation leaves a 3rd (z) component unchanged; only x, y rotate.
+    """
     vx = vecs[..., 0]
     vy = vecs[..., 1]
     cos_a, sin_a = np.cos(angle), np.sin(angle)
-    return np.stack([cos_a * vx - sin_a * vy, sin_a * vx + cos_a * vy], axis=-1)
+    rotated_xy = np.stack([cos_a * vx - sin_a * vy, sin_a * vx + cos_a * vy], axis=-1)
+    if vecs.shape[-1] == 2:
+        return rotated_xy
+    return np.concatenate([rotated_xy, vecs[..., 2:3]], axis=-1)
 
 
 def analysis(
-    universe: Optional[object],
+    universe: mda.Universe | None,
     sft: SFT,
-    methods: List[str],
-    args: Optional[argparse.Namespace] = None,
+    methods: Sequence[str],
+    args: argparse.Namespace,
 ) -> None:
     """Compute the requested `methods` for every frame in `sft` and save each to `args.out`."""
+    # sft is always fully populated here: built fresh by build_sft or loaded
+    # by SFT.from_directory, both of which set every one of these fields.
+    assert sft.frame_indices is not None
+    assert sft.dimensions is not None
+    assert sft.A_mn is not None
+    assert sft.q_mn is not None
     rotated = args.rotate
 
     for i, frame in tqdm(enumerate(sft.frame_indices), total=len(sft.frame_indices)):
@@ -145,38 +186,46 @@ def analysis(
                 np.save(f"{args.out}/{frame:0{num_digits}d}_Z_fitted.npy", Z_fitted / 10)
 
             if "thickness" in methods:
-                try:
-                    interp_upper = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_1)
-                    interp_lower = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_2)
+                interp_upper = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_1)
+                interp_lower = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_2)
 
-                    dx = dimensions[:3][0] / (X.shape[1] - 1)
-                    dy = dimensions[:3][1] / (Y.shape[0] - 1)
-                    dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
+                dx = dimensions[:3][0] / (X.shape[1] - 1)
+                dy = dimensions[:3][1] / (Y.shape[0] - 1)
+                dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
 
-                    Nx_arr, Ny_arr = -dz_dx, -dz_dy
-                    Nz_arr = np.ones_like(Z_fitted_vmd)
-                    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
-                    N /= np.linalg.norm(N, axis=-1, keepdims=True)
+                Nx_arr, Ny_arr = -dz_dx, -dz_dy
+                Nz_arr = np.ones_like(Z_fitted_vmd)
+                N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
+                N /= np.linalg.norm(N, axis=-1, keepdims=True)
 
-                    thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
+                thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
 
-                    t_max = np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
-                    for i in range(X.shape[0]):
-                        for j in range(X.shape[1]):
-                            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
-                            nvecx, nvecy, nvecz = N[i, j]
+                t_max_base = np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
+                n_failed = 0
+                for i in range(X.shape[0]):
+                    for j in range(X.shape[1]):
+                        x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
+                        nvecx, nvecy, nvecz = N[i, j]
+                        Lx, Ly = dimensions[:3][0], dimensions[:3][1]
 
-                            l1 = brentq(f, 0.0, t_max, args=(interp_upper, x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1]))
-                            l2 = brentq(f, -t_max, 0.0, args=(interp_lower, x0, y0, z0, nvecx, nvecy, nvecz, dimensions[:3][0], dimensions[:3][1]))
+                        l1 = _thickness_root(interp_upper, x0, y0, z0, nvecx, nvecy, nvecz, Lx, Ly, t_max_base, upper=True)
+                        l2 = _thickness_root(interp_lower, x0, y0, z0, nvecx, nvecy, nvecz, Lx, Ly, t_max_base, upper=False)
 
-                            thickness_map[i, j] = l1 - l2
+                        if l1 is None or l2 is None:
+                            n_failed += 1
+                            continue
+                        thickness_map[i, j] = l1 - l2
 
-                    if rotated:
-                        thickness_map = circle_cutter(thickness_map, dimensions)
+                if rotated:
+                    thickness_map = circle_cutter(thickness_map, dimensions)
 
-                    np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
-                except ValueError:
-                    print("Thickness could not be calculated. That could be an indication that the curvature is too high or that lambdas are too small.")
+                np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
+                if n_failed:
+                    logger.warning(
+                        f"frame {frame}: thickness could not be determined for "
+                        f"{n_failed}/{thickness_map.size} grid points even after widening the "
+                        "search bracket up to 8x; left as NaN there."
+                    )
 
         if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
             # H, K, k1, k2 are rotation-invariant scalars: evaluating at

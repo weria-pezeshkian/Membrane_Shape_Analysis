@@ -4,7 +4,13 @@ import numpy as np
 
 
 def fit_coefficients(
-    Data_3M: np.ndarray, Lx: float, Ly: float, Nx: int, Ny: int, regularize: bool = False
+    Data_3M: np.ndarray,
+    Lx: float,
+    Ly: float,
+    Nx: int,
+    Ny: int,
+    regularize: bool = False,
+    diagnostics: list[tuple[str, str]] | None = None,
 ) -> np.ndarray:
     """Least-squares Fourier coefficients (Anm) reproducing z at given (x, y) points.
 
@@ -21,6 +27,13 @@ def fit_coefficients(
     Regularizing biases Anm toward zero in proportion to curvature: usable
     for single/few-frame visualization, but not for kappa/sigma calibration
     from cross-frame Anm statistics, which needs unbiased per-frame Anm.
+
+    Runs inside a per-frame worker process (via `_fourier_by_layer` /
+    `_one_frame`). When `diagnostics` is given, a `(level, message)` pair
+    is appended to it for underdetermined/low-redundancy/low-oversampling
+    fits; the caller collects these across frames and logs them once back
+    in the main process, keeping every write to the replay log
+    single-process.
     """
     if Data_3M.shape[0] != 3:
         raise ValueError("Data_3M must have shape (3, M).")
@@ -30,6 +43,8 @@ def fit_coefficients(
 
     M = Data_3M.shape[1]
     Length = (2 * Nx + 1) * (2 * Ny + 1)
+    if diagnostics is None:
+        diagnostics = []
 
     # Length: number of unknown Anm coefficients. M: number of fit atoms.
     # Least squares needs M >> Length for noise to average out rather than
@@ -37,40 +52,40 @@ def fit_coefficients(
     # Zxx/Zyy/Zxy scale each mode by (q0*i)^2 / (p0*j)^2 / (q0*p0*i*j).
     if Length >= M:
         if regularize:
-            print(f"NOTE: Fourier fit is underdetermined ({Length} coefficients for "
+            diagnostics.append(("info", f"Fourier fit is underdetermined ({Length} coefficients for "
                   f"only {M} fit atoms) - auto-scaled curvature-weighted (Tikhonov) "
                   "regularization is being applied to keep the fit physical. This "
-                  "biases Anm - do not use this build for kappa/sigma calibration.")
+                  "biases Anm - do not use this build for kappa/sigma calibration."))
         else:
-            print(f"WARNING: Fourier fit is underdetermined: {Length} coefficients "
+            diagnostics.append(("warning", f"Fourier fit is underdetermined: {Length} coefficients "
                   f"((2*{Nx}+1)*(2*{Ny}+1)) for only {M} fit atoms, and regularization "
                   "is OFF. The least-squares solution is not unique or noise-robust - "
                   "curvature is likely unphysical. Increase lambda_x/lambda_y, use a "
                   "selection with more atoms, or opt into --regularization (visualization "
-                  "use only - see fit_coefficients()'s docstring).")
+                  "use only)."))
     elif M < 3 * Length:
         if regularize:
-            print(f"NOTE: Fourier fit has low redundancy ({Length} coefficients for "
+            diagnostics.append(("info", f"Fourier fit has low redundancy ({Length} coefficients for "
                   f"{M} fit atoms, less than 3x oversampling) - auto-scaled "
                   "regularization is being applied. This biases Anm - do not use this "
-                  "build for kappa/sigma calibration.")
+                  "build for kappa/sigma calibration."))
         else:
-            print(f"WARNING: Fourier fit has low redundancy: {Length} coefficients for "
+            diagnostics.append(("warning", f"Fourier fit has low redundancy: {Length} coefficients for "
                   f"{M} fit atoms (less than 3x oversampling), and regularization is "
                   "OFF. Curvature may be noisy or overfit - consider increasing "
                   "lambda_x/lambda_y or opting into --regularization (visualization "
-                  "use only).")
+                  "use only)."))
     elif M < 10 * Length:
         # Statistical (bias-variance), not numerical-conditioning: even a
         # well-determined fit here can resolve per-lipid thermal protrusions
         # as membrane curvature. The 10x cutoff is an empirical judgment
         # call, not analytically derived, and may need retuning.
-        print(f"WARNING: Fourier fit has only {M/Length:.1f}x oversampling ({Length} "
+        diagnostics.append(("warning", f"Fourier fit has only {M/Length:.1f}x oversampling ({Length} "
               f"coefficients for {M} fit atoms) - below numerical risk, but curvature "
               "may still be inflated beyond a physically reasonable membrane ballpark "
               "by real per-lipid thermal protrusions being resolved as if they were "
               "membrane shape. Consider increasing lambda_x/lambda_y (regularization "
-              "does not fix this).")
+              "does not fix this)."))
 
     A = np.zeros((M, Length))
     b = Data_3M[2, :]

@@ -5,15 +5,14 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import List
 
 import MDAnalysis as mda
 
+from ..analyze.analyze import analysis
+from ..analyze.sft import build_sft
 from ..core import argument_parser as arg_helper
 from ..core.fourier_sft import SFT
 from ..core.manual import add_manual
-from ..analyze.analyze import analysis
-from ..analyze.sft import build_sft
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ METHODS = (
 )
 
 
-def full(args: List[str]) -> None:
+def full(args: list[str]) -> None:
     """CLI entry: run the full geometric analysis pipeline (thickness,
     curvature, ...) that 'CALM map' can plot.
 
@@ -60,8 +59,6 @@ def full(args: List[str]) -> None:
     ns = parser.parse_args(args)
     arg_helper.validate_rotation_args(parser, ns)
 
-    logging.basicConfig(level=logging.INFO)
-
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
 
     using_precomputed_sft = ns.sft is not None
@@ -73,7 +70,11 @@ def full(args: List[str]) -> None:
 
     replay_path = ns.out_replay or arg_helper.default_replay_name(ns.out)
     arg_helper.write_replay_file(replay_path, parser, ns)
-    arg_helper.attach_replay_log_handler(replay_path)
+    arg_helper.attach_replay_log_handler(replay_path, logger_name="MDAnalysis")
+    arg_helper.attach_replay_log_handler(
+        replay_path, logger_name="CALM",
+        console_level=logging.INFO if ns.loud else logging.WARNING,
+    )
 
     if ns.clear:
         for filename in os.listdir(ns.out):
@@ -81,7 +82,7 @@ def full(args: List[str]) -> None:
                 file_path = os.path.join(ns.out, filename)
                 try:
                     os.remove(file_path)
-                except Exception as e:
+                except OSError as e:
                     print(f"Error deleting {file_path}: {e}")
 
     try:

@@ -61,7 +61,27 @@ def get_components(
             f"min_balance={min_balance} across percentiles "
             f"{low_percentile}-{high_percentile}."
         )
+    assert best_cutoff is not None
     return best_components, best_cutoff
+
+
+def _still_connected(group: set[int], positions: np.ndarray, box: np.ndarray, cutoff: float) -> set[int]:
+    """Subset of `group` (local indices) still within `cutoff` of another member of `group`."""
+    idx = sorted(group)
+    if len(idx) < 2:
+        return set()
+    d = distance_array(positions[idx], positions[idx], box=box)
+    np.fill_diagonal(d, np.inf)
+    min_other = d.min(axis=1)
+    return {i for i, keep in zip(idx, min_other <= cutoff) if keep}
+
+
+def _min_dist_to(group: set[int], cand_pos: np.ndarray, positions: np.ndarray, box: np.ndarray) -> np.ndarray:
+    """Per-row minimum distance from `cand_pos` to the members of `group` (local indices into `positions`)."""
+    if not group:
+        return np.full(len(cand_pos), np.inf)
+    d = distance_array(cand_pos, positions[sorted(group)], box=box)
+    return d.min(axis=1)
 
 
 def track_components(
@@ -85,30 +105,15 @@ def track_components(
     positions = np.asarray(positions)
     n = len(positions)
 
-    def _still_connected(group: set[int]) -> set[int]:
-        idx = sorted(group)
-        if len(idx) < 2:
-            return set()
-        d = distance_array(positions[idx], positions[idx], box=box)
-        np.fill_diagonal(d, np.inf)
-        min_other = d.min(axis=1)
-        return {i for i, keep in zip(idx, min_other <= cutoff) if keep}
-
-    upper = _still_connected(prev_upper)
-    lower = _still_connected(prev_lower)
+    upper = _still_connected(prev_upper, positions, box, cutoff)
+    lower = _still_connected(prev_lower, positions, box, cutoff)
 
     unassigned = sorted(set(range(n)) - upper - lower)
     if unassigned and (upper or lower):
         cand_pos = positions[unassigned]
 
-        def _min_dist_to(group: set[int]) -> np.ndarray:
-            if not group:
-                return np.full(len(unassigned), np.inf)
-            d = distance_array(cand_pos, positions[sorted(group)], box=box)
-            return d.min(axis=1)
-
-        close_upper = _min_dist_to(upper) <= cutoff
-        close_lower = _min_dist_to(lower) <= cutoff
+        close_upper = _min_dist_to(upper, cand_pos, positions, box) <= cutoff
+        close_lower = _min_dist_to(lower, cand_pos, positions, box) <= cutoff
 
         for i, cu, cl in zip(unassigned, close_upper, close_lower):
             if cu and not cl:
@@ -117,6 +122,15 @@ def track_components(
                 lower.add(i)
 
     return upper, lower
+
+
+def _own_nearest(idx: np.ndarray, positions: np.ndarray, box: np.ndarray) -> np.ndarray:
+    """Per-atom nearest-neighbor distance within `positions[idx]` itself (local indices)."""
+    if len(idx) < 2:
+        return np.full(len(idx), np.inf)
+    d = distance_array(positions[idx], positions[idx], box=box)
+    np.fill_diagonal(d, np.inf)
+    return d.min(axis=1)
 
 
 def apply_margin_filter(
@@ -143,15 +157,8 @@ def apply_margin_filter(
     upper_idx = np.array(sorted(upper), dtype=int)
     lower_idx = np.array(sorted(lower), dtype=int)
 
-    def _own_nearest(idx: np.ndarray) -> np.ndarray:
-        if len(idx) < 2:
-            return np.full(len(idx), np.inf)
-        d = distance_array(positions[idx], positions[idx], box=box)
-        np.fill_diagonal(d, np.inf)
-        return d.min(axis=1)
-
-    own_upper = _own_nearest(upper_idx)
-    own_lower = _own_nearest(lower_idx)
+    own_upper = _own_nearest(upper_idx, positions, box)
+    own_lower = _own_nearest(lower_idx, positions, box)
 
     if len(upper_idx) and len(lower_idx):
         cross = distance_array(positions[upper_idx], positions[lower_idx], box=box)

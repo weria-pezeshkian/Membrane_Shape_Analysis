@@ -28,9 +28,9 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
   disables smoothing (each video frame is that one frame, unaveraged).
 - `--spf` (default 0.2) - seconds per video frame.
 - `--minimum`, `--maximum` - fix the color scale's lower/upper bound. Both
-  must be given together; otherwise the scale is computed once from the
-  whole (unwindowed) trajectory, same as `CALM map plot`'s own auto scale,
-  and held fixed across every video frame so the color scale doesn't
+  must be given together; otherwise the scale spans every rolling window's
+  own averaged data (not just the full-trajectory average, which is
+  narrower) and is held fixed across every video frame so it doesn't
   flicker.
 - `--vectors` - overlay principal-direction vectors (`--mode principal`
   only).
@@ -39,7 +39,9 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
 
 - Rotation-awareness and `--Remove-TMD` hole-mask handling are identical to
   `CALM map plot`, applied per window.
-- In `--mode mean` with thickness data present, the thickness panel's color
-  scale is not fixed across frames (matplotlib auto-ranges it from each
-  window's own data, the same as `CALM map plot` does for a single image) -
-  its brightness may shift slightly between frames.
+- In `--mode mean` with thickness data present, the thickness panel gets its
+  own fixed color scale (spanning every window's thickness data), computed
+  and held fixed the same way as the curvature scale.
+- In `--mode principal` with `--vectors`, the arrows always show that video
+  frame's own instantaneous principal directions; the curvature color field
+  behind them is window-averaged.

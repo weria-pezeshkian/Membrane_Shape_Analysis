@@ -7,17 +7,14 @@ from importlib.metadata import version
 from ..core.manual import add_manual
 from .dynamic_plot import dynamic_plot
 from .plot import plot
-from .rot_plot import rot_plot
 
-MODULES = ["rot_plot", "plot", "dynamic_plot"]
+MODULES = ["plot", "dynamic_plot"]
 
 
 def run_module(module_name: str, args: list[str]) -> None:
     """Dispatch to the named map command's entry point."""
     module_name = module_name.lower()
-    if module_name == "rot_plot":
-        rot_plot(args)
-    elif module_name == "plot":
+    if module_name == "plot":
         plot(args)
     elif module_name == "dynamic_plot":
         dynamic_plot(args)

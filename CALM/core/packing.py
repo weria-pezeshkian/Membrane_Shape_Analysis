@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
+import numpy.typing as npt
 
 
-def median_multiple_threshold(distances: Sequence[float], k: float = 3.0) -> float:
+def median_multiple_threshold(distances: npt.ArrayLike, k: float = 3.0) -> float:
     """Return k * median(distances); np.inf if fewer than 2 values are given.
 
     Calibrate against the same kind of distance being tested against:

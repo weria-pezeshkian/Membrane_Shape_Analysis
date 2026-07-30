@@ -8,9 +8,12 @@ def calibrate(sft: SFT, radius: float, out_path: str) -> None:
     """Compute calibrated membrane material parameters from `sft` and write them to `out_path`.
 
     Not yet implemented - this is where the physics (e.g. kappa/sigma
-    extraction from the Anm fluctuation spectrum) plugs in. See TODO.md's
-    "Regularized Anm must never feed kappa/sigma calibration" entry for the
-    constraint any such implementation must respect (unregularized Anm only).
+    extraction from the Anm fluctuation spectrum) plugs in. Any such
+    implementation must assert `sft.regularized in (False, None)` first:
+    Tikhonov regularization biases Anm toward zero in proportion to
+    curvature, which would circularly contaminate a fluctuation-spectrum
+    fit built from it.
+    NOTE: smallest wavelength for fourier fit cutoff should be close to mem. thickness, not smaller!
     """
     
 
@@ -55,7 +58,7 @@ def calibrate(sft: SFT, radius: float, out_path: str) -> None:
     A_matrix=np.einsum("fi,fj->fij", A_i, A_i) #shape(frames, #A_modes, #A_modes)
     avg_outer = np.einsum("i,j->ij", avg_Ai, avg_Ai)  #shape (#A_modes,#A_modes)
     sigma_A=np.mean(A_matrix,axis=0) - avg_outer #shape (#A_modes,#A_modes)
-    
+
     #2. for each frame: take the integrals over F(r,q_i_x, q_i_y) etc. to get the Matrix M and vector C
     #3. for each frame solve the system of equations: 
     #3. a) solve M*sigma(A)=I to get kappa, D_kappa, D_kappa_g

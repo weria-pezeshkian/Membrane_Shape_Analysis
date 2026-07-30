@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Tuple
+from typing import Any
 
 import numpy as np
 
 
 def shape_operator_curvatures(
     surface: Any, X: np.ndarray, Y: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Curvature of `surface` at grid points (X, Y) via the shape operator.
 
     `surface` must expose Zx, Zy, Zxx, Zyy, Zxy (e.g. Fourier_Series_Function).
@@ -16,7 +16,7 @@ def shape_operator_curvatures(
         H: mean curvature
         K: gaussian curvature
         k1, k2: principal curvatures, ordered k1 >= k2
-        dirs1, dirs2: principal directions as 2D vectors in the tangent plane
+        dirs1, dirs2: principal directions as unit 3D tangent vectors on the surface
     """
     fx = surface.Zx(X, Y)
     fy = surface.Zy(X, Y)
@@ -43,8 +43,8 @@ def shape_operator_curvatures(
 
     k1 = np.zeros_like(X)
     k2 = np.zeros_like(X)
-    dirs1 = np.zeros(X.shape + (2,))
-    dirs2 = np.zeros(X.shape + (2,))
+    dirs1 = np.zeros(X.shape + (3,))
+    dirs2 = np.zeros(X.shape + (3,))
 
     for i in range(X.shape[0]):
         for j in range(X.shape[1]):
@@ -52,8 +52,12 @@ def shape_operator_curvatures(
                           [S21[i, j], S22[i, j]]])
             vals, vecs = np.linalg.eigh(S)
             k1[i, j], k2[i, j] = vals[1], vals[0]
-            dirs1[i, j, :] = vecs[:, 1]
-            dirs2[i, j, :] = vecs[:, 0]
+            dx1, dy1 = vecs[:, 1]
+            dx2, dy2 = vecs[:, 0]
+            dz1 = fx[i, j] * dx1 + fy[i, j] * dy1
+            dz2 = fx[i, j] * dx2 + fy[i, j] * dy2
+            dirs1[i, j, :] = np.array([dx1, dy1, dz1]) / np.linalg.norm([dx1, dy1, dz1])
+            dirs2[i, j, :] = np.array([dx2, dy2, dz2]) / np.linalg.norm([dx2, dy2, dz2])
 
     H = 0.5 * (k1 + k2)
     K = k1 * k2

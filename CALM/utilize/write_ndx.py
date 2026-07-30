@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Dict, List, Tuple, Union
 
 import MDAnalysis as mda
 import numpy as np
@@ -22,7 +21,7 @@ def write(
     write: bool = True,
     min_balance: float = 0.6,
     margin: float = 2.0,
-) -> Union[Dict[str, List[int]], Tuple[Dict[str, List[int]], List[int], List[int]]]:
+) -> dict[str, list[int]] | tuple[dict[str, list[int]], list[int], list[int]]:
     """Detect the two leaflets in `selection` and either write a GROMACS index file or return the split.
 
     If `write` is True (default), writes `Upper`/`Lower` groups to
@@ -30,9 +29,9 @@ def write(
     (ndx, upper_index, lower_index) without writing, where upper_index/
     lower_index are 0-based global atom indices.
     """
-    ndx: Dict[str, List[int]] = {}
-    selection = u.select_atoms(selection)
-    positions = selection.atoms.positions
+    ndx: dict[str, list[int]] = {}
+    atoms = u.select_atoms(selection)
+    positions = atoms.atoms.positions
     box = u.dimensions
     d_matrix = distance_array(positions, positions, box=box)
     two_components, _ = get_components(d_matrix, min_balance=min_balance)
@@ -43,7 +42,7 @@ def write(
     # genuine sharp membrane curvature - see its docstring in core/leaflet.py.
     upper_local, lower_local = apply_margin_filter(positions, box, upper_local, lower_local, margin=margin)
 
-    n_excluded = len(selection.atoms) - len(upper_local) - len(lower_local)
+    n_excluded = len(atoms.atoms) - len(upper_local) - len(lower_local)
     if n_excluded > 0:
         logger.warning(
             f"{n_excluded} atom(s) in the selection are not part of either "
@@ -51,8 +50,8 @@ def write(
             "sitting between the two leaflets, or squeezed toward mid-plane "
             "near a protein) and are excluded from both."
         )
-    upper_index = [selection.atoms[i].index for i in sorted(upper_local)]
-    lower_index = [selection.atoms[i].index for i in sorted(lower_local)]
+    upper_index = [atoms.atoms[i].index for i in sorted(upper_local)]
+    lower_index = [atoms.atoms[i].index for i in sorted(lower_local)]
     upper_z = np.mean(positions[sorted(upper_local), 2]) if upper_local else float("nan")
     lower_z = np.mean(positions[sorted(lower_local), 2]) if lower_local else float("nan")
     if flip:
@@ -84,16 +83,25 @@ def write(
         return ndx, upper_index, lower_index
 
 
-def write_ndx(args: List[str]) -> None:
+def write_ndx(args: list[str]) -> None:
     """CLI entry: write a leaflet index file from a trajectory and selection."""
     parser = argparse.ArgumentParser(description="Write a leaflet index file")
     parser.add_argument('-f', '--trajectory', type=str, help="trajectory file")
     parser.add_argument('-s', '--structure', type=str, help="structure file")
     parser.add_argument('-n', '--selection', type=str, help="MDAnalysis selection to split into leaflets")
-    parser.add_argument('-o', '--out', default="monolayers.ndx", type=str, help="output index file (default: monolayers.ndx)")
+    parser.add_argument(
+        '-o', '--out', default="monolayers.ndx", type=str,
+        help="output index file (default: monolayers.ndx)",
+    )
     parser.add_argument('-F', '--flip', default=False, action='store_true', help="swap Upper/Lower labels")
-    parser.add_argument('--min-balance', dest='min_balance', default=0.6, type=float, help="leaflet-split balance threshold (default: 0.6, see --man)")
-    parser.add_argument('--margin', dest='margin', default=2.0, type=float, help="leaflet margin-filter ratio (default: 2.0, see --man)")
+    parser.add_argument(
+        '--min-balance', dest='min_balance', default=0.6, type=float,
+        help="leaflet-split balance threshold (default: 0.6, see --man)",
+    )
+    parser.add_argument(
+        '--margin', dest='margin', default=2.0, type=float,
+        help="leaflet margin-filter ratio (default: 2.0, see --man)",
+    )
     add_manual(parser, "link_write_ndx")
 
     ns = parser.parse_args(args)
@@ -101,7 +109,10 @@ def write_ndx(args: List[str]) -> None:
 
     try:
         universe = mda.Universe(ns.structure, ns.trajectory)
-        write(u=universe, selection=ns.selection, out_dir=ns.out, flip=ns.flip, min_balance=ns.min_balance, margin=ns.margin)
+        write(
+            u=universe, selection=ns.selection, out_dir=ns.out,
+            flip=ns.flip, min_balance=ns.min_balance, margin=ns.margin,
+        )
 
     except Exception as e:
         logger.error(f"Error: {e}")

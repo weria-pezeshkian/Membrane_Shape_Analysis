@@ -1,11 +1,11 @@
 from __future__ import annotations
-from datetime import datetime
+
 import argparse
+import hashlib
 import logging
 import shlex
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
-
 
 
 def default_replay_name(out_dir: str | None) -> str:
@@ -15,9 +15,18 @@ def default_replay_name(out_dir: str | None) -> str:
         return str(Path(out_dir) / name)
     return name
 
-def none_or_int(x: str) -> Optional[int]:
+def none_or_int(x: str) -> int | None:
     # Enables faithful round-trip for --Until None
     return None if x.lower() == "none" else int(x)
+
+
+def _sha256_of_file(path: str, chunk_size: int = 2 ** 20) -> str:
+    """SHA-256 hex digest of the file at `path`, read in chunks to bound memory use for large trajectories."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_replay_args(path: str) -> list[str]:
@@ -43,6 +52,15 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
     out.append("")
     out.append(f"# Generated: {datetime.now().isoformat(timespec='seconds')}")
     out.append(f"# Working directory: {Path.cwd()}")
+
+    # Records what the run's -f/-s inputs actually were, so a later mismatch
+    # between this replay file and the input files on disk is detectable.
+    for dest, label in (("trajectory", "Trajectory"), ("structure", "Structure")):
+        input_path = getattr(ns, dest, None)
+        if input_path and Path(input_path).is_file():
+            out.append(f"# {label} file: {input_path}")
+            out.append(f"# {label} sha256: {_sha256_of_file(input_path)}")
+
     out.append("")
 
     # Separate optionals and positionals to preserve typical CLI ordering
@@ -102,10 +120,22 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
                 out.append(f"# {opt} is True (cannot be expressed without a --no-* option)")
             continue
 
+        # nargs='?' with const=True: bare flag => True, given a value => that value
+        if action.nargs == "?" and action.const is True:
+            if cur is False:
+                out.append(f"# {opt} is False (bare flag omitted from replay)")
+            elif cur is True:
+                out.append(shlex.quote(opt))
+            else:
+                out.append(" ".join(shlex.quote(p) for p in (opt, str(cur))))
+            continue
+
         # Multi-value options
         if action.nargs in ("+", "*") or isinstance(cur, (list, tuple)):
             if cur is None:
-                out.append(f"# {opt} is None (unset) - omitted, an empty '{opt}' would not replay (nargs requires a value)")
+                out.append(
+                    f"# {opt} is None (unset) - omitted, an empty '{opt}' would not replay (nargs requires a value)"
+                )
                 continue
             parts = [opt] + [str(x) for x in cur]
             out.append(" ".join(shlex.quote(p) for p in parts))
@@ -144,7 +174,10 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument('-f', '--trajectory', type=str, default=None, help="trajectory file (.xtc)")
     parser.add_argument('-s', '--structure', type=str, default=None, help="structure file (.tpr)")
-    parser.add_argument('-n', '--index', type=str, help="index file (Upper/Lower groups) or dynamic selection string, e.g. 'name PO4'")
+    parser.add_argument(
+        '-n', '--index', type=str,
+        help="index file (Upper/Lower groups) or dynamic selection string, e.g. 'name PO4'",
+    )
     parser.add_argument('-o', '--out', type=str, required=True, help="output directory")
     parser.add_argument('-F', '--From', default=0, type=int, help="first frame, inclusive (default: 0)")
     parser.add_argument('-U', '--Until', default=None, type=none_or_int, help="last frame, exclusive (default: end)")
@@ -153,16 +186,45 @@ def add_build_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--lambda_y', type=float, default=None, help="Fourier wavelength scale in y (nm)")
     parser.add_argument('--gridsize', default=100, type=int, help="grid points per side (default: 100)")
     parser.add_argument('-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on")
-    parser.add_argument('--rotate', default=False, action="store_true", help="rotation alignment per frame; requires --center")
-    parser.add_argument('--rotation-direction', default=None, type=str, help="MDAnalysis selection defining the rotation reference direction; requires --rotate")
-    parser.add_argument('--Remove-TMD', dest='remove_tmd', default=False, action="store_true", help="flag unsupported grid points as holes; requires --center (see --man)")
-    parser.add_argument('--regularization', dest='regularize', default=False, action="store_true", help="enable Tikhonov regularization of the fit (see --man)")
-    parser.add_argument('--min-balance', dest='min_balance', default=0.6, type=float, help="leaflet-split balance threshold for dynamic -n (default: 0.6, see --man)")
-    parser.add_argument('--margin', dest='margin', default=2.0, type=float, help="leaflet margin-filter ratio for dynamic -n (default: 2.0, see --man)")
+    parser.add_argument(
+        '--rotate', default=False, action="store_true",
+        help="rotation alignment per frame; requires --center",
+    )
+    parser.add_argument(
+        '--rotation-direction', default=None, type=str,
+        help="MDAnalysis selection defining the rotation reference direction; requires --rotate",
+    )
+    parser.add_argument(
+        '--Remove-TMD', dest='remove_tmd', nargs='?', const=True, default=False, metavar='SELECTION',
+        help="flag unsupported grid points as holes. With no value, protein "
+             "atoms for hole detection come from --center's selection, which "
+             "is then required; given a value (e.g. 'name BB SC1'), that "
+             "selection is used instead and --center is not required (see --man)",
+    )
+    parser.add_argument(
+        '--regularization', dest='regularize', default=False, action="store_true",
+        help="enable Tikhonov regularization of the fit (see --man)",
+    )
+    parser.add_argument(
+        '--min-balance', dest='min_balance', default=0.6, type=float,
+        help="leaflet-split balance threshold for dynamic -n (default: 0.6, see --man)",
+    )
+    parser.add_argument(
+        '--margin', dest='margin', default=2.0, type=float,
+        help="leaflet margin-filter ratio for dynamic -n (default: 2.0, see --man)",
+    )
     parser.add_argument("--replay", help="load arguments from a replay file")
     parser.add_argument("--out-replay", default=None, help="path to write this run's replay file")
     parser.add_argument('-W', '--Workers', default=1, type=int, help="parallel workers (default: 1)")
-    parser.add_argument('-c', '--clear', default=False, action=argparse.BooleanOptionalAction, help="remove existing .npy files in --out before running")
+    parser.add_argument(
+        '-c', '--clear', default=False, action=argparse.BooleanOptionalAction,
+        help="remove existing .npy files in --out before running",
+    )
+    parser.add_argument(
+        '--loud', default=False, action="store_true",
+        help="also print info-level log messages to the console (default: only warnings/errors "
+             "print; info-level messages still go to the replay log)",
+    )
 
 
 def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
@@ -173,20 +235,70 @@ def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespa
             parser.error("--rotate requires --center")
         if ns.rotation_direction is not None:
             parser.error("--rotation-direction requires --center")
-        if ns.remove_tmd:
+        if ns.remove_tmd is True:
             parser.error(
-                "--Remove-TMD requires --center: it uses the --center "
-                "selection (e.g. 'name BB') to identify which of those "
-                "atoms are actually embedded in the membrane right now, "
-                "and only counts a grid point as a hole if it's both "
-                "unsupported by lipids AND spatially plausible as "
-                "protein-displaced."
+                "--Remove-TMD with no selection requires --center: --center's "
+                "selection identifies which atoms are protein for hole "
+                "detection. Give --Remove-TMD its own selection instead "
+                "(e.g. --Remove-TMD 'name BB SC1') to run it without --center."
             )
     if ns.rotation_direction is not None and not ns.rotate:
         parser.error("--rotation-direction requires --rotate")
 
 
-def apply_replay(parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, remaining: list[str]) -> argparse.Namespace:
+def _read_recorded_checksums(path: str) -> dict[str, str]:
+    """Sha256 checksums recorded in a replay file's header (see `write_replay_file`),
+    keyed by 'trajectory'/'structure'."""
+    recorded: dict[str, str] = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        for label, dest in (("Trajectory", "trajectory"), ("Structure", "structure")):
+            prefix = f"# {label} sha256: "
+            if line.startswith(prefix):
+                recorded[dest] = line[len(prefix):].strip()
+    return recorded
+
+
+def _verify_replay_checksums(replay_path: str, ns: argparse.Namespace) -> None:
+    """Interactively confirm before continuing if a replayed run's -f/-s files
+    no longer match the checksums recorded in `replay_path`.
+
+    Requires a 'y'/'yes' answer on stdin to proceed; anything else
+    (including no stdin to read, e.g. a non-interactive batch job) aborts
+    the run, so a silently changed input file can't produce a result that
+    looks like a faithful replay but isn't.
+    """
+    recorded = _read_recorded_checksums(replay_path)
+    if not recorded:
+        return
+
+    mismatched = []
+    for dest, label in (("trajectory", "Trajectory"), ("structure", "Structure")):
+        recorded_hash = recorded.get(dest)
+        current_path = getattr(ns, dest, None)
+        if recorded_hash is None or not current_path or not Path(current_path).is_file():
+            continue
+        if _sha256_of_file(current_path) != recorded_hash:
+            mismatched.append((label, current_path))
+
+    if not mismatched:
+        return
+
+    print(f"WARNING: replaying {replay_path}, but the following input file(s) no longer match its recorded checksum:")
+    for label, path in mismatched:
+        print(f"  {label}: {path}")
+
+    try:
+        answer = input("Continue with these changed input files anyway? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+
+    if answer not in ("y", "yes"):
+        raise SystemExit("Aborted: replayed input file(s) changed since the replay file was recorded.")
+
+
+def apply_replay(
+    parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, remaining: list[str]
+) -> argparse.Namespace:
     """Re-parse args with any --replay file's tokens prepended (so
     user-supplied CLI args on top of a replay still take priority)."""
     replayed: list[str] = []
@@ -194,7 +306,12 @@ def apply_replay(parser: argparse.ArgumentParser, pre_ns: argparse.Namespace, re
         replayed = load_replay_args(pre_ns.replay)
 
     combined_argv = replayed + remaining
-    return parser.parse_args(combined_argv)
+    ns = parser.parse_args(combined_argv)
+
+    if pre_ns.replay:
+        _verify_replay_checksums(pre_ns.replay, ns)
+
+    return ns
 
 
 class _CommentedLogFormatter(logging.Formatter):
@@ -207,21 +324,37 @@ class _CommentedLogFormatter(logging.Formatter):
         return "\n".join(f"# {line}" for line in message.splitlines())
 
 
-def attach_replay_log_handler(replay_path: str, logger_name: str = "MDAnalysis", level: int = logging.INFO) -> logging.Handler:
-    """Append `logger_name`'s log records (default: MDAnalysis's own
-    logging, at INFO and above) to the replay file as '#'-prefixed comment
-    lines, so replaying the file later never tries to execute log text as
-    CLI arguments. Disables propagation to the root logger so these records
-    go *only* to the replay file, not also to the console."""
+def attach_replay_log_handler(
+    replay_path: str,
+    logger_name: str = "MDAnalysis",
+    level: int = logging.INFO,
+    console_level: int | None = None,
+) -> logging.Handler:
+    """Append `logger_name`'s log records (default: MDAnalysis's own logging,
+    at INFO and above) to the replay file as '#'-prefixed comment lines, so
+    replaying the file later parses them as comments rather than CLI
+    arguments. When `console_level` is given, records at that level and
+    above are also printed to the console via a second handler; records
+    below it are recorded in the replay file alone. Handles propagation to
+    the root logger itself here rather than through any other configuration,
+    so `logger_name`'s records are handled exactly once, by these handlers."""
     handler = logging.FileHandler(replay_path, mode="a", encoding="utf-8")
     handler.setLevel(level)
     handler.setFormatter(_CommentedLogFormatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
 
     target_logger = logging.getLogger(logger_name)
     target_logger.addHandler(handler)
+
+    if console_level is not None:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(console_level)
+        console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        target_logger.addHandler(console_handler)
+
     target_logger.propagate = False
-    if target_logger.level == logging.NOTSET or target_logger.level > level:
-        target_logger.setLevel(level)
+    effective_level = min(level, console_level) if console_level is not None else level
+    if target_logger.level == logging.NOTSET or target_logger.level > effective_level:
+        target_logger.setLevel(effective_level)
 
     return handler
 

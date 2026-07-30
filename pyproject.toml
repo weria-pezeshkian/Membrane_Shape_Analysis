@@ -22,8 +22,35 @@ classifiers = [
 ]
 dynamic = ["dependencies"]
 
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy", "pre-commit"]
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.in"] }
+
+[tool.ruff]
+# 120, not ruff's Black-derived 88 default: this codebase's existing lines
+# (long, descriptive docstrings/comments) run a p95 of 95 and a p99 of 122
+# chars - 88 would flag ~6.6% of all lines as a formatting problem when
+# it's this project's normal, deliberate style.
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+# E/F/W: pyflakes + pycodestyle (correctness, unused names, style basics).
+# I: import sorting. UP: pyupgrade (modern syntax for requires-python>=3.9).
+# B: bugbear (common bug-prone patterns). Deliberately no D (pydocstyle):
+# this project's one-line, factual docstrings are a chosen convention, not
+# a gap against a Parameters/Returns-style standard.
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+# python_version is left unset: the installed mypy (2.x) only supports
+# checking against 3.10+, one version above this project's stated
+# requires-python floor (3.9) - see TODO.md. Checks run against whatever
+# interpreter invokes mypy instead.
+ignore_missing_imports = true
+warn_unused_configs = true
 
 [project.urls]
 Homepage = "https://weria-pezeshkian.github.io/"
@@ -32,6 +59,9 @@ Issues = "https://github.com/weria-pezeshkian/Membrane_Shape_Analysis/issues"
 
 [tool.setuptools]
 license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+include = ["CALM*"]
 
 [tool.setuptools.package-data]
 "CALM.manuals" = ["*.md"]

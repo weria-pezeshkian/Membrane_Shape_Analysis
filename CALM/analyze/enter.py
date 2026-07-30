@@ -4,9 +4,9 @@ import argparse
 import sys
 from importlib.metadata import version
 
+from ..core.manual import add_manual
 from .full import full
 from .sft import sft
-from ..core.manual import add_manual
 
 MODULES = ["sft", "full"]
 
