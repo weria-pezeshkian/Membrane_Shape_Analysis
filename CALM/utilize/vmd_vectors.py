@@ -366,6 +366,10 @@ def vmd_vectors(args: list[str]) -> None:
         help="multiplier on arrow length (default: 10, converting CALM's nm-based "
              "lengths to VMD's Angstrom coordinate system)",
     )
+    parser.add_argument(
+        "--draw-all-frames", dest="all_frames", action="store_true", default=False,
+        help="write an animated tcl to draw principal vectors for all frames (default: false)"
+    )
     add_manual(parser, "link_vmd_vectors")
     ns = parser.parse_args(args)
 
@@ -377,16 +381,17 @@ def vmd_vectors(args: list[str]) -> None:
         sft = None
 
     static_path = os.path.join(ns.output, "principal_vectors_static.tcl")
-    dynamic_path = os.path.join(ns.output, "principal_vectors_dynamic.tcl")
     build_static_vectors_tcl(
         sft, ns.input, static_path, ns.which, ns.layers, ns.step, ns.dynamic_length, ns.scale
     )
-    build_dynamic_vectors_tcl(
-        sft, ns.input, dynamic_path, ns.which, ns.layers, ns.step, ns.dynamic_length, ns.scale
-    )
-
     print(f"Wrote {static_path} (source against average_structure.gro)")
-    print(f"Wrote {dynamic_path} (source against trajectory.xtc)")
+
+    if ns.all_frames:
+        dynamic_path = os.path.join(ns.output, "principal_vectors_dynamic.tcl")
+        build_dynamic_vectors_tcl(
+            sft, ns.input, dynamic_path, ns.which, ns.layers, ns.step, ns.dynamic_length, ns.scale
+        )
+        print(f"Wrote {dynamic_path} (source against trajectory.xtc)")
 
 
 if __name__ == "__main__":

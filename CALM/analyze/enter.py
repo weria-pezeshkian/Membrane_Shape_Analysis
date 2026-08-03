@@ -6,9 +6,10 @@ from importlib.metadata import version
 
 from ..core.manual import add_manual
 from .full import full
+from .lipids import lipids
 from .sft import sft
 
-MODULES = ["sft", "full"]
+MODULES = ["sft", "full", "lipids"]
 
 
 def run_module(module_name: str, args: list[str]) -> None:
@@ -18,6 +19,8 @@ def run_module(module_name: str, args: list[str]) -> None:
         sft(args)
     elif module_name == "full":
         full(args)
+    elif module_name == "lipids":
+        lipids(args)
     else:
         print(f"Unknown module: {module_name}")
 

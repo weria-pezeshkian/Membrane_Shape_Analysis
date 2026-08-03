@@ -421,6 +421,92 @@ def _track_dynamic_leaflets(
     return out
 
 
+def _remove_tmd_hole_mask(
+    remove_tmd: bool | str,
+    rotation_and_center: "Rotation_and_Center_tracker | None",
+    universe: mda.Universe,
+    layer_group: mda.core.groups.AtomGroup,
+    layer_group_2: mda.core.groups.AtomGroup,
+    fourier1: Fourier_Series_Function,
+    fourier2: Fourier_Series_Function,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Lx: float,
+    Ly: float,
+    Nx: int,
+    Ny: int,
+    tmd_far_multiple: float = 5.0,
+) -> tuple[np.ndarray, _HoleStats]:
+    """(hole_mask, hole_stats) for one frame's --Remove-TMD hole detection.
+
+    One threshold shared by both leaflets. The Nyquist term
+    (_tmd_threshold) reflects the fit's chosen resolution; capping it with
+    median_multiple_threshold anchors it to how densely lipids are packed,
+    using the larger of the two leaflets' own median-based candidates,
+    which keeps the protein-proximity gate below equally permissive for
+    both leaflets.
+
+    A grid point counts as a hole when it is unsupported by lipids (the
+    distance test) and either within `threshold` of a protein atom
+    currently embedded in the membrane (_tmd_protein_atoms_xy), or farther
+    from any lipid than `far_threshold`. The protein selection is
+    `remove_tmd`'s own value when --Remove-TMD was given one, and
+    --center's selection (`rotation_and_center.sel1`) when --Remove-TMD
+    was given bare (`remove_tmd is True`).
+    """
+    nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
+
+    dist_upper = _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly)
+    dist_lower = _grid_to_atom_distances(layer_group_2.positions[:, :2], X, Y, Lx, Ly)
+
+    threshold = min(nyquist, max(
+        median_multiple_threshold(dist_upper, k=1),
+        median_multiple_threshold(dist_lower, k=1),
+    ))
+    far_threshold = threshold * tmd_far_multiple
+
+    if remove_tmd is True:
+        assert rotation_and_center is not None
+        tmd_selection = rotation_and_center.sel1
+    else:
+        tmd_selection = remove_tmd
+    tmd_xy = _tmd_protein_atoms_xy(tmd_selection, universe, fourier1, fourier2)
+    dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
+
+    near_protein = dist_to_protein <= threshold
+    hole_upper = (dist_upper > threshold) & (near_protein | (dist_upper > far_threshold))
+    hole_lower = (dist_lower > threshold) & (near_protein | (dist_lower > far_threshold))
+    n_before_upper = int(hole_upper.sum())
+    n_before_lower = int(hole_lower.sum())
+    hole_upper = _close_enclosed_gaps(hole_upper)
+    hole_lower = _close_enclosed_gaps(hole_lower)
+    hole_mask = np.stack((hole_upper, hole_lower), axis=0)
+
+    # Breaks each leaflet's flagged points down by which rule flagged them,
+    # and how many more the enclosed-gap-closing pass added, so the caller
+    # can log a concrete accounting of what --Remove-TMD did on this frame.
+    hole_stats: _HoleStats = {
+        "n_grid": int(hole_upper.size),
+        "upper": {
+            "near_protein": int((near_protein & (dist_upper > threshold)).sum()),
+            "far_fallback_only": int(
+                ((dist_upper > far_threshold) & ~near_protein & (dist_upper > threshold)).sum()
+            ),
+            "closed_gap": int(hole_upper.sum()) - n_before_upper,
+            "total": int(hole_upper.sum()),
+        },
+        "lower": {
+            "near_protein": int((near_protein & (dist_lower > threshold)).sum()),
+            "far_fallback_only": int(
+                ((dist_lower > far_threshold) & ~near_protein & (dist_lower > threshold)).sum()
+            ),
+            "closed_gap": int(hole_lower.sum()) - n_before_lower,
+            "total": int(hole_lower.sum()),
+        },
+    }
+    return hole_mask, hole_stats
+
+
 def _one_frame(
     frame: int,
     *,
@@ -492,71 +578,10 @@ def _one_frame(
 
     hole_stats: _HoleStats | None = None
     if remove_tmd:
-        # One threshold shared by both leaflets. The Nyquist term
-        # (_tmd_threshold) reflects the fit's chosen resolution; capping it
-        # with median_multiple_threshold anchors it to how densely lipids
-        # are packed, using the larger of the two leaflets' own
-        # median-based candidates, which keeps the protein-proximity gate
-        # below equally permissive for both leaflets.
-        Lx, Ly = dimensions[:3][0], dimensions[:3][1]
-        nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
-
-        dist_upper = _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly)
-        dist_lower = _grid_to_atom_distances(layer_group_2.positions[:, :2], X, Y, Lx, Ly)
-
-        threshold = min(nyquist, max(
-            median_multiple_threshold(dist_upper, k=1),
-            median_multiple_threshold(dist_lower, k=1),
-        ))
-        far_threshold = threshold * tmd_far_multiple
-
-        # A grid point counts as a hole when it is unsupported by lipids
-        # (the distance test) and either within `threshold` of a protein
-        # atom currently embedded in the membrane (_tmd_protein_atoms_xy),
-        # or farther from any lipid than `far_threshold`. The protein
-        # selection is remove_tmd's own value when --Remove-TMD was given
-        # one, and --center's selection (rotation_and_center.sel1) when
-        # --Remove-TMD was given bare (remove_tmd is True).
-        if remove_tmd is True:
-            assert rotation_and_center is not None
-            tmd_selection = rotation_and_center.sel1
-        else:
-            tmd_selection = remove_tmd
-        tmd_xy = _tmd_protein_atoms_xy(tmd_selection, universe, fourier1, fourier2)
-        dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
-
-        near_protein = dist_to_protein <= threshold
-        hole_upper = (dist_upper > threshold) & (near_protein | (dist_upper > far_threshold))
-        hole_lower = (dist_lower > threshold) & (near_protein | (dist_lower > far_threshold))
-        n_before_upper = int(hole_upper.sum())
-        n_before_lower = int(hole_lower.sum())
-        hole_upper = _close_enclosed_gaps(hole_upper)
-        hole_lower = _close_enclosed_gaps(hole_lower)
-        hole_mask = np.stack((hole_upper, hole_lower), axis=0)
-
-        # Breaks each leaflet's flagged points down by which rule flagged
-        # them, and how many more the enclosed-gap-closing pass added, so
-        # calc_fourier can log a concrete accounting of what --Remove-TMD
-        # did on this frame.
-        hole_stats = {
-            "n_grid": int(hole_upper.size),
-            "upper": {
-                "near_protein": int((near_protein & (dist_upper > threshold)).sum()),
-                "far_fallback_only": int(
-                    ((dist_upper > far_threshold) & ~near_protein & (dist_upper > threshold)).sum()
-                ),
-                "closed_gap": int(hole_upper.sum()) - n_before_upper,
-                "total": int(hole_upper.sum()),
-            },
-            "lower": {
-                "near_protein": int((near_protein & (dist_lower > threshold)).sum()),
-                "far_fallback_only": int(
-                    ((dist_lower > far_threshold) & ~near_protein & (dist_lower > threshold)).sum()
-                ),
-                "closed_gap": int(hole_lower.sum()) - n_before_lower,
-                "total": int(hole_lower.sum()),
-            },
-        }
+        hole_mask, hole_stats = _remove_tmd_hole_mask(
+            remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
+            fourier1, fourier2, X, Y, dimensions[:3][0], dimensions[:3][1], Nx, Ny, tmd_far_multiple,
+        )
 
     if q_angle is not None:
         q = _rotate_q(q, q_angle)
@@ -690,6 +715,317 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
                 f"enclosed gaps closed: upper {hole_totals['upper']['closed_gap']}, "
                 f"lower {hole_totals['lower']['closed_gap']}"
             )
+
+
+class _LipidFrameResult(TypedDict):
+    frame: int
+    diagnostics: list[tuple[str, str]]
+
+
+def _residue_centers(atomgroup: mda.core.groups.AtomGroup) -> tuple[np.ndarray, np.ndarray]:
+    """(xy, z) center-of-geometry per residue in `atomgroup`, one row per residue.
+
+    Grouping by residue (rather than a fixed atom name) works uniformly
+    regardless of a lipid species' own headgroup chemistry - unlike the
+    single representative atom `-n`/`--index` uses to fit the leaflet
+    surface, which may not exist at all for every species.
+    """
+    residues = atomgroup.residues
+    if len(residues) == 0:
+        return np.empty((0, 2)), np.empty((0,))
+    centers = np.array([res.atoms.positions.mean(axis=0) for res in residues])
+    return centers[:, :2], centers[:, 2]
+
+
+def _assign_nearest_leaflet(
+    xy: np.ndarray, z: np.ndarray, fourier_upper: Fourier_Series_Function, fourier_lower: Fourier_Series_Function
+) -> np.ndarray:
+    """True where each (xy, z) point's z is closer to the upper leaflet's fitted height than the lower's."""
+    if len(xy) == 0:
+        return np.empty((0,), dtype=bool)
+    z_upper = fourier_upper.Z(xy[:, 0], xy[:, 1])
+    z_lower = fourier_lower.Z(xy[:, 0], xy[:, 1])
+    return np.abs(z - z_upper) <= np.abs(z - z_lower)
+
+
+def _lipid_kernel_fractions(
+    species_xy: list[np.ndarray], X: np.ndarray, Y: np.ndarray, Lx: float, Ly: float,
+) -> np.ndarray:
+    """Fractional lipid composition per grid point for one leaflet: shape (n_species, *X.shape).
+
+    Builds a cKDTree over every species' combined (x, y) positions, and for
+    each grid point sums a Gaussian kernel weight over every lipid within
+    a shared bandwidth, normalized per point so species fractions sum to
+    1. The bandwidth is `median_multiple_threshold` of the grid-to-lipid
+    distances (k=1) - the same "typical lipid spacing" convention
+    --Remove-TMD already uses, shared across every species so their
+    fractions stay comparable at a given point. A grid point with no
+    lipid within the bandwidth gets all-zero fractions.
+    """
+    n_species = len(species_xy)
+    total_lipids = sum(len(s) for s in species_xy)
+    all_xy = np.vstack(species_xy) if total_lipids else np.empty((0, 2))
+    labels = (
+        np.concatenate([np.full(len(s), i) for i, s in enumerate(species_xy)])
+        if total_lipids else np.empty((0,), dtype=int)
+    )
+
+    fractions = np.zeros((n_species,) + X.shape)
+    if len(all_xy) < 2:
+        return fractions
+
+    dist_to_lipids = _grid_to_atom_distances(all_xy, X, Y, Lx, Ly)
+    threshold = median_multiple_threshold(dist_to_lipids, k=1)
+    if not np.isfinite(threshold) or threshold <= 0:
+        return fractions
+
+    grid_points = np.column_stack([X.ravel(), Y.ravel()])
+    all_xy_mod = np.mod(all_xy, [Lx, Ly])
+    tree = cKDTree(all_xy_mod, boxsize=[Lx, Ly])
+    neighbor_lists = tree.query_ball_point(grid_points, r=threshold)
+
+    flat = fractions.reshape(n_species, -1)
+    half_box = np.array([Lx / 2.0, Ly / 2.0])
+    for point_idx, neighbors in enumerate(neighbor_lists):
+        if not neighbors:
+            continue
+        neighbor_idx = np.asarray(neighbors)
+        diff = (all_xy_mod[neighbor_idx] - grid_points[point_idx] + half_box) % [Lx, Ly] - half_box
+        dist = np.linalg.norm(diff, axis=1)
+        weights = np.exp(-dist ** 2 / (2 * threshold ** 2))
+        weight_sum = weights.sum()
+        if weight_sum <= 0:
+            continue
+        point_labels = labels[neighbor_idx]
+        for species_idx in np.unique(point_labels):
+            flat[species_idx, point_idx] = weights[point_labels == species_idx].sum() / weight_sum
+
+    return fractions
+
+
+def _true_surface_area(fourier: Fourier_Series_Function, X: np.ndarray, Y: np.ndarray, cell_area: float) -> np.ndarray:
+    """True (undulation-corrected) area per grid cell: sqrt(1 + Zx^2 + Zy^2) * cell_area."""
+    fx = fourier.Zx(X, Y)
+    fy = fourier.Zy(X, Y)
+    return np.sqrt(1 + fx ** 2 + fy ** 2) * cell_area
+
+
+def _one_lipid_frame(
+    frame: int,
+    *,
+    out_dir: str,
+    species: list[str],
+    dynamic_select: bool,
+    dynamic_leaflets: dict[int, tuple[list[int], list[int]]] | None,
+    until: int,
+    Nx: float | None = 3,
+    Ny: float | None = 3,
+    sqrt_n_atoms: int = 100,
+    regularize: bool = False,
+    remove_tmd: bool | str = False,
+    tmd_far_multiple: float = 5.0,
+) -> _LipidFrameResult:
+    """Fit one frame's leaflet surfaces and save its lipid-composition/area-per-lipid output.
+
+    Lipid positions come from a fresh, per-species `resname` selection
+    (grouped into residues via `_residue_centers`) - independent of
+    whatever atoms `-n`/`--index` used to fit the leaflet surfaces, since
+    that fit selection is one representative atom per lipid chosen for
+    surface geometry, not necessarily present in every requested species.
+
+    Saves `{frame}_lipid_fractions.npy` (species x [upper, lower] x grid),
+    `{frame}_area_per_lipid.npy` (species x [upper, lower] x [flat,
+    curved]), and `{frame}_lipid_counts.npy` (species x [upper, lower]) -
+    aggregating these into a trajectory-averaged `area_per_lipid.csv` is
+    the caller's job, once every frame is done.
+    """
+    diagnostics: list[tuple[str, str]] = []
+    universe = cast(mda.Universe, _worker_state["universe"])
+    layer_group = cast(mda.core.groups.AtomGroup, _worker_state["layer_group"])
+    layer_group_2 = cast(mda.core.groups.AtomGroup, _worker_state["layer_group_2"])
+    rotation_and_center = cast(
+        "Rotation_and_Center_tracker | None", _worker_state["rotation_and_center"]
+    )
+
+    num_digits = len(str(abs(until)))
+    ts = universe.trajectory[frame]
+    dimensions = ts.dimensions
+    Lx, Ly = dimensions[0], dimensions[1]
+    x = np.linspace(0, Lx, sqrt_n_atoms, endpoint=False)
+    y = np.linspace(0, Ly, sqrt_n_atoms, endpoint=False)
+    X, Y = np.meshgrid(x, y)
+    cell_area = (Lx / sqrt_n_atoms) * (Ly / sqrt_n_atoms)
+
+    with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
+        dims.write(f"{frame},{','.join(map(str, dimensions[:3]))}\n")
+
+    if dynamic_select:
+        assert dynamic_leaflets is not None
+        upper_index, lower_index = dynamic_leaflets[frame]
+        layer_group = universe.atoms[upper_index]
+        layer_group_2 = universe.atoms[lower_index]
+
+    if rotation_and_center is not None:
+        rotation_and_center._center()
+
+    Nx_modes, Ny_modes = get_fourier_modes(dimensions[:3], lambda_x=Nx, lambda_y=Ny, diagnostics=diagnostics)
+
+    fourier_upper, _ = _fourier_by_layer(
+        layer_group, dimensions[:3], Nx_modes, Ny_modes, regularize=regularize, diagnostics=diagnostics
+    )
+    fourier_lower, _ = _fourier_by_layer(
+        layer_group_2, dimensions[:3], Nx_modes, Ny_modes, regularize=regularize, diagnostics=diagnostics
+    )
+
+    area_upper = _true_surface_area(fourier_upper, X, Y, cell_area)
+    area_lower = _true_surface_area(fourier_lower, X, Y, cell_area)
+
+    species_xy_upper: list[np.ndarray] = []
+    species_xy_lower: list[np.ndarray] = []
+    counts_upper = np.zeros(len(species))
+    counts_lower = np.zeros(len(species))
+    for i, name in enumerate(species):
+        xy, z = _residue_centers(universe.select_atoms(f"resname {name}"))
+        is_upper = _assign_nearest_leaflet(xy, z, fourier_upper, fourier_lower)
+        species_xy_upper.append(xy[is_upper])
+        species_xy_lower.append(xy[~is_upper])
+        counts_upper[i] = int(is_upper.sum())
+        counts_lower[i] = int((~is_upper).sum())
+
+    fractions_upper = _lipid_kernel_fractions(species_xy_upper, X, Y, Lx, Ly)
+    fractions_lower = _lipid_kernel_fractions(species_xy_lower, X, Y, Lx, Ly)
+
+    if remove_tmd:
+        hole_mask, _ = _remove_tmd_hole_mask(
+            remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
+            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_far_multiple,
+        )
+        valid_upper = ~hole_mask[0]
+        valid_lower = ~hole_mask[1]
+    else:
+        valid_upper = np.ones(X.shape, dtype=bool)
+        valid_lower = np.ones(X.shape, dtype=bool)
+
+    area_per_lipid = np.zeros((len(species), 2, 2))  # [species, leaflet(upper=0/lower=1), area(flat=0/curved=1)]
+    leaflets = (
+        (fractions_upper, area_upper, valid_upper, counts_upper),
+        (fractions_lower, area_lower, valid_lower, counts_lower),
+    )
+    for leaflet_idx, (fractions, area_curved, valid_mask, counts) in enumerate(leaflets):
+        for i in range(len(species)):
+            if counts[i] <= 0:
+                continue
+            frac = fractions[i][valid_mask]
+            area_per_lipid[i, leaflet_idx, 0] = float((frac * cell_area).sum() / counts[i])
+            area_per_lipid[i, leaflet_idx, 1] = float((frac * area_curved[valid_mask]).sum() / counts[i])
+
+    counts = np.stack([counts_upper, counts_lower], axis=1)
+    fractions = np.stack([fractions_upper, fractions_lower], axis=1)
+
+    out = Path(out_dir)
+    np.save(out / f"{frame:0{num_digits}d}_lipid_fractions.npy", fractions)
+    np.save(out / f"{frame:0{num_digits}d}_area_per_lipid.npy", area_per_lipid)
+    np.save(out / f"{frame:0{num_digits}d}_lipid_counts.npy", counts)
+
+    return {"frame": frame, "diagnostics": diagnostics}
+
+
+def _write_area_per_lipid_csv(out_dir: str, species: list[str], frames: list[int], until: int) -> None:
+    """Average every frame's {frame}_area_per_lipid.npy/{frame}_lipid_counts.npy into one area_per_lipid.csv.
+
+    One row per (leaflet, species): area_per_lipid_flat, area_per_lipid_curved, mean_count.
+    """
+    num_digits = len(str(abs(until)))
+    out = Path(out_dir)
+    area_stack = [np.load(out / f"{frame:0{num_digits}d}_area_per_lipid.npy") for frame in frames]
+    count_stack = [np.load(out / f"{frame:0{num_digits}d}_lipid_counts.npy") for frame in frames]
+
+    mean_area = np.mean(np.stack(area_stack), axis=0)  # (n_species, 2, 2)
+    mean_count = np.mean(np.stack(count_stack), axis=0)  # (n_species, 2)
+
+    lines = ["leaflet,species,area_per_lipid_flat,area_per_lipid_curved,mean_count"]
+    for leaflet_idx, leaflet_name in enumerate(("upper", "lower")):
+        for i, name in enumerate(species):
+            lines.append(
+                f"{leaflet_name},{name},{mean_area[i, leaflet_idx, 0]:.6f},"
+                f"{mean_area[i, leaflet_idx, 1]:.6f},{mean_count[i, leaflet_idx]:.2f}"
+            )
+    (out / "area_per_lipid.csv").write_text("\n".join(lines) + "\n")
+
+
+def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
+    """Fit every selected frame's leaflet surfaces and lipid composition/area-per-lipid, in parallel.
+
+    Structurally identical to `calc_fourier`'s parallel per-frame pipeline
+    (same worker init, same dynamic-leaflet tracking), calling
+    `_one_lipid_frame` instead of `_one_frame` and finishing with a single
+    trajectory-averaged `area_per_lipid.csv` once every frame is done.
+    """
+    Until = args.Until
+    ndx = args.index
+
+    if Until is None:
+        Until = len(u.trajectory)
+    else:
+        Until = int(Until)
+    if ndx is None:
+        sys.exit("An index selection or file has to be supplied. Exiting.")
+    try:
+        ndx_groups = _read_ndx(ndx)
+        dynamic_select = False
+        dynamic_selection = None
+    except FileNotFoundError:
+        logger.info(
+            "No ndx file found at the given --index path; treating it as a dynamic MDAnalysis selection instead."
+        )
+        dynamic_select = True
+        dynamic_selection = ndx
+        ndx_groups = None
+
+    frames = list(range(args.From, Until, args.Step))
+    species = list(args.lipids)
+    Path(args.out, "lipid_species.txt").write_text("\n".join(species) + "\n")
+
+    with ProcessPoolExecutor(
+        max_workers=args.Workers,
+        initializer=_init_worker,
+        initargs=(
+            args.structure, args.trajectory, ndx_groups, dynamic_select,
+            args.center, args.rotation_direction, args.rotate,
+        ),
+    ) as ex:
+        dynamic_leaflets = None
+        if dynamic_select:
+            assert dynamic_selection is not None
+            fetch = partial(_fetch_dynamic_positions, dynamic_selection=dynamic_selection)
+            ordered_results = list(ex.map(fetch, frames))
+            selection_global_indices = u.select_atoms(dynamic_selection).atoms.indices
+            dynamic_leaflets = _track_dynamic_leaflets(
+                ordered_results, selection_global_indices, args.min_balance, margin=args.margin
+            )
+
+        fn = partial(_one_lipid_frame,
+                    out_dir=args.out,
+                    species=species,
+                    dynamic_select=dynamic_select,
+                    dynamic_leaflets=dynamic_leaflets,
+                    until=Until,
+                    Nx=args.lambda_x,
+                    Ny=args.lambda_y,
+                    sqrt_n_atoms=args.gridsize,
+                    regularize=args.regularize,
+                    remove_tmd=args.remove_tmd,
+                    )
+
+        futures = [ex.submit(fn, x) for x in frames]
+        for future in futures:
+            result: _LipidFrameResult = future.result()  # surfaces exceptions raised in worker processes
+            frame_num = result["frame"]
+            for level, message in result["diagnostics"]:
+                log_fn = logger.warning if level == "warning" else logger.info
+                log_fn(f"frame {frame_num}: {message}")
+
+    _write_area_per_lipid_csv(args.out, species, frames, Until)
 
 
 if __name__ == "__main__":

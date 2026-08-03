@@ -18,5 +18,8 @@ CALM analyze <command> [args...]
 - `full` - run the full geometric analysis pipeline (thickness, curvature)
   that `CALM map` can plot. Builds the fit itself unless `--sft` points to
   output already produced by `sft`.
+- `lipids` - per-species lipid composition and area-per-lipid, computed
+  frame by frame from a live trajectory. Always re-fits the surfaces
+  itself (no `--sft` reuse), since lipid identity needs real atoms.
 
 Run `CALM analyze <command> --man` for a command's full manual.

@@ -25,9 +25,16 @@ pytest
 - `test_argument_parser.py` - `write_replay_file` and replay-checksum
   verification.
 - `test_calibrate.py` - the `calibrate` CLI scaffold.
+- `test_analyze_lipids.py` - per-species lipid-composition assignment
+  (`_residue_centers`, `_assign_nearest_leaflet`, `_lipid_kernel_fractions`,
+  `_true_surface_area`, `_one_lipid_frame`) and the trajectory-averaged
+  `area_per_lipid.csv` (`_write_area_per_lipid_csv`).
 - `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic
   direction averaging, sign alignment, and rendering.
 - `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video.
+- `test_radial_plot.py` - `map/radial_plot.py`'s radial binning and
+  upper/lower-only rendering.
+- `test_lipids_plot.py` - `map/lipids_plot.py`'s reserved entry point.
 - `test_vmd_xtc.py` - `get_vmd_visualisation`'s NaN-grid-point handling,
   `vmd_xtc`'s rotation-TCL auto-detection, and `_trajectory_hole_union`'s
   per-trajectory hole combining.
