@@ -22,6 +22,9 @@ CALM map plot -i full_out_dir --mode mean -o mean.png
   data.
 - `--vectors` - overlay principal-direction vectors (`--mode principal`
   only).
+- `--histogram` - add a distribution strip beside each colorbar, showing
+  how this plot's own data spreads across the color scale (bars), with
+  the colorbar's own tick lines drawn across it.
 
 ## Averaging
 

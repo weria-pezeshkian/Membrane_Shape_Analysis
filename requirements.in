@@ -1,3 +1,4 @@
+imageio-ffmpeg==0.6.0
 libmaker==0.1
 matplotlib==3.11.1
 mdanalysis==2.9.0
