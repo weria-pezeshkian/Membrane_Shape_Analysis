@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import MDAnalysis as mda
 import numpy as np
@@ -197,6 +198,57 @@ def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: 
     # hole flagged there is a false positive.
     far_from_gap = np.hypot(*(np.meshgrid(grid, grid) - np.array([Lx / 2, Ly / 2])[:, None, None])) > 60
     assert not hole_mask[1][far_from_gap].any()
+
+
+def test_one_frame_closes_gaps_wider_than_a_single_grid_cell(tmp_path: Path) -> None:
+    # _close_enclosed_gaps's own bare default (iterations=1) only closes
+    # gaps up to about 1-2 grid cells wide - _one_frame must scale it up
+    # from far_threshold, not fall back to that default, so enclosed
+    # islands wider than that (as real protein-shaped holes can be) still
+    # get closed. See TODO.md for why far_threshold, not threshold itself.
+    Lx = Ly = Lz = 300.0
+    rng = np.random.default_rng(1)
+    spacing = 8.0
+    xs, ys = np.meshgrid(np.arange(0, Lx, spacing), np.arange(0, Ly, spacing))
+    pts = np.column_stack([xs.ravel(), ys.ravel()]) + rng.normal(0, 1.0, size=(xs.size, 2))
+    pts = np.mod(pts, [Lx, Ly])
+    center = np.array([Lx / 2, Ly / 2])
+    keep = np.linalg.norm(pts - center, axis=1) > 15.0
+
+    upper_xy = pts[keep]
+    lower_xy = pts
+    protein_xy = center + np.array([[0.0, 0.0], [3.0, 0.0], [-3.0, 0.0], [0.0, 3.0]])
+    protein_z = np.full(len(protein_xy), 50.0)
+
+    positions = np.vstack([
+        np.column_stack([upper_xy, np.full(len(upper_xy), 70.0)]),
+        np.column_stack([lower_xy, np.full(len(lower_xy), 30.0)]),
+        np.column_stack([protein_xy, protein_z]),
+    ])
+    names = ["P"] * (len(upper_xy) + len(lower_xy)) + ["BB"] * len(protein_xy)
+    u = mda.Universe.empty(n_atoms=positions.shape[0], trajectory=True)
+    u.add_TopologyAttr("name", names)
+    u.atoms.positions = positions
+    u.dimensions = [Lx, Ly, Lz, 90.0, 90.0, 90.0]
+
+    fb._worker_state["universe"] = u
+    fb._worker_state["layer_group"] = u.atoms[: len(upper_xy)]
+    fb._worker_state["layer_group_2"] = u.atoms[len(upper_xy):len(upper_xy) + len(lower_xy)]
+    fb._worker_state["rotation_and_center"] = SimpleNamespace(
+        sel1="name BB", rotate=False, _center=lambda: None
+    )
+    try:
+        with patch.object(fb, "_close_enclosed_gaps", wraps=fb._close_enclosed_gaps) as mock_close:
+            fb._one_frame(
+                0, out_dir=str(tmp_path), dynamic_select=False, dynamic_leaflets=None, until=1,
+                Nx=5.0, Ny=5.0, sqrt_n_atoms=60, remove_tmd=True, regularize=False,
+            )
+    finally:
+        fb._worker_state.clear()
+
+    assert mock_close.call_count == 2  # upper, lower
+    iterations_used = [call.kwargs["iterations"] for call in mock_close.call_args_list]
+    assert all(it > 1 for it in iterations_used)  # never the bare, too-small default
 
 
 def test_one_frame_uses_its_own_tmd_selection_with_no_center_at_all(tmp_path: Path) -> None:
