@@ -226,6 +226,8 @@ def _align_signs_to_lower_z(dirs_slice: np.ndarray, flat_tol: float = 1e-9) -> n
     return aligned
 
 
+
+
 def _auto_minmax(arr: np.ndarray) -> tuple[float, float]:
     """Min/max of `arr`'s non-NaN values, widened by a hair if they're equal."""
     valid = arr[~np.isnan(arr)]
@@ -245,6 +247,43 @@ def _clip_to_circle(contour_set, ax, circle_radius: float | None, box_size: np.n
         contour_set.set_clip_path(circle)
 
 
+def _add_colorbar_histogram(fig, cbar_ax, values: np.ndarray, levels: np.ndarray, side: str) -> None:
+    """Bar strip flush against `cbar_ax` showing how many of `values`' points fall in each of `levels`' bins.
+
+    Reuses `levels` exactly as the colorbar's own bin edges, so the strip's
+    vertical axis lines up with the colorbar's color mapping one-to-one.
+    `side` ("left" or "right") places the strip on the side of `cbar_ax`
+    facing away from the data panels, bars growing outward from it. Sits
+    with no gap against the colorbar; `cbar_ax`'s own ticks and axis label
+    are pushed out past the strip's own width so neither overlaps it.
+    """
+    valid = values[~np.isnan(values)]
+    counts, _ = np.histogram(valid, bins=levels)
+    centers = (levels[:-1] + levels[1:]) / 2
+    heights = np.diff(levels)
+
+    pos = cbar_ax.get_position()
+    width = 0.025
+    x0 = pos.x0 - width if side == "left" else pos.x1
+    hist_ax = fig.add_axes((x0, pos.y0, width, pos.height))
+
+    hist_ax.barh(centers, counts, height=heights, color="0.4", alpha=0.7, linewidth=0)
+    hist_ax.set_ylim(levels[0], levels[-1])
+    if side == "left":
+        hist_ax.invert_xaxis()
+
+    # The colorbar's own tick lines, redrawn across the histogram (its own
+    # axes, so they sit on top of the bars regardless of axes draw order),
+    # so each level's line reads directly across its own bar.
+    tick_locs = [t for t in cbar_ax.get_yticks() if levels[0] <= t <= levels[-1]]
+    hist_ax.hlines(tick_locs, *hist_ax.get_xlim(), color="0.6", linewidth=1, zorder=3)
+    hist_ax.axis("off")
+
+    hist_width_points = width * fig.get_figwidth() * 72
+    cbar_ax.tick_params(pad=hist_width_points + 4)
+    cbar_ax.yaxis.labelpad = hist_width_points + 55
+
+
 def draw(
     Dir: str,
     mode: str = "mean",
@@ -258,6 +297,7 @@ def draw(
     title_pad: int = 12,
     frame_numbers: Iterable[int] | None = None,
     vector_frame: int | None = None,
+    histogram: bool = False,
 ) -> None:
     """Render mean curvature or thickness.
 
@@ -275,8 +315,20 @@ def draw(
     background it's drawn over keeps averaging over `frame_numbers` as usual).
     In `--mode principal`, each direction field is also sign-aligned
     (`_align_signs_to_lower_z`) before display.
+
+    `histogram` adds a bar-chart strip beside each colorbar (via
+    `_add_colorbar_histogram`) showing how this call's own data distributes
+    across the colorbar's fixed range - opt-in on both `map plot` and
+    `dynamic_plot`'s own `--histogram` flag, off by default on both.
     """
     fontsize = 20
+    # Extra figure width (inches) a colorbar histogram strip, plus its
+    # colorbar's own pushed-out ticks and axis label, need beyond a plain
+    # colorbar alone - added to figsize rather than reclaimed from the
+    # existing margins, so the data panels keep the exact same absolute
+    # size (and set_aspect keeps fitting them the exact same way) whether
+    # or not histogram is on.
+    hist_room_in = 2.6
 
     if not Dir.endswith("/"):
         Dir += "/"
@@ -303,18 +355,26 @@ def draw(
         X, Y = get_XY(box_size, gridsize)
 
         Minimum, Maximum = minmax if minmax is not None else _auto_minmax(thickness_mean)
+        thickness_levels = np.linspace(Minimum, Maximum, 20)
 
-        fig, ax = plt.subplots(figsize=(12, 10))
-        fig.subplots_adjust(left=0.1, right=0.85, bottom=0.1, top=0.92)
+        # Extra room is added to the figure's own width, not reclaimed from
+        # the plot's margins, so the plot's absolute size (and set_aspect's
+        # fit) is identical whether or not histogram is on.
+        base_w = 12.0
+        fig_w = base_w + hist_room_in if histogram else base_w
+        fig, ax = plt.subplots(figsize=(fig_w, 10))
+        fig.subplots_adjust(left=1.2 / fig_w, right=10.2 / fig_w, bottom=0.1, top=0.92)
 
-        contour = ax.contourf(X, Y, thickness_mean, cmap="viridis", levels=np.linspace(Minimum, Maximum, 20))
+        contour = ax.contourf(X, Y, thickness_mean, cmap="viridis", levels=thickness_levels)
         _clip_to_circle(contour, ax, circle_radius, box_size)
         ax.set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes((0.87, 0.1, 0.03, 0.8))
+        cbar_ax = fig.add_axes((10.44 / fig_w, 0.1, 0.36 / fig_w, 0.8))
         cbar = fig.colorbar(contour, cax=cbar_ax)
         cbar.set_label("Thickness (nm)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
+        if histogram:
+            _add_colorbar_histogram(fig, cbar_ax, thickness_mean, thickness_levels, side="right")
 
         ax.set_aspect(box_size[0] / box_size[1])
         ax.set_xticks([0, box_size[0]])
@@ -325,8 +385,8 @@ def draw(
         if filename == "":
             plt.show()
         else:
-            plt.savefig(filename, dpi=300)
-            plt.close()
+            fig.savefig(filename, dpi=300)
+            plt.close(fig)
         return
 
     if mode == "mean":
@@ -405,9 +465,17 @@ def draw(
     norm = mcolors.Normalize(vmin=Minimum, vmax=Maximum)
 
     if mode == "mean" and have_thickness:
-        fig, axes = plt.subplots(2, 2, figsize=(32, 26), gridspec_kw={"hspace": 0.075, "wspace": 0.001})
+        # Extra room (both sides: thickness's histogram on the left,
+        # curvature's on the right) is added to the figure's own width,
+        # not reclaimed from the plots' margins, so the plots' absolute
+        # size (and set_aspect's fit) is identical whether or not
+        # histogram is on.
+        base_w = 32.0
+        shift = hist_room_in if histogram else 0.0
+        fig_w = base_w + 2 * shift
+        fig, axes = plt.subplots(2, 2, figsize=(fig_w, 26), gridspec_kw={"hspace": 0.075, "wspace": 0.001})
         axes = axes.flatten()
-        fig.subplots_adjust(left=0.07, right=0.89, bottom=0.03, top=0.97)
+        fig.subplots_adjust(left=(2.24 + shift) / fig_w, right=(28.48 + shift) / fig_w, bottom=0.03, top=0.97)
 
         thickness_levels = np.linspace(thickness_min, thickness_max, 20)
         contour0 = axes[0].contourf(X, Y, thickness_mean, cmap="viridis", levels=thickness_levels)
@@ -425,21 +493,31 @@ def draw(
         axes[2].set_title(f"{layer2} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
         axes[3].set_title(f"{layer3} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes((0.054, 0.15, 0.02, 0.7))
+        cbar_ax = fig.add_axes(((1.728 + shift) / fig_w, 0.15, 0.64 / fig_w, 0.7))
         fig.colorbar(contour0, cax=cbar_ax).set_label("Thickness (nm)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
         cbar_ax.yaxis.set_ticks_position('left')
         cbar_ax.yaxis.set_label_position('left')
+        if histogram:
+            _add_colorbar_histogram(fig, cbar_ax, thickness_mean, thickness_levels, side="left")
 
-        cbar_ax2 = fig.add_axes((0.88, 0.15, 0.02, 0.7))
+        cbar_ax2 = fig.add_axes(((28.16 + shift) / fig_w, 0.15, 0.64 / fig_w, 0.7))
         cbar2 = fig.colorbar(contour1, cax=cbar_ax2)
         cbar2.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
         cbar2.ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
         cbar2.ax.tick_params(labelsize=fontsize)
+        if histogram:
+            combined = np.concatenate([curvature_data1.ravel(), curvature_data2.ravel(), curvature_data3.ravel()])
+            _add_colorbar_histogram(fig, cbar_ax2, combined, levels, side="right")
 
     elif mode == "mean" and not have_thickness:
-        fig, axes = plt.subplots(1, 3, figsize=(30, 10))
-        fig.subplots_adjust(left=0.02, right=0.88, bottom=0.08, top=0.88, wspace=0.05)
+        # Extra room is added to the figure's own width, not reclaimed from
+        # the plots' margins, so the plots' absolute size (and
+        # set_aspect's fit) is identical whether or not histogram is on.
+        base_w = 30.0
+        fig_w = base_w + hist_room_in if histogram else base_w
+        fig, axes = plt.subplots(1, 3, figsize=(fig_w, 10))
+        fig.subplots_adjust(left=0.6 / fig_w, right=26.4 / fig_w, bottom=0.08, top=0.88, wspace=0.05)
 
         curvatures = [curvature_data1, curvature_data3, curvature_data2]  # upper, middle, lower
         layers = [layer1, layer3, layer2]
@@ -449,14 +527,22 @@ def draw(
             _clip_to_circle(c, axes[i], circle_radius, box_size)
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
+        cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
         cbar_ax.tick_params(labelsize=fontsize)
+        if histogram:
+            combined = np.concatenate([layer_data.ravel() for layer_data in curvatures])
+            _add_colorbar_histogram(fig, cbar_ax, combined, levels, side="right")
 
     elif mode == "gaussian":
-        fig, axes = plt.subplots(1, 3, figsize=(30, 10))
-        fig.subplots_adjust(left=0.02, right=0.88, bottom=0.08, top=0.88, wspace=0.05)
+        # Extra room is added to the figure's own width, not reclaimed from
+        # the plots' margins, so the plots' absolute size (and
+        # set_aspect's fit) is identical whether or not histogram is on.
+        base_w = 30.0
+        fig_w = base_w + hist_room_in if histogram else base_w
+        fig, axes = plt.subplots(1, 3, figsize=(fig_w, 10))
+        fig.subplots_adjust(left=0.6 / fig_w, right=26.4 / fig_w, bottom=0.08, top=0.88, wspace=0.05)
 
         curvatures = [curvature_data1, curvature_data2, curvature_data3]
         layers = [layer1, layer2, layer3]
@@ -466,14 +552,24 @@ def draw(
             _clip_to_circle(c, axes[i], circle_radius, box_size)
             axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        cbar_ax = fig.add_axes((0.90, 0.08, 0.02, 0.8))
+        cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
         cbar_ax.tick_params(labelsize=fontsize)
+        if histogram:
+            combined = np.concatenate([layer_data.ravel() for layer_data in curvatures])
+            _add_colorbar_histogram(fig, cbar_ax, combined, levels, side="right")
 
     elif mode == "principal":
-        fig, axes = plt.subplots(2, 3, figsize=(30, 26))
-        fig.subplots_adjust(left=0.05, right=0.91, bottom=0.05, top=0.90, wspace=0.08, hspace=0.0)
+        # Extra room is added to the figure's own width, not reclaimed from
+        # the plots' margins, so the plots' absolute size (and
+        # set_aspect's fit) is identical whether or not histogram is on.
+        base_w = 30.0
+        fig_w = base_w + hist_room_in if histogram else base_w
+        fig, axes = plt.subplots(2, 3, figsize=(fig_w, 26))
+        fig.subplots_adjust(
+            left=1.5 / fig_w, right=27.3 / fig_w, bottom=0.05, top=0.90, wspace=0.08, hspace=0.0,
+        )
 
         for i in range(3):
             ax = axes[0, i]
@@ -499,11 +595,14 @@ def draw(
                           dirs_k2[i][::step, ::step, 0], dirs_k2[i][::step, ::step, 1],
                           color="black", scale=30, width=0.002, alpha=0.6)
 
-        cbar_ax = fig.add_axes((0.93, 0.08, 0.02, 0.8))
+        cbar_ax = fig.add_axes((27.9 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
         cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
         cbar_ax.tick_params(labelsize=fontsize)
         cbar.ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+        if histogram:
+            combined = np.concatenate([layer_data.ravel() for layer_data in curvature_k1 + curvature_k2])
+            _add_colorbar_histogram(fig, cbar_ax, combined, levels, side="right")
 
     for ax in axes.flatten():
         ax.set_aspect(box_size[0] / box_size[1])
@@ -515,8 +614,8 @@ def draw(
     if filename == "":
         plt.show()
     else:
-        plt.savefig(filename, dpi=300)
-        plt.close()
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
 
 
 def plot(args: list[str]) -> None:
@@ -531,12 +630,19 @@ def plot(args: list[str]) -> None:
     parser.add_argument('--minimum', type=float, default=None, help="fix the color scale's lower bound")
     parser.add_argument('--maximum', type=float, default=None, help="fix the color scale's upper bound")
     parser.add_argument('--vectors', action="store_true", default=False, help="overlay principal-direction vectors")
+    parser.add_argument(
+        '--histogram', action="store_true", default=False,
+        help="add a distribution strip beside each colorbar",
+    )
     add_manual(parser, "map_plot")
 
     ns = parser.parse_args(args)
     minmax = [ns.minimum, ns.maximum] if ns.minimum is not None and ns.maximum is not None else None
 
-    draw(Dir=ns.numpys_directory, mode=ns.mode, minmax=minmax, filename=ns.outfile, show_vectors=ns.vectors)
+    draw(
+        Dir=ns.numpys_directory, mode=ns.mode, minmax=minmax, filename=ns.outfile, show_vectors=ns.vectors,
+        histogram=ns.histogram,
+    )
 
 
 if __name__ == "__main__":

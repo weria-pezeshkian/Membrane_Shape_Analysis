@@ -9,6 +9,7 @@ import numpy as np
 from scipy.interpolate import RectBivariateSpline
 from scipy.optimize import brentq
 from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from ..core.curvature import shape_operator_curvatures
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
@@ -94,15 +95,28 @@ def _thickness_root(
 ) -> float | None:
     """Root of `f` along the local normal ray, widening the search bracket up to 3 times if the previous one fails to bracket a root.
 
+    A root is only accepted if it falls within the original, un-widened
+    `t_max_base` of the query point - itself twice the max observed
+    upper/lower z-difference across the whole frame, so a genuine nearby
+    leaflet intersection is comfortably inside it. The wider brackets
+    (2x, 4x, 8x) exist only to help `brentq` find a sign change to
+    bracket; a root that only exists that much farther out most likely
+    crosses an unrelated, distant part of the periodic surface rather than
+    the true nearby leaflet, so it's treated the same as a bracket that
+    never found a root at all.
+
     Returns None if every widened bracket (t_max_base, 2x, 4x, 8x) still
-    fails to bracket a root.
+    fails to bracket a root, or if the only root found lies beyond
+    `t_max_base` itself.
     """
     t_max = t_max_base
     for _ in range(4):
         try:
             if upper:
-                return brentq(f, 0.0, t_max, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
-            return brentq(f, -t_max, 0.0, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
+                root = brentq(f, 0.0, t_max, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
+            else:
+                root = brentq(f, -t_max, 0.0, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
+            return root if abs(root) <= t_max_base else None
         except ValueError:
             t_max *= 2
     return None
@@ -137,137 +151,150 @@ def analysis(
     assert sft.q_mn is not None
     rotated = args.rotate
 
-    for i, frame in tqdm(enumerate(sft.frame_indices), total=len(sft.frame_indices)):
-        if universe is not None:
-            try:
-                universe.trajectory[frame]
-            except IndexError:
-                universe.trajectory[i]
-            dimensions = universe.dimensions[:3]
-        else:
-            # No trajectory (SFT was loaded via --sft): use the box size
-            # captured per-frame at build time instead.
-            dimensions = sft.dimensions[i]
-        x = np.linspace(0, dimensions[:3][0], args.gridsize, endpoint=False)
-        y = np.linspace(0, dimensions[:3][1], args.gridsize, endpoint=False)
-        X, Y = np.meshgrid(x, y)
+    # logging_redirect_tqdm routes any logging handler's console output
+    # (e.g. logger.warning below, echoed via the "CALM" logger's console
+    # handler - see attach_replay_log_handler) through tqdm.write for the
+    # duration of this loop, so it appears above the progress bar instead
+    # of corrupting its rendering. The replay log file handler is
+    # unaffected either way - this only changes how console output and the
+    # bar share the terminal.
+    with logging_redirect_tqdm():
+        for i, frame in tqdm(enumerate(sft.frame_indices), total=len(sft.frame_indices)):
+            if universe is not None:
+                try:
+                    universe.trajectory[frame]
+                except IndexError:
+                    universe.trajectory[i]
+                dimensions = universe.dimensions[:3]
+            else:
+                # No trajectory (SFT was loaded via --sft): use the box size
+                # captured per-frame at build time instead.
+                dimensions = sft.dimensions[i]
+            x = np.linspace(0, dimensions[:3][0], args.gridsize, endpoint=False)
+            y = np.linspace(0, dimensions[:3][1], args.gridsize, endpoint=False)
+            X, Y = np.meshgrid(x, y)
 
-        num_digits = len(str(max(sft.frame_indices)))
-        Nx, Ny = get_fourier_modes(dimensions[:3], args.lambda_x, args.lambda_y)
-        fourier0 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
-        fourier0.setAnm(sft.A_mn[i, 0])
-        fourier1 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
-        fourier1.setAnm(sft.A_mn[i, 1])
-        fourier2 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
-        fourier2.setAnm(sft.A_mn[i, 2])
+            num_digits = len(str(max(sft.frame_indices)))
+            Nx, Ny = get_fourier_modes(dimensions[:3], args.lambda_x, args.lambda_y)
+            fourier0 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+            fourier0.setAnm(sft.A_mn[i, 0])
+            fourier1 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+            fourier1.setAnm(sft.A_mn[i, 1])
+            fourier2 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+            fourier2.setAnm(sft.A_mn[i, 2])
 
-        # Curvature/height are rotation-invariant scalars: instead of
-        # rotating Anm (would need refitting), evaluate the as-fit surface
-        # at the corresponding unrotated coordinate for each output grid
-        # point. Only direction vectors (dirs1/dirs2 below) need rotating
-        # afterward.
-        if rotated:
-            theta = recover_rotation_angle(sft.q_mn[i], dimensions[:3][0], dimensions[:3][1], Nx, Ny)
-            X_eval, Y_eval = rotated_grid(X, Y, dimensions[:3][0] / 2.0, dimensions[:3][1] / 2.0, theta)
-        else:
-            theta = 0.0
-            X_eval, Y_eval = X, Y
-
-        if "Z_fitted" in methods or "thickness" in methods:
-            Z_fitted_1 = fourier0.Z(X_eval, Y_eval)
-            Z_fitted_2 = fourier1.Z(X_eval, Y_eval)
-            Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
-            Z_fitted = np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0)
-
+            # Curvature/height are rotation-invariant scalars: instead of
+            # rotating Anm (would need refitting), evaluate the as-fit surface
+            # at the corresponding unrotated coordinate for each output grid
+            # point. Only direction vectors (dirs1/dirs2 below) need rotating
+            # afterward.
             if rotated:
-                Z_fitted = circle_cutter(Z_fitted, dimensions)
+                theta = recover_rotation_angle(sft.q_mn[i], dimensions[:3][0], dimensions[:3][1], Nx, Ny)
+                X_eval, Y_eval = rotated_grid(X, Y, dimensions[:3][0] / 2.0, dimensions[:3][1] / 2.0, theta)
+            else:
+                theta = 0.0
+                X_eval, Y_eval = X, Y
 
-            if "Z_fitted" in methods:
-                np.save(f"{args.out}/{frame:0{num_digits}d}_Z_fitted.npy", Z_fitted / 10)
-
-            if "thickness" in methods:
-                interp_upper = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_1)
-                interp_lower = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_2)
-
-                dx = dimensions[:3][0] / (X.shape[1] - 1)
-                dy = dimensions[:3][1] / (Y.shape[0] - 1)
-                dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
-
-                Nx_arr, Ny_arr = -dz_dx, -dz_dy
-                Nz_arr = np.ones_like(Z_fitted_vmd)
-                N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
-                N /= np.linalg.norm(N, axis=-1, keepdims=True)
-
-                thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
-
-                t_max_base = np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
-                n_failed = 0
-                for i in range(X.shape[0]):
-                    for j in range(X.shape[1]):
-                        x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
-                        nvecx, nvecy, nvecz = N[i, j]
-                        Lx, Ly = dimensions[:3][0], dimensions[:3][1]
-
-                        l1 = _thickness_root(interp_upper, x0, y0, z0, nvecx, nvecy, nvecz, Lx, Ly, t_max_base, upper=True)
-                        l2 = _thickness_root(interp_lower, x0, y0, z0, nvecx, nvecy, nvecz, Lx, Ly, t_max_base, upper=False)
-
-                        if l1 is None or l2 is None:
-                            n_failed += 1
-                            continue
-                        thickness_map[i, j] = l1 - l2
+            if "Z_fitted" in methods or "thickness" in methods:
+                Z_fitted_1 = fourier0.Z(X_eval, Y_eval)
+                Z_fitted_2 = fourier1.Z(X_eval, Y_eval)
+                Z_fitted_vmd = (Z_fitted_1 + Z_fitted_2) / 2
+                Z_fitted = np.stack([Z_fitted_1, Z_fitted_2, Z_fitted_vmd], axis=0)
 
                 if rotated:
-                    thickness_map = circle_cutter(thickness_map, dimensions)
+                    Z_fitted = circle_cutter(Z_fitted, dimensions)
 
-                np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
-                if n_failed:
-                    logger.warning(
-                        f"frame {frame}: thickness could not be determined for "
-                        f"{n_failed}/{thickness_map.size} grid points even after widening the "
-                        "search bracket up to 8x; left as NaN there."
-                    )
+                if "Z_fitted" in methods:
+                    np.save(f"{args.out}/{frame:0{num_digits}d}_Z_fitted.npy", Z_fitted / 10)
 
-        if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
-            # H, K, k1, k2 are rotation-invariant scalars: evaluating at
-            # (X_eval, Y_eval) directly gives the rotated surface's value at
-            # output position (X, Y). dirs1/dirs2 are direction vectors and
-            # get an extra +theta rotation to express them in the
-            # rotated/aligned frame's basis.
-            H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = shape_operator_curvatures(fourier0, X_eval, Y_eval)
-            H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = shape_operator_curvatures(fourier1, X_eval, Y_eval)
-            Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = shape_operator_curvatures(fourier2, X_eval, Y_eval)
+                if "thickness" in methods:
+                    interp_upper = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_1)
+                    interp_lower = RectBivariateSpline(Y[:, 0], X[0, :], Z_fitted_2)
 
-            if theta != 0.0:
-                dirs1_1 = _rotate_direction_vectors(dirs1_1, theta)
-                dirs2_1 = _rotate_direction_vectors(dirs2_1, theta)
-                dirs1_2 = _rotate_direction_vectors(dirs1_2, theta)
-                dirs2_2 = _rotate_direction_vectors(dirs2_2, theta)
-                dirs1_mid = _rotate_direction_vectors(dirs1_mid, theta)
-                dirs2_mid = _rotate_direction_vectors(dirs2_mid, theta)
+                    dx = dimensions[:3][0] / (X.shape[1] - 1)
+                    dy = dimensions[:3][1] / (Y.shape[0] - 1)
+                    dz_dy, dz_dx = periodic_gradient(Z_fitted_vmd, dx, dy, periodic_x=True, periodic_y=True)
 
-            if "mean" in methods:
-                mean_curvature = np.stack([H1, H2, Hmid], axis=0) * 10
-                if rotated:
-                    mean_curvature = circle_cutter(mean_curvature, dimensions)
-                np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy", mean_curvature)
+                    Nx_arr, Ny_arr = -dz_dx, -dz_dy
+                    Nz_arr = np.ones_like(Z_fitted_vmd)
+                    N = np.stack((Nx_arr, Ny_arr, Nz_arr), axis=-1)
+                    N /= np.linalg.norm(N, axis=-1, keepdims=True)
 
-            if "gaussian" in methods:
-                gaussian_curvature = np.stack([K1, K2, Kmid], axis=0) * 10
-                if rotated:
-                    gaussian_curvature = circle_cutter(gaussian_curvature, dimensions)
-                np.save(f"{args.out}/{frame:0{num_digits}d}_gaussian_curvature.npy", gaussian_curvature)
+                    thickness_map = np.full_like(Z_fitted_vmd, np.nan, dtype=float)
 
-            if "principal" in methods:
-                principal_curvatures = np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10
-                if rotated:
-                    principal_curvatures = circle_cutter(principal_curvatures, dimensions)
-                np.save(f"{args.out}/{frame:0{num_digits}d}_principal_curvatures.npy", principal_curvatures)
+                    t_max_base = np.nanmax(np.abs(Z_fitted_1 - Z_fitted_2)) * 2
+                    n_failed = 0
+                    for i in range(X.shape[0]):
+                        for j in range(X.shape[1]):
+                            x0, y0, z0 = X[i, j], Y[i, j], Z_fitted_vmd[i, j]
+                            nvecx, nvecy, nvecz = N[i, j]
+                            Lx, Ly = dimensions[:3][0], dimensions[:3][1]
 
-            if "principal_directions" in methods:
-                principal_dirs = np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0)
-                if rotated:
-                    principal_dirs = circle_cutter(principal_dirs, dimensions)
-                np.save(f"{args.out}/{frame:0{num_digits}d}_principal_dirs.npy", principal_dirs)
+                            l1 = _thickness_root(
+                                interp_upper, x0, y0, z0, nvecx, nvecy, nvecz, Lx, Ly, t_max_base, upper=True
+                            )
+                            l2 = _thickness_root(
+                                interp_lower, x0, y0, z0, nvecx, nvecy, nvecz, Lx, Ly, t_max_base, upper=False
+                            )
+
+                            if l1 is None or l2 is None:
+                                n_failed += 1
+                                continue
+                            thickness_map[i, j] = l1 - l2
+
+                    if rotated:
+                        thickness_map = circle_cutter(thickness_map, dimensions)
+
+                    np.save(f"{args.out}/{frame:0{num_digits}d}_thickness.npy", thickness_map / 10)
+                    if n_failed:
+                        logger.warning(
+                            f"frame {frame}: thickness could not be determined for "
+                            f"{n_failed}/{thickness_map.size} grid points even after widening the "
+                            "search bracket up to 8x, or only found beyond a physically plausible "
+                            "distance; left as NaN there."
+                        )
+
+            if any(m in methods for m in ("mean", "gaussian", "principal", "principal_directions")):
+                # H, K, k1, k2 are rotation-invariant scalars: evaluating at
+                # (X_eval, Y_eval) directly gives the rotated surface's value at
+                # output position (X, Y). dirs1/dirs2 are direction vectors and
+                # get an extra +theta rotation to express them in the
+                # rotated/aligned frame's basis.
+                H1, K1, k1_1, k2_1, dirs1_1, dirs2_1 = shape_operator_curvatures(fourier0, X_eval, Y_eval)
+                H2, K2, k1_2, k2_2, dirs1_2, dirs2_2 = shape_operator_curvatures(fourier1, X_eval, Y_eval)
+                Hmid, Kmid, k1_mid, k2_mid, dirs1_mid, dirs2_mid = shape_operator_curvatures(fourier2, X_eval, Y_eval)
+
+                if theta != 0.0:
+                    dirs1_1 = _rotate_direction_vectors(dirs1_1, theta)
+                    dirs2_1 = _rotate_direction_vectors(dirs2_1, theta)
+                    dirs1_2 = _rotate_direction_vectors(dirs1_2, theta)
+                    dirs2_2 = _rotate_direction_vectors(dirs2_2, theta)
+                    dirs1_mid = _rotate_direction_vectors(dirs1_mid, theta)
+                    dirs2_mid = _rotate_direction_vectors(dirs2_mid, theta)
+
+                if "mean" in methods:
+                    mean_curvature = np.stack([H1, H2, Hmid], axis=0) * 10
+                    if rotated:
+                        mean_curvature = circle_cutter(mean_curvature, dimensions)
+                    np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy", mean_curvature)
+
+                if "gaussian" in methods:
+                    gaussian_curvature = np.stack([K1, K2, Kmid], axis=0) * 10
+                    if rotated:
+                        gaussian_curvature = circle_cutter(gaussian_curvature, dimensions)
+                    np.save(f"{args.out}/{frame:0{num_digits}d}_gaussian_curvature.npy", gaussian_curvature)
+
+                if "principal" in methods:
+                    principal_curvatures = np.stack([k1_1, k2_1, k1_2, k2_2, k1_mid, k2_mid], axis=0) * 10
+                    if rotated:
+                        principal_curvatures = circle_cutter(principal_curvatures, dimensions)
+                    np.save(f"{args.out}/{frame:0{num_digits}d}_principal_curvatures.npy", principal_curvatures)
+
+                if "principal_directions" in methods:
+                    principal_dirs = np.stack([dirs1_1, dirs2_1, dirs1_2, dirs2_2, dirs1_mid, dirs2_mid], axis=0)
+                    if rotated:
+                        principal_dirs = circle_cutter(principal_dirs, dimensions)
+                    np.save(f"{args.out}/{frame:0{num_digits}d}_principal_dirs.npy", principal_dirs)
 
 
 if __name__ == "__main__":

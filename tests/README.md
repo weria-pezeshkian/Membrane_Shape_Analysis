@@ -31,10 +31,15 @@ pytest
   `area_per_lipid.csv` (`_write_area_per_lipid_csv`).
 - `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic
   direction averaging, sign alignment, and rendering.
-- `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video.
+- `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video:
+  per-frame subprocess isolation, ffmpeg/imageio-ffmpeg discovery and
+  streaming GIF assembly, and the Pillow (`--in-memory`) fallback.
 - `test_radial_plot.py` - `map/radial_plot.py`'s radial binning and
   upper/lower-only rendering.
 - `test_lipids_plot.py` - `map/lipids_plot.py`'s reserved entry point.
+- `test_thickness_root.py` - `analyze/analyze.py`'s `_thickness_root`
+  brentq search, including rejecting a root only found via a widened
+  bracket.
 - `test_vmd_xtc.py` - `get_vmd_visualisation`'s NaN-grid-point handling,
   `vmd_xtc`'s rotation-TCL auto-detection, and `_trajectory_hole_union`'s
   per-trajectory hole combining.

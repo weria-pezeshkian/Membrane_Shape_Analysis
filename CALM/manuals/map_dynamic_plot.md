@@ -34,6 +34,24 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
   flicker.
 - `--vectors` - overlay principal-direction vectors (`--mode principal`
   only).
+- `--in-memory` - assemble the GIF by holding every frame open via Pillow
+  instead of streaming through ffmpeg. The default (ffmpeg) keeps peak
+  memory bounded by a single frame's own render, however many frames the
+  video has; `--in-memory` is a fallback for a machine with no ffmpeg
+  available at all (system or the bundled `imageio-ffmpeg`).
+- `--histogram` - add a live per-frame distribution strip beside each
+  colorbar, showing how this frame's own data spreads across the fixed
+  color scale (bars) with the colorbar's own tick lines drawn across it.
+  Since the scale itself is fixed for the whole video, this is the one
+  part of each frame that keeps showing how the data is moving over time.
+- `--percentile` (default 0) - trim this much (0-100) off the color
+  scale's two tails combined, split evenly between them, when computing
+  the fixed scale - e.g. `--percentile 5` keeps the 2.5th-97.5th
+  percentile range instead of the plain min/max. Guards against a single
+  spurious point in a single window (e.g. thickness's brentq root search
+  landing on a physically implausible root - see TODO.md) setting the
+  scale for the whole video by itself. The default, 0, is exactly the
+  plain min/max.
 
 ## Notes
 
@@ -41,7 +59,8 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
   `CALM map plot`, applied per window.
 - In `--mode mean` with thickness data present, the thickness panel gets its
   own fixed color scale (spanning every window's thickness data), computed
-  and held fixed the same way as the curvature scale.
+  and held fixed the same way as the curvature scale - and `--percentile`
+  applies to both scales the same way.
 - In `--mode principal` with `--vectors`, the arrows always show that video
   frame's own instantaneous principal directions; the curvature color field
   behind them is window-averaged.

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import shutil
+import subprocess
 import tempfile
 
 import numpy as np
@@ -51,7 +53,9 @@ def _windows(frame_numbers: list[int], window: int) -> list[list[int]]:
     return result
 
 
-def _windowed_minmax(Dir: str, mode: str, windows: list[list[int]]) -> tuple[float, float]:
+def _windowed_minmax(
+    Dir: str, mode: str, windows: list[list[int]], percentile: float = 0.0
+) -> tuple[float, float]:
     """Color-scale range spanning every rolling window's averaged data,
     excluding grid points NaN in the full-trajectory average.
 
@@ -61,6 +65,15 @@ def _windowed_minmax(Dir: str, mode: str, windows: list[list[int]]) -> tuple[flo
     include that particular frame, so the point isn't NaN there and can
     still report a value - but one that's on the same unreliable point, so
     it's excluded from the scale here too.
+
+    `percentile` (0-100) trims that much off the two tails combined, split
+    evenly between them, of every window's pooled values - e.g.
+    `percentile=5` keeps the 2.5th-97.5th percentile range, so a single
+    spurious point in a single window (e.g. the brentq root search - see
+    TODO.md - landing on a physically implausible root) can't set the
+    scale for the whole video by itself. The default, 0, is exactly the
+    plain min/max, since the 0th/100th percentiles are the min/max
+    themselves.
     """
     if not Dir.endswith("/"):
         Dir += "/"
@@ -77,17 +90,121 @@ def _windowed_minmax(Dir: str, mode: str, windows: list[list[int]]) -> tuple[flo
     full_avg = _load_and_mask(_frame_filtered_glob(Dir + pattern, None), pattern, Dir, sft, layer_sources)
     exclude = np.isnan(full_avg)
 
-    Minimum, Maximum = np.inf, -np.inf
+    pooled = []
     for win in windows:
         arr = _load_and_mask(_frame_filtered_glob(Dir + pattern, win), pattern, Dir, sft, layer_sources)
         valid = arr[~exclude & ~np.isnan(arr)]
         if valid.size:
-            Minimum = min(Minimum, float(valid.min()))
-            Maximum = max(Maximum, float(valid.max()))
+            pooled.append(valid)
+    if not pooled:
+        return np.inf, -np.inf
+
+    all_valid = np.concatenate(pooled)
+    lo, hi = percentile / 2, 100 - percentile / 2
+    Minimum, Maximum = float(np.percentile(all_valid, lo)), float(np.percentile(all_valid, hi))
 
     if Minimum == Maximum:
         Maximum = Minimum + 1e-6
     return Minimum, Maximum
+
+
+def _find_ffmpeg() -> str:
+    """Path to an ffmpeg executable: one already on PATH, or imageio-ffmpeg's bundled per-platform binary.
+
+    Checking PATH first reuses an already-installed conda/apt/brew ffmpeg;
+    imageio-ffmpeg's own binary makes this work on a machine with none
+    installed too, with no setup step needed.
+    """
+    on_path = shutil.which("ffmpeg")
+    if on_path is not None:
+        return on_path
+
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _run_ffmpeg(cmd: list[str]) -> None:
+    """Run an ffmpeg command, raising its stderr in the exception message on a nonzero exit."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed (exit {result.returncode}):\n{result.stderr}")
+
+
+def _stitch_gif_with_ffmpeg(tmp_dir: str, out_gif: str, duration_ms: int) -> None:
+    """Assemble `tmp_dir`'s sequentially numbered `frame_000000.png`, `frame_000001.png`, ... into `out_gif` via ffmpeg.
+
+    ffmpeg's own image-sequence demuxer discovers how many frames there
+    are directly from the numbered files on disk. Streams them one at a
+    time through ffmpeg's own pipeline, so peak memory stays flat as the
+    frame count grows. The two-pass
+    palettegen/paletteuse filters build a 256-color adaptive palette
+    matching the quality of `_stitch_gif_in_memory`'s own Pillow-based
+    quantization.
+    """
+    ffmpeg = _find_ffmpeg()
+    fps = 1000.0 / duration_ms
+    pattern = os.path.join(tmp_dir, "frame_%06d.png")
+    palette_path = os.path.join(tmp_dir, "palette.png")
+    out_gif = os.path.abspath(out_gif)
+
+    _run_ffmpeg([
+        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
+        "-vf", "palettegen=max_colors=256", palette_path,
+    ])
+    _run_ffmpeg([
+        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern, "-i", palette_path,
+        "-lavfi", "paletteuse=dither=sierra2_4a", "-loop", "0", out_gif,
+    ])
+
+
+def _stitch_gif_in_memory(frame_paths: list[str], out_gif: str, duration_ms: int) -> None:
+    """Assemble `frame_paths` into `out_gif` by opening every frame via Pillow at once.
+
+    Peak memory scales with the frame count times each frame's own decoded
+    size, since both this function's own `images` list and Pillow's
+    internal GIF writer hold every frame simultaneously. Useful for short
+    videos, or a machine with no ffmpeg available at all.
+    """
+    images = [Image.open(p).convert("P", palette=Image.Palette.ADAPTIVE, colors=256) for p in frame_paths]
+    images[0].save(out_gif, save_all=True, append_images=images[1:],
+                  duration=duration_ms, loop=0, optimize=False, disposal=2)
+
+
+def _draw_frame_isolated(
+    Dir: str,
+    mode: str,
+    minmax: list[float],
+    thickness_minmax: list[float] | None,
+    filename: str,
+    show_vectors: bool,
+    frame_numbers: list[int],
+    vector_frame: int,
+    histogram: bool,
+) -> None:
+    """Render one frame via `draw()`, running it in its own child process.
+
+    A process's entire memory is reclaimed by the OS the moment it exits,
+    regardless of what matplotlib, its Agg backend, or any library beneath
+    them are holding onto internally - the same guarantee `draw_dynamic`'s
+    own loop needs across hundreds of large figures, without needing to
+    find and fix each such internal retention individually. Uses the
+    `spawn` context (a fresh interpreter) rather than `fork`, so a
+    multi-threaded parent process's own locks can never carry into the
+    child, and the same code path runs on every platform, including ones
+    without `fork` at all.
+    """
+    process = multiprocessing.get_context("spawn").Process(
+        target=draw,
+        kwargs=dict(
+            Dir=Dir, mode=mode, minmax=minmax, thickness_minmax=thickness_minmax,
+            filename=filename, show_vectors=show_vectors, frame_numbers=frame_numbers,
+            vector_frame=vector_frame, histogram=histogram,
+        ),
+    )
+    process.start()
+    process.join()
+    if process.exitcode != 0:
+        raise RuntimeError(f"Rendering frame '{filename}' failed in a subprocess (exit code {process.exitcode}).")
 
 
 def draw_dynamic(
@@ -98,18 +215,37 @@ def draw_dynamic(
     spf: float = 0.2,
     minmax: list[float] | None = None,
     show_vectors: bool = True,
+    in_memory: bool = False,
+    histogram: bool = False,
+    percentile: float = 0.0,
 ) -> None:
     """Render a GIF: one frame per trajectory frame, each a rolling-window average of nearby frames.
 
     Reuses `map/plot.py`'s `draw()` for all loading, rotation-awareness,
     hole-masking, and rendering - only the frame subset given to each call
-    differs. The color scale is fixed once for the whole video (see
-    `minmax`), not recomputed per frame, so it doesn't flicker. In `--mode
-    mean` with thickness data present, the thickness subpanel gets its own
-    fixed scale the same way. In `--mode principal`, the vector overlay
-    (`vector_frame`) always shows that video frame's own instantaneous
-    directions, while the curvature color background behind it keeps
-    averaging over the window as usual.
+    differs, via `_draw_frame_isolated` running each one in its own child
+    process so peak memory stays bounded by a single frame's own render,
+    however many hundreds of frames the video has. The color scale is
+    fixed once for the whole video (see `minmax`, which bypasses
+    `_windowed_minmax`/`percentile` entirely when given), not recomputed
+    per frame, so it doesn't flicker. In `--mode mean` with thickness data
+    present, the thickness subpanel gets its own fixed scale the same way.
+    In `--mode principal`, the vector overlay (`vector_frame`) always
+    shows that video frame's own instantaneous directions, while the
+    curvature color background behind it keeps averaging over the window
+    as usual.
+
+    `in_memory` selects which of `_stitch_gif_with_ffmpeg` (the default)
+    or `_stitch_gif_in_memory` assembles the per-frame PNGs into the final
+    GIF - see their own docstrings for the memory tradeoff.
+
+    `histogram` adds a live per-frame distribution strip beside each
+    colorbar (see `draw`'s own docstring) - since the color scale is fixed
+    for the whole video, this is the one part of each frame that keeps
+    showing how the data itself is moving, frame to frame.
+
+    `percentile` is passed straight to `_windowed_minmax` - see its own
+    docstring.
     """
     if mode not in _MODE_PATTERNS:
         raise ValueError("mode must be 'mean', 'gaussian', 'principal', or 'thickness'")
@@ -119,28 +255,31 @@ def draw_dynamic(
         raise FileNotFoundError(f"No frames found for mode '{mode}' in {Dir}")
     windows = _windows(frame_numbers, window)
 
-    fixed_minmax = list(minmax) if minmax is not None else list(_windowed_minmax(Dir, mode, windows))
+    fixed_minmax = (
+        list(minmax) if minmax is not None else list(_windowed_minmax(Dir, mode, windows, percentile))
+    )
 
     fixed_thickness_minmax = None
     if mode == "mean" and _available_frame_numbers(Dir, "thickness"):
-        fixed_thickness_minmax = list(_windowed_minmax(Dir, "thickness", windows))
+        fixed_thickness_minmax = list(_windowed_minmax(Dir, "thickness", windows, percentile))
 
     tmp_dir = tempfile.mkdtemp(prefix="dynamic_plot_")
     try:
         frame_paths = []
         for i, win in tqdm(enumerate(windows),total=len(windows)):
             frame_path = os.path.join(tmp_dir, f"frame_{i:06d}.png")
-            draw(
-                Dir, mode=mode, minmax=fixed_minmax, thickness_minmax=fixed_thickness_minmax,
+            _draw_frame_isolated(
+                Dir=Dir, mode=mode, minmax=fixed_minmax, thickness_minmax=fixed_thickness_minmax,
                 filename=frame_path, show_vectors=show_vectors, frame_numbers=win,
-                vector_frame=frame_numbers[i],
+                vector_frame=frame_numbers[i], histogram=histogram,
             )
             frame_paths.append(frame_path)
 
         duration_ms = max(20, int(round(spf * 1000)))  # >= 20ms to avoid viewer clamping to 0
-        images = [Image.open(p).convert("P", palette=Image.Palette.ADAPTIVE, colors=256) for p in frame_paths]
-        images[0].save(out_gif, save_all=True, append_images=images[1:],
-                      duration=duration_ms, loop=0, optimize=False, disposal=2)
+        if in_memory:
+            _stitch_gif_in_memory(frame_paths, out_gif, duration_ms)
+        else:
+            _stitch_gif_with_ffmpeg(tmp_dir, out_gif, duration_ms)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -166,6 +305,21 @@ def dynamic_plot(argv: list[str]) -> None:
     parser.add_argument('--minimum', type=float, default=None, help="fix the color scale's lower bound")
     parser.add_argument('--maximum', type=float, default=None, help="fix the color scale's upper bound")
     parser.add_argument('--vectors', action="store_true", default=False, help="overlay principal-direction vectors")
+    parser.add_argument(
+        '--in-memory', action="store_true", default=False,
+        help="assemble the GIF by holding every frame open via Pillow instead of streaming through ffmpeg "
+             "(default: stream through ffmpeg - much lower peak memory on long videos)",
+    )
+    parser.add_argument(
+        '--histogram', action="store_true", default=False,
+        help="add a live per-frame distribution strip beside each colorbar",
+    )
+    parser.add_argument(
+        '--percentile', type=float, default=0.0,
+        help="trim this much (0-100) off the color scale's two tails combined, split evenly between them - "
+             "e.g. 5 keeps the 2.5th-97.5th percentile range, guarding against a single spurious point setting "
+             "the scale for the whole video (default: 0, the plain min/max)",
+    )
     add_manual(parser, "map_dynamic_plot")
 
     ns = parser.parse_args(argv)
@@ -174,6 +328,7 @@ def dynamic_plot(argv: list[str]) -> None:
     draw_dynamic(
         Dir=ns.numpys_directory, mode=ns.mode, out_gif=ns.outfile,
         window=ns.window, spf=ns.spf, minmax=minmax, show_vectors=ns.vectors,
+        in_memory=ns.in_memory, histogram=ns.histogram, percentile=ns.percentile,
     )
 
 

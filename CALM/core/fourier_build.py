@@ -478,8 +478,16 @@ def _remove_tmd_hole_mask(
     hole_lower = (dist_lower > threshold) & (near_protein | (dist_lower > far_threshold))
     n_before_upper = int(hole_upper.sum())
     n_before_lower = int(hole_lower.sum())
-    hole_upper = _close_enclosed_gaps(hole_upper)
-    hole_lower = _close_enclosed_gaps(hole_lower)
+    # `iterations` is in grid cells; `far_threshold` is the physical scale
+    # already established as "far enough from any lipid to count as hole
+    # regardless of protein proximity" - a non-hole island narrower than
+    # that, in physical units, is closed. `threshold` itself is typically
+    # too close to one grid cell's own size to bridge realistic islands
+    # (see TODO.md).
+    cell_size = min(Lx, Ly) / X.shape[0]
+    close_iterations = max(1, int(round(far_threshold / cell_size)))
+    hole_upper = _close_enclosed_gaps(hole_upper, iterations=close_iterations)
+    hole_lower = _close_enclosed_gaps(hole_lower, iterations=close_iterations)
     hole_mask = np.stack((hole_upper, hole_lower), axis=0)
 
     # Breaks each leaflet's flagged points down by which rule flagged them,
