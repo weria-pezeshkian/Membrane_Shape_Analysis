@@ -1,7 +1,10 @@
 """Tests for CALM analyze lipids: per-species lipid-composition assignment
-(core/fourier_build.py's _residue_centers/_assign_nearest_leaflet/
-_lipid_kernel_fractions/_true_surface_area/_one_lipid_frame), and the
-final trajectory-averaged area_per_lipid.csv (_write_area_per_lipid_csv).
+(core/fourier_build.py's _assign_nearest_leaflet/_lipid_voronoi_fractions/
+_true_surface_area/_one_lipid_frame, and core/headgroup.py's
+_headgroup_centers), and the final trajectory-averaged area_per_lipid.csv
+(_write_area_per_lipid_csv). Headgroup-detection internals
+(_contract_rings/_terminal_arms/_headgroup_atoms_from_graph/_require_bonds)
+have their own tests in test_headgroup.py.
 """
 
 from __future__ import annotations
@@ -15,8 +18,7 @@ import numpy as np
 from CALM.core import fourier_build as fb
 from CALM.core.fourier_build import (
     _assign_nearest_leaflet,
-    _lipid_kernel_fractions,
-    _residue_centers,
+    _lipid_voronoi_fractions,
     _true_surface_area,
     _write_area_per_lipid_csv,
 )
@@ -38,74 +40,88 @@ def test_assign_nearest_leaflet_splits_by_closer_fitted_surface() -> None:
     xy = np.array([[10.0, 10.0], [10.0, 10.0]])
     z = np.array([5.0, -18.0])  # first is near upper (z=0), second near lower (z=-20)
 
-    is_upper = _assign_nearest_leaflet(xy, z, f_upper, f_lower)
-    assert list(is_upper) == [True, False]
+    assignment = _assign_nearest_leaflet(xy, z, f_upper, f_lower)
+    assert list(assignment) == [1, -1]
 
 
-def test_residue_centers_uses_center_of_geometry() -> None:
-    u = mda.Universe.empty(n_atoms=4, n_residues=2, atom_resindex=[0, 0, 1, 1], trajectory=True)
-    u.add_TopologyAttr("name", ["C1", "C1", "C1", "C1"])
-    u.atoms.positions = np.array([
-        [0.0, 0.0, 10.0], [2.0, 0.0, 10.0],  # residue 0 center: (1, 0, 10)
-        [4.0, 4.0, 20.0], [6.0, 6.0, 20.0],  # residue 1 center: (5, 5, 20)
-    ])
-
-    xy, z = _residue_centers(u.atoms)
-
-    assert np.allclose(sorted(xy.tolist()), [[1.0, 0.0], [5.0, 5.0]])
-    assert np.allclose(sorted(z.tolist()), [10.0, 20.0])
+def _flat_fourier(Lx: float, Ly: float) -> Fourier_Series_Function:
+    f = Fourier_Series_Function(Lx, Ly, 1, 1)
+    f.setAnm(np.zeros(f.Anm.shape))
+    return f
 
 
-def test_residue_centers_empty_atomgroup_returns_empty_arrays() -> None:
-    u = mda.Universe.empty(n_atoms=1, trajectory=True)
-    u.add_TopologyAttr("name", ["C1"])
-    u.atoms.positions = np.array([[0.0, 0.0, 0.0]])
-
-    xy, z = _residue_centers(u.select_atoms("name NOTHING"))
-
-    assert xy.shape == (0, 2)
-    assert z.shape == (0,)
-
-
-def test_lipid_kernel_fractions_pure_species_point_gets_fraction_one() -> None:
+def test_lipid_voronoi_fractions_pure_species_point_gets_fraction_one() -> None:
     Lx = Ly = 100.0
     x = np.linspace(0, Lx, 40, endpoint=False)
     y = np.linspace(0, Ly, 40, endpoint=False)
     X, Y = np.meshgrid(x, y)
+    f = _flat_fourier(Lx, Ly)
 
-    # Dense POPC cluster around (25, 25), dense POPE cluster around (75, 75):
-    # their periodic separation (~50 in each axis) is large relative to each
-    # cluster's own point spacing (1), which is what sets the kernel
-    # bandwidth, so it doesn't reach across the gap between them.
+    # Dense POPC cluster around (25, 25), dense POPE cluster around (75, 75).
     popc_xy = np.array([[25.0 + dx, 25.0 + dy] for dx in range(-3, 4) for dy in range(-3, 4)], dtype=float)
     pope_xy = np.array([[75.0 + dx, 75.0 + dy] for dx in range(-3, 4) for dy in range(-3, 4)], dtype=float)
 
-    fractions = _lipid_kernel_fractions([popc_xy, pope_xy], X, Y, Lx, Ly)
+    fractions = _lipid_voronoi_fractions([popc_xy, pope_xy], X, Y, f, Lx, Ly)
 
     # A grid point deep in POPC's own territory: pure POPC.
     i = np.argmin(np.abs(x - 25.0))
     j = np.argmin(np.abs(y - 25.0))
-    assert fractions[0, j, i] > 0.99
-    assert fractions[1, j, i] < 0.01
+    assert fractions[0, j, i] == 1.0
+    assert fractions[1, j, i] == 0.0
 
 
-def test_lipid_kernel_fractions_near_boundary_splits_and_sums_to_one() -> None:
+def test_lipid_voronoi_fractions_boundary_point_assigned_to_nearer_species() -> None:
     Lx = Ly = 100.0
     x = np.linspace(0, Lx, 20, endpoint=False)
     y = np.linspace(0, Ly, 20, endpoint=False)
     X, Y = np.meshgrid(x, y)
+    f = _flat_fourier(Lx, Ly)
 
     popc_xy = np.array([[40.0, 10.0 + i] for i in range(0, 40, 5)])
     pope_xy = np.array([[60.0, 10.0 + i] for i in range(0, 40, 5)])
 
-    fractions = _lipid_kernel_fractions([popc_xy, pope_xy], X, Y, Lx, Ly)
+    fractions = _lipid_voronoi_fractions([popc_xy, pope_xy], X, Y, f, Lx, Ly)
+
+    # Points on either side of the x=50 midline: each fully assigned to the
+    # nearer species (not a blend), and every point's own fractions sum to
+    # exactly 1, since every grid point has some nearest lipid.
+    j = np.argmin(np.abs(y - 20.0))
+    i_left = np.argmin(np.abs(x - 45.0))
+    i_right = np.argmin(np.abs(x - 55.0))
+    assert fractions[0, j, i_left] == 1.0 and fractions[1, j, i_left] == 0.0
+    assert fractions[1, j, i_right] == 1.0 and fractions[0, j, i_right] == 0.0
+    assert fractions[:, j, i_left].sum() == 1.0
+
+
+def test_lipid_voronoi_fractions_accounts_for_surface_curvature() -> None:
+    Lx = Ly = 100.0
+    x = np.linspace(0, Lx, 40, endpoint=False)
+    y = np.linspace(0, Ly, 40, endpoint=False)
+    X, Y = np.meshgrid(x, y)
+    f = Fourier_Series_Function(Lx, Ly, 1, 1)
+    Anm = np.zeros(f.Anm.shape)
+    Anm[f.Nx + 1, f.Ny] = 15.0  # a genuine x-dependent wave, not a flat offset
+    f.setAnm(Anm)
+
+    # Two lipids equidistant from (50, 50) in flat XY but on opposite sides
+    # in x, where the fitted surface's own height differs because of the
+    # wave: a query point at its own fitted height sits closer, in 3D chord
+    # terms, to whichever lipid's fitted height is nearer its own.
+    query_z = f.Z(np.array([50.0]), np.array([50.0]))[0]
+    left_z = f.Z(np.array([40.0]), np.array([50.0]))[0]
+    right_z = f.Z(np.array([60.0]), np.array([50.0]))[0]
+    assert left_z != right_z  # sanity: the wave genuinely differs left vs right
+
+    species_left = np.array([[40.0, 50.0]])
+    species_right = np.array([[60.0, 50.0]])
+
+    fractions = _lipid_voronoi_fractions([species_left, species_right], X, Y, f, Lx, Ly)
 
     i = np.argmin(np.abs(x - 50.0))
-    j = np.argmin(np.abs(y - 20.0))
-    total = fractions[0, j, i] + fractions[1, j, i]
-    assert total > 0  # something nearby contributed
-    assert np.isclose(total, 1.0, atol=1e-6)
-    assert 0.05 < fractions[0, j, i] < 0.95  # a real split, not all-or-nothing
+    j = np.argmin(np.abs(y - 50.0))
+    nearer_species = 0 if abs(left_z - query_z) < abs(right_z - query_z) else 1
+    assert fractions[nearer_species, j, i] == 1.0
+    assert fractions[1 - nearer_species, j, i] == 0.0
 
 
 def test_true_surface_area_matches_flat_cell_area_for_a_flat_surface() -> None:
@@ -183,8 +199,15 @@ def _flat_lipid_universe() -> tuple[mda.Universe, mda.core.groups.AtomGroup, mda
     )
     u.add_TopologyAttr("name", names)
     u.add_TopologyAttr("resname", resnames)
+    u.add_TopologyAttr("masses", [72.0] * len(all_pos))
     u.atoms.positions = all_pos
     u.dimensions = [Lx, Ly, 60.0, 90.0, 90.0, 90.0]
+
+    # Each lipid's own 2 atoms are bonded to each other (_headgroup_centers
+    # requires bonds); fit-selection atoms need none, they never go through it.
+    lipid_start = n_fit_upper + n_fit_lower
+    n_lipid_atoms = len(popc_pos) + len(pope_pos) + len(chol_pos)
+    u.add_bonds([(lipid_start + 2 * i, lipid_start + 2 * i + 1) for i in range(n_lipid_atoms // 2)])
 
     layer_group = u.atoms[:n_fit_upper]
     layer_group_2 = u.atoms[n_fit_upper:n_fit_upper + n_fit_lower]

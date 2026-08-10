@@ -1,6 +1,6 @@
 """Tests for the --Remove-TMD hole-detection helpers in core/fourier_build.py:
 - _tmd_threshold: the Nyquist (half-wavelength) threshold formula
-- _hole_mask_for_layer: periodic nearest-atom distance masking
+- _grid_to_atom_distances: 3D chord distance, periodic in xy, to nearest atom
 - _close_enclosed_gaps: periodic-boundary-aware enclosed-region closing
 - _one_frame's dynamic_select path
 - _one_frame's remove_tmd selection resolution: bare (True) falls back to
@@ -23,8 +23,8 @@ import numpy as np
 from CALM.core import fourier_build as fb
 from CALM.core.fourier_build import (
     _close_enclosed_gaps,
-    _hole_mask_for_layer,
-    _tmd_protein_atoms_xy,
+    _grid_to_atom_distances,
+    _tmd_protein_atoms,
     _tmd_threshold,
     _track_dynamic_leaflets,
 )
@@ -93,7 +93,7 @@ def _flat_surface(Lx: float, Ly: float, z: float) -> Fourier_Series_Function:
     return f
 
 
-def test_tmd_protein_atoms_xy_keeps_only_atoms_between_the_two_surfaces() -> None:
+def test_tmd_protein_atoms_keeps_only_atoms_between_the_two_surfaces() -> None:
     Lx = Ly = 100.0
     upper = _flat_surface(Lx, Ly, 70.0)
     lower = _flat_surface(Lx, Ly, 30.0)
@@ -106,12 +106,12 @@ def test_tmd_protein_atoms_xy_keeps_only_atoms_between_the_two_surfaces() -> Non
         [50.0, 50.0, 10.0],  # below the lower leaflet -> soluble domain, excluded
     ]
 
-    xy = _tmd_protein_atoms_xy("name BB", u, upper, lower)
-    assert xy.shape == (1, 2)
-    assert np.allclose(xy[0], [50.0, 50.0])
+    xyz = _tmd_protein_atoms("name BB", u, upper, lower)
+    assert xyz.shape == (1, 3)
+    assert np.allclose(xyz[0], [50.0, 50.0, 50.0])
 
 
-def test_tmd_protein_atoms_xy_empty_selection_returns_empty_array() -> None:
+def test_tmd_protein_atoms_empty_selection_returns_empty_array() -> None:
     Lx = Ly = 100.0
     upper = _flat_surface(Lx, Ly, 70.0)
     lower = _flat_surface(Lx, Ly, 30.0)
@@ -120,8 +120,8 @@ def test_tmd_protein_atoms_xy_empty_selection_returns_empty_array() -> None:
     u.add_TopologyAttr("name", ["P"])
     u.atoms.positions = [[50.0, 50.0, 50.0]]
 
-    xy = _tmd_protein_atoms_xy("name BB", u, upper, lower)  # no atom named BB
-    assert xy.shape == (0, 2)
+    xyz = _tmd_protein_atoms("name BB", u, upper, lower)  # no atom named BB
+    assert xyz.shape == (0, 3)
 
 
 def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: Path) -> None:
@@ -339,7 +339,7 @@ def test_one_frame_does_not_flag_fully_dense_disordered_leaflet_as_holes(tmp_pat
     # No protein atoms at all: with the gate in place, an empty --center
     # selection means nothing can ever pass the "spatially plausible as
     # protein-displaced" half of the test, so this also exercises that an
-    # empty _tmd_protein_atoms_xy match doesn't crash.
+    # empty _tmd_protein_atoms match doesn't crash.
     fb._worker_state["rotation_and_center"] = SimpleNamespace(
         sel1="name BB", rotate=False, _center=lambda: None
     )
@@ -419,48 +419,43 @@ def test_one_frame_flags_a_gap_far_enough_from_lipid_with_no_protein_present(tmp
     assert hole_mask[0].mean() < 0.05  # rest of the leaflet stays clean
 
 
-def _atoms(positions: np.ndarray) -> SimpleNamespace:
-    return SimpleNamespace(positions=np.asarray(positions, dtype=float))
-
-
-def test_hole_mask_flags_region_with_no_nearby_atoms() -> None:
+def test_grid_to_atom_distances_respects_periodic_boundary() -> None:
     Lx = Ly = 100.0
-    # Dense grid of atoms covering the box, spaced 5 A apart, except a
-    # circular gap of radius 20 A around the center, mimicking a TMD.
-    xs, ys = np.meshgrid(np.arange(0, Lx, 5.0), np.arange(0, Ly, 5.0))
-    pts = np.column_stack([xs.ravel(), ys.ravel()])
-    center = np.array([Lx / 2, Ly / 2])
-    keep = np.linalg.norm(pts - center, axis=1) > 20.0
-    layer_group = _atoms(np.column_stack([pts[keep], np.zeros(keep.sum())]))
-
-    grid = np.linspace(0, Lx, 21, endpoint=False)
-    X, Y = np.meshgrid(grid, grid)
-
-    # Threshold well below the real inter-atom spacing (5 A -> half-diagonal
-    # ~3.5 A) but well above what any point strictly inside the gap sees.
-    mask = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold=4.0)
-
-    center_idx = np.argmin(np.abs(grid - Lx / 2))
-    assert mask[center_idx, center_idx]  # inside the gap -> hole
-    assert not mask[0, 0]  # densely covered corner -> not a hole
-
-
-def test_hole_mask_respects_periodic_boundary() -> None:
-    Lx = Ly = 100.0
+    f = _flat_surface(Lx, Ly, 0.0)
     # Single atom right at the corner (0,0). A query point near the OPPOSITE
     # corner (99,99) is close to (0,0) only through periodic wraparound.
-    layer_group = _atoms([[0.5, 0.5, 0.0]])
+    positions = np.array([[0.5, 0.5, 0.0]])
 
     X = np.array([[99.0]])
     Y = np.array([[99.0]])
 
     # True (non-periodic) distance from (99,99) to (0.5,0.5) would be ~139 A;
     # periodic distance is ~2.1 A.
-    mask_tight = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold=5.0)
-    mask_loose_but_still_periodic = _hole_mask_for_layer(layer_group, X, Y, Lx, Ly, threshold=1.0)
+    dist = _grid_to_atom_distances(positions, X, Y, f, Lx, Ly)
+    assert dist[0, 0] < 5.0
 
-    assert not mask_tight[0, 0]  # within periodic distance -> not a hole
-    assert mask_loose_but_still_periodic[0, 0]  # periodic distance exceeds this tighter threshold
+
+def test_grid_to_atom_distances_grid_point_takes_fitted_surface_height() -> None:
+    Lx = Ly = 100.0
+    f = _flat_surface(Lx, Ly, 50.0)  # every grid point sits at z=50
+    # Atom directly below the query point in xy, at z=0: the only separation
+    # is the grid point's own fitted height.
+    positions = np.array([[50.0, 50.0, 0.0]])
+
+    X = np.array([[50.0]])
+    Y = np.array([[50.0]])
+
+    dist = _grid_to_atom_distances(positions, X, Y, f, Lx, Ly)
+    assert np.isclose(dist[0, 0], 50.0)
+
+
+def test_grid_to_atom_distances_empty_positions_returns_inf() -> None:
+    Lx = Ly = 100.0
+    f = _flat_surface(Lx, Ly, 0.0)
+    X, Y = np.meshgrid([10.0, 20.0], [10.0, 20.0])
+
+    dist = _grid_to_atom_distances(np.empty((0, 3)), X, Y, f, Lx, Ly)
+    assert np.all(np.isinf(dist))
 
 
 # ---- _init_worker: the one real-file-backed entry point other tests bypass ----

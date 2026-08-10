@@ -17,6 +17,7 @@ from scipy.spatial import ConvexHull, cKDTree
 
 from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
 from ..core.fourier_fit import fit_coefficients
+from ..core.headgroup import _headgroup_centers, _require_bonds
 from ..core.leaflet import _label_by_z, apply_margin_filter, get_components, track_components
 from ..core.packing import median_multiple_threshold
 
@@ -211,22 +212,22 @@ def _tmd_threshold(Lx: float, Ly: float, Nx: int, Ny: int) -> float:
 
 
 def _grid_to_atom_distances(
-    positions_xy: np.ndarray, X: np.ndarray, Y: np.ndarray, Lx: float, Ly: float
+    positions_xyz: np.ndarray, X: np.ndarray, Y: np.ndarray, fourier: Fourier_Series_Function, Lx: float, Ly: float
 ) -> np.ndarray:
-    """Periodic XY distance from each grid point (X, Y) to its nearest position in `positions_xy`.
+    """3D chord distance from each grid point, on `fourier`'s own fitted surface, to its nearest position in `positions_xyz`.
 
-    `positions_xy` is an (N, 2) array; Z is irrelevant to a membrane-plane
-    hole. Used both for lipid fit-input positions (`_hole_mask_for_layer`)
-    and for TMD-filtered protein positions (`_one_frame`'s remove_tmd
-    block) - see `core/packing.py`'s `median_multiple_threshold` for why
-    the distance kind being calibrated against and tested against must
-    match.
+    `positions_xyz` is an (N, 3) array of real atom positions. Each grid
+    point takes `fourier.Z(x, y)` as its own height; `positions_xyz` keep
+    their real height. Periodic in x/y, open in z, via one cKDTree with
+    boxsize=[Lx, Ly, 0].
     """
-    positions_xy = np.mod(np.asarray(positions_xy, dtype=float), [Lx, Ly])
-    if len(positions_xy) == 0:
+    positions_xyz = np.asarray(positions_xyz, dtype=float)
+    if len(positions_xyz) == 0:
         return np.full(X.shape, np.inf)
-    tree = cKDTree(positions_xy, boxsize=[Lx, Ly])
-    grid_points = np.column_stack([X.ravel(), Y.ravel()])
+    positions_xyz = positions_xyz.copy()
+    positions_xyz[:, :2] = np.mod(positions_xyz[:, :2], [Lx, Ly])
+    tree = cKDTree(positions_xyz, boxsize=[Lx, Ly, 0])
+    grid_points = np.column_stack([X.ravel(), Y.ravel(), fourier.Z(X, Y).ravel()])
     distances, _ = tree.query(grid_points)
     return distances.reshape(X.shape)
 
@@ -244,25 +245,13 @@ def _close_enclosed_gaps(hole: np.ndarray, iterations: int = 1) -> np.ndarray:
     return closed[H:2 * H, W:2 * W]
 
 
-def _hole_mask_for_layer(
-    layer_group: mda.core.groups.AtomGroup,
-    X: np.ndarray,
-    Y: np.ndarray,
-    Lx: float,
-    Ly: float,
-    threshold: float,
-) -> np.ndarray:
-    """True where grid point (X, Y) has no atom of `layer_group` within `threshold` (periodic, XY only)."""
-    return _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly) > threshold
-
-
-def _tmd_protein_atoms_xy(
+def _tmd_protein_atoms(
     center_selection: str,
     universe: mda.Universe,
     fourier_upper: Fourier_Series_Function,
     fourier_lower: Fourier_Series_Function,
 ) -> np.ndarray:
-    """XY positions of `center_selection` atoms currently embedded in the membrane.
+    """XYZ positions of `center_selection` atoms currently embedded in the membrane.
 
     An atom counts only if its own z falls between the upper and lower
     leaflet surfaces evaluated at that atom's own (x, y) - curvature-aware,
@@ -276,7 +265,7 @@ def _tmd_protein_atoms_xy(
     z_upper = fourier_upper.Z(xy[:, 0], xy[:, 1])
     z_lower = fourier_lower.Z(xy[:, 0], xy[:, 1])
     in_tmd = (z >= np.minimum(z_upper, z_lower)) & (z <= np.maximum(z_upper, z_lower))
-    return xy[in_tmd]
+    return atoms.positions[in_tmd]
 
 
 def _fourier_by_layer(
@@ -448,16 +437,17 @@ def _remove_tmd_hole_mask(
 
     A grid point counts as a hole when it is unsupported by lipids (the
     distance test) and either within `threshold` of a protein atom
-    currently embedded in the membrane (_tmd_protein_atoms_xy), or farther
-    from any lipid than `far_threshold`. The protein selection is
-    `remove_tmd`'s own value when --Remove-TMD was given one, and
-    --center's selection (`rotation_and_center.sel1`) when --Remove-TMD
-    was given bare (`remove_tmd is True`).
+    currently embedded in the membrane (_tmd_protein_atoms), or farther
+    from any lipid than `far_threshold`. Each leaflet's own protein
+    distance is measured against that leaflet's own fitted surface. The
+    protein selection is `remove_tmd`'s own value when --Remove-TMD was
+    given one, and --center's selection (`rotation_and_center.sel1`) when
+    --Remove-TMD was given bare (`remove_tmd is True`).
     """
     nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
 
-    dist_upper = _grid_to_atom_distances(layer_group.positions[:, :2], X, Y, Lx, Ly)
-    dist_lower = _grid_to_atom_distances(layer_group_2.positions[:, :2], X, Y, Lx, Ly)
+    dist_upper = _grid_to_atom_distances(layer_group.positions, X, Y, fourier1, Lx, Ly)
+    dist_lower = _grid_to_atom_distances(layer_group_2.positions, X, Y, fourier2, Lx, Ly)
 
     threshold = min(nyquist, max(
         median_multiple_threshold(dist_upper, k=1),
@@ -470,12 +460,22 @@ def _remove_tmd_hole_mask(
         tmd_selection = rotation_and_center.sel1
     else:
         tmd_selection = remove_tmd
-    tmd_xy = _tmd_protein_atoms_xy(tmd_selection, universe, fourier1, fourier2)
-    dist_to_protein = _grid_to_atom_distances(tmd_xy, X, Y, Lx, Ly)
+    tmd_xyz = _tmd_protein_atoms(tmd_selection, universe, fourier1, fourier2)
+    tmd_x, tmd_y = tmd_xyz[:, 0], tmd_xyz[:, 1]
+    # A protein atom's own z is its real transmembrane depth, not a height
+    # on either leaflet's surface, so distance to each leaflet is measured
+    # from the atom's (x, y) projected onto that leaflet's own fitted
+    # height - both points then live on the same surface, matching how
+    # dist_upper/dist_lower measure grid-to-lipid distance.
+    tmd_on_upper = np.column_stack([tmd_x, tmd_y, fourier1.Z(tmd_x, tmd_y)])
+    tmd_on_lower = np.column_stack([tmd_x, tmd_y, fourier2.Z(tmd_x, tmd_y)])
+    dist_to_protein_upper = _grid_to_atom_distances(tmd_on_upper, X, Y, fourier1, Lx, Ly)
+    dist_to_protein_lower = _grid_to_atom_distances(tmd_on_lower, X, Y, fourier2, Lx, Ly)
 
-    near_protein = dist_to_protein <= threshold
-    hole_upper = (dist_upper > threshold) & (near_protein | (dist_upper > far_threshold))
-    hole_lower = (dist_lower > threshold) & (near_protein | (dist_lower > far_threshold))
+    near_protein_upper = dist_to_protein_upper <= threshold
+    near_protein_lower = dist_to_protein_lower <= threshold
+    hole_upper = (dist_upper > threshold) & (near_protein_upper | (dist_upper > far_threshold))
+    hole_lower = (dist_lower > threshold) & (near_protein_lower | (dist_lower > far_threshold))
     n_before_upper = int(hole_upper.sum())
     n_before_lower = int(hole_lower.sum())
     # `iterations` is in grid cells; `far_threshold` is the physical scale
@@ -496,17 +496,17 @@ def _remove_tmd_hole_mask(
     hole_stats: _HoleStats = {
         "n_grid": int(hole_upper.size),
         "upper": {
-            "near_protein": int((near_protein & (dist_upper > threshold)).sum()),
+            "near_protein": int((near_protein_upper & (dist_upper > threshold)).sum()),
             "far_fallback_only": int(
-                ((dist_upper > far_threshold) & ~near_protein & (dist_upper > threshold)).sum()
+                ((dist_upper > far_threshold) & ~near_protein_upper & (dist_upper > threshold)).sum()
             ),
             "closed_gap": int(hole_upper.sum()) - n_before_upper,
             "total": int(hole_upper.sum()),
         },
         "lower": {
-            "near_protein": int((near_protein & (dist_lower > threshold)).sum()),
+            "near_protein": int((near_protein_lower & (dist_lower > threshold)).sum()),
             "far_fallback_only": int(
-                ((dist_lower > far_threshold) & ~near_protein & (dist_lower > threshold)).sum()
+                ((dist_lower > far_threshold) & ~near_protein_lower & (dist_lower > threshold)).sum()
             ),
             "closed_gap": int(hole_lower.sum()) - n_before_lower,
             "total": int(hole_lower.sum()),
@@ -730,83 +730,71 @@ class _LipidFrameResult(TypedDict):
     diagnostics: list[tuple[str, str]]
 
 
-def _residue_centers(atomgroup: mda.core.groups.AtomGroup) -> tuple[np.ndarray, np.ndarray]:
-    """(xy, z) center-of-geometry per residue in `atomgroup`, one row per residue.
-
-    Grouping by residue (rather than a fixed atom name) works uniformly
-    regardless of a lipid species' own headgroup chemistry - unlike the
-    single representative atom `-n`/`--index` uses to fit the leaflet
-    surface, which may not exist at all for every species.
-    """
-    residues = atomgroup.residues
-    if len(residues) == 0:
-        return np.empty((0, 2)), np.empty((0,))
-    centers = np.array([res.atoms.positions.mean(axis=0) for res in residues])
-    return centers[:, :2], centers[:, 2]
-
-
 def _assign_nearest_leaflet(
-    xy: np.ndarray, z: np.ndarray, fourier_upper: Fourier_Series_Function, fourier_lower: Fourier_Series_Function
+    xy: np.ndarray, z: np.ndarray, fourier_upper: Fourier_Series_Function, fourier_lower: Fourier_Series_Function,
+    far_multiple: float = 5.0,
 ) -> np.ndarray:
-    """True where each (xy, z) point's z is closer to the upper leaflet's fitted height than the lower's."""
+    """Per-point leaflet assignment: 1 (upper), -1 (lower), or 0 (neither - implausibly far from both fitted surfaces).
+
+    A point's own distance to its nearer fitted surface is compared
+    against `far_multiple` times the median such distance across every
+    point passed in here (`median_multiple_threshold`, the same "how many
+    multiples of the typical scale counts as anomalous" convention
+    --Remove-TMD already uses for its own far-fallback rule), so a
+    genuinely free-floating, flipped, or otherwise non-embedded lipid is
+    caught rather than forced into whichever leaflet happens to be
+    numerically closer regardless of how far away it actually sits.
+    """
     if len(xy) == 0:
-        return np.empty((0,), dtype=bool)
+        return np.empty((0,), dtype=int)
     z_upper = fourier_upper.Z(xy[:, 0], xy[:, 1])
     z_lower = fourier_lower.Z(xy[:, 0], xy[:, 1])
-    return np.abs(z - z_upper) <= np.abs(z - z_lower)
+    dist_upper = np.abs(z - z_upper)
+    dist_lower = np.abs(z - z_lower)
+    dist_to_nearest = np.minimum(dist_upper, dist_lower)
+
+    assignment = np.where(dist_upper <= dist_lower, 1, -1)
+    threshold = median_multiple_threshold(dist_to_nearest, k=far_multiple)
+    if np.isfinite(threshold):
+        assignment[dist_to_nearest > threshold] = 0
+    return assignment
 
 
-def _lipid_kernel_fractions(
-    species_xy: list[np.ndarray], X: np.ndarray, Y: np.ndarray, Lx: float, Ly: float,
+def _lipid_voronoi_fractions(
+    species_xy: list[np.ndarray], X: np.ndarray, Y: np.ndarray, fourier: Fourier_Series_Function, Lx: float, Ly: float,
 ) -> np.ndarray:
-    """Fractional lipid composition per grid point for one leaflet: shape (n_species, *X.shape).
+    """Lipid composition per grid point for one leaflet: shape (n_species, *X.shape), 1 for the nearest species and 0 for the rest.
 
-    Builds a cKDTree over every species' combined (x, y) positions, and for
-    each grid point sums a Gaussian kernel weight over every lipid within
-    a shared bandwidth, normalized per point so species fractions sum to
-    1. The bandwidth is `median_multiple_threshold` of the grid-to-lipid
-    distances (k=1) - the same "typical lipid spacing" convention
-    --Remove-TMD already uses, shared across every species so their
-    fractions stay comparable at a given point. A grid point with no
-    lipid within the bandwidth gets all-zero fractions.
+    Each row of `species_xy[i]` is one lipid's own (x, y). Both lipids and
+    grid points are projected onto `fourier`'s own fitted height at their
+    respective (x, y), so ownership is decided by chord distance along the
+    leaflet's own surface rather than each lipid's real height (a
+    residue's whole-body center of geometry sits at a species-dependent
+    depth below the surface - a cardiolipin's four tails pull it deeper
+    than a single-tailed lipid's - which would bias the competition by
+    species identity rather than true packing). Every grid point's full
+    weight goes to whichever lipid is nearest under that metric - a
+    rasterized Voronoi tessellation, with no bandwidth parameter.
     """
     n_species = len(species_xy)
     total_lipids = sum(len(s) for s in species_xy)
-    all_xy = np.vstack(species_xy) if total_lipids else np.empty((0, 2))
-    labels = (
-        np.concatenate([np.full(len(s), i) for i, s in enumerate(species_xy)])
-        if total_lipids else np.empty((0,), dtype=int)
-    )
-
     fractions = np.zeros((n_species,) + X.shape)
-    if len(all_xy) < 2:
+    if total_lipids == 0:
         return fractions
 
-    dist_to_lipids = _grid_to_atom_distances(all_xy, X, Y, Lx, Ly)
-    threshold = median_multiple_threshold(dist_to_lipids, k=1)
-    if not np.isfinite(threshold) or threshold <= 0:
-        return fractions
+    all_xy = np.vstack(species_xy)
+    labels = np.concatenate([np.full(len(s), i) for i, s in enumerate(species_xy)])
 
-    grid_points = np.column_stack([X.ravel(), Y.ravel()])
-    all_xy_mod = np.mod(all_xy, [Lx, Ly])
-    tree = cKDTree(all_xy_mod, boxsize=[Lx, Ly])
-    neighbor_lists = tree.query_ball_point(grid_points, r=threshold)
+    positions = np.column_stack([all_xy[:, 0], all_xy[:, 1], fourier.Z(all_xy[:, 0], all_xy[:, 1])])
+    positions[:, :2] = np.mod(positions[:, :2], [Lx, Ly])
+    tree = cKDTree(positions, boxsize=[Lx, Ly, 0])
+    grid_points = np.column_stack([X.ravel(), Y.ravel(), fourier.Z(X, Y).ravel()])
+    _, nearest_idx = tree.query(grid_points)
 
+    nearest_species = labels[nearest_idx]
     flat = fractions.reshape(n_species, -1)
-    half_box = np.array([Lx / 2.0, Ly / 2.0])
-    for point_idx, neighbors in enumerate(neighbor_lists):
-        if not neighbors:
-            continue
-        neighbor_idx = np.asarray(neighbors)
-        diff = (all_xy_mod[neighbor_idx] - grid_points[point_idx] + half_box) % [Lx, Ly] - half_box
-        dist = np.linalg.norm(diff, axis=1)
-        weights = np.exp(-dist ** 2 / (2 * threshold ** 2))
-        weight_sum = weights.sum()
-        if weight_sum <= 0:
-            continue
-        point_labels = labels[neighbor_idx]
-        for species_idx in np.unique(point_labels):
-            flat[species_idx, point_idx] = weights[point_labels == species_idx].sum() / weight_sum
+    for species_idx in range(n_species):
+        flat[species_idx] = nearest_species == species_idx
 
     return fractions
 
@@ -836,7 +824,7 @@ def _one_lipid_frame(
     """Fit one frame's leaflet surfaces and save its lipid-composition/area-per-lipid output.
 
     Lipid positions come from a fresh, per-species `resname` selection
-    (grouped into residues via `_residue_centers`) - independent of
+    (grouped into residues via `_headgroup_centers`) - independent of
     whatever atoms `-n`/`--index` used to fit the leaflet surfaces, since
     that fit selection is one representative atom per lipid chosen for
     surface geometry, not necessarily present in every requested species.
@@ -893,15 +881,28 @@ def _one_lipid_frame(
     counts_upper = np.zeros(len(species))
     counts_lower = np.zeros(len(species))
     for i, name in enumerate(species):
-        xy, z = _residue_centers(universe.select_atoms(f"resname {name}"))
-        is_upper = _assign_nearest_leaflet(xy, z, fourier_upper, fourier_lower)
-        species_xy_upper.append(xy[is_upper])
-        species_xy_lower.append(xy[~is_upper])
+        xy, z, hub_xy = _headgroup_centers(universe.select_atoms(f"resname {name}"), fourier_upper, fourier_lower)
+        assignment = _assign_nearest_leaflet(xy, z, fourier_upper, fourier_lower, tmd_far_multiple)
+        is_upper = assignment == 1
+        is_lower = assignment == -1
+        # Every hub of an assigned residue competes in the Voronoi step (a
+        # multi-hub lipid like cardiolipin contributes more than one point),
+        # while counts stay per-residue so area_per_lipid divides correctly.
+        upper_points = np.vstack([hub_xy[j] for j in range(len(hub_xy)) if is_upper[j]]) if is_upper.any() \
+            else np.empty((0, 2))
+        lower_points = np.vstack([hub_xy[j] for j in range(len(hub_xy)) if is_lower[j]]) if is_lower.any() \
+            else np.empty((0, 2))
+        species_xy_upper.append(upper_points)
+        species_xy_lower.append(lower_points)
         counts_upper[i] = int(is_upper.sum())
-        counts_lower[i] = int((~is_upper).sum())
-
-    fractions_upper = _lipid_kernel_fractions(species_xy_upper, X, Y, Lx, Ly)
-    fractions_lower = _lipid_kernel_fractions(species_xy_lower, X, Y, Lx, Ly)
+        counts_lower[i] = int(is_lower.sum())
+        n_unassigned = int((assignment == 0).sum())
+        if n_unassigned:
+            diagnostics.append((
+                "warning",
+                f"{n_unassigned} {name} residue(s) excluded from both leaflets - "
+                "implausibly far from both fitted surfaces",
+            ))
 
     if remove_tmd:
         hole_mask, _ = _remove_tmd_hole_mask(
@@ -913,6 +914,9 @@ def _one_lipid_frame(
     else:
         valid_upper = np.ones(X.shape, dtype=bool)
         valid_lower = np.ones(X.shape, dtype=bool)
+
+    fractions_upper = _lipid_voronoi_fractions(species_xy_upper, X, Y, fourier_upper, Lx, Ly)
+    fractions_lower = _lipid_voronoi_fractions(species_xy_lower, X, Y, fourier_lower, Lx, Ly)
 
     area_per_lipid = np.zeros((len(species), 2, 2))  # [species, leaflet(upper=0/lower=1), area(flat=0/curved=1)]
     leaflets = (
@@ -969,6 +973,8 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
     `_one_lipid_frame` instead of `_one_frame` and finishing with a single
     trajectory-averaged `area_per_lipid.csv` once every frame is done.
     """
+    _require_bonds(u)
+
     Until = args.Until
     ndx = args.index
 
