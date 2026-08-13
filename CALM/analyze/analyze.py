@@ -151,14 +151,14 @@ def analysis(
     assert sft.q_mn is not None
     rotated = args.rotate
 
-    # logging_redirect_tqdm routes any logging handler's console output
-    # (e.g. logger.warning below, echoed via the "CALM" logger's console
-    # handler - see attach_replay_log_handler) through tqdm.write for the
-    # duration of this loop, so it appears above the progress bar instead
-    # of corrupting its rendering. The replay log file handler is
-    # unaffected either way - this only changes how console output and the
-    # bar share the terminal.
-    with logging_redirect_tqdm():
+    # logging_redirect_tqdm only patches the loggers passed to it (root, if
+    # none given) - the console handler that actually prints logger.warning
+    # below lives on the "CALM" logger itself (attach_replay_log_handler),
+    # not root, so it must be named explicitly here or the redirect has no
+    # effect and the warning writes straight to stderr, corrupting the bar.
+    # The replay log file handler is unaffected either way - this only
+    # changes how console output and the bar share the terminal.
+    with logging_redirect_tqdm(loggers=[logging.getLogger("CALM")]):
         for i, frame in tqdm(enumerate(sft.frame_indices), total=len(sft.frame_indices)):
             if universe is not None:
                 try:

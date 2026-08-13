@@ -41,13 +41,12 @@ def sft(args: list[str]) -> None:
     pre.add_argument("--replay")
     pre_ns, remaining = pre.parse_known_args(args)
 
-    ns = parser.parse_args(args)
-    arg_helper.validate_rotation_args(parser, ns)
-
+    # Validation runs on the fully-resolved args (replay file's tokens, if
+    # any, merged with the direct CLI) - required= on -f/-s/-n means a
+    # replay-only invocation (no -f/-s/-n given directly) must not be
+    # validated before the replay file's own values are merged in.
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
-
-    if ns.trajectory is None or ns.structure is None:
-        parser.error("Both --trajectory/-f and --structure/-s are required.")
+    arg_helper.validate_rotation_args(parser, ns)
 
     os.makedirs(ns.out, exist_ok=True)
 

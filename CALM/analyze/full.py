@@ -38,11 +38,15 @@ def full(args: list[str]) -> None:
     parser = argparse.ArgumentParser(
         description="Run the full geometric analysis pipeline (thickness, curvature).",
     )
-    arg_helper.add_build_arguments(parser)
-    parser.add_argument(
-        "--sft", default=None, type=str,
-        help="reuse a previously built fit instead of --trajectory/--structure (see --man)",
+    required = parser.add_argument_group(
+        "Required arguments",
+        "Give either --sft, or all three of -f/--trajectory, -s/--structure, and -n/--index.",
     )
+    required.add_argument(
+        "--sft", default=None, type=str,
+        help="reuse a previously built fit instead of --trajectory/--structure/--index (see --man)",
+    )
+    arg_helper.add_build_arguments(parser, require_inputs=False, required_group=required)
     parser.add_argument(
         "--method",
         nargs="+",
@@ -56,15 +60,16 @@ def full(args: list[str]) -> None:
     pre.add_argument("--replay")
     pre_ns, remaining = pre.parse_known_args(args)
 
-    ns = parser.parse_args(args)
-    arg_helper.validate_rotation_args(parser, ns)
-
+    # Validation runs on the fully-resolved args (replay file's tokens, if
+    # any, merged with the direct CLI) - a replay-only invocation must not
+    # be validated before the replay file's own values are merged in.
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
+    arg_helper.validate_rotation_args(parser, ns)
 
     using_precomputed_sft = ns.sft is not None
 
-    if not using_precomputed_sft and (ns.trajectory is None or ns.structure is None):
-        parser.error("Both --trajectory/-f and --structure/-s are required unless --sft is supplied.")
+    if not using_precomputed_sft and (ns.trajectory is None or ns.structure is None or ns.index is None):
+        parser.error("--trajectory/-f, --structure/-s, and --index/-n are all required unless --sft is supplied.")
 
     os.makedirs(ns.out, exist_ok=True)
 

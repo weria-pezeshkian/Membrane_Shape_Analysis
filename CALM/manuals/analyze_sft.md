@@ -15,14 +15,14 @@ CALM analyze sft -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" [options]
 
 - `-f`, `--trajectory` - path to the trajectory file (e.g. `.xtc`).
 - `-s`, `--structure` - path to the structure file (e.g. `.tpr`).
-- `-o`, `--out` - output directory for the saved arrays.
-
-## Leaflet selection
-
 - `-n`, `--index` - either a path to a GROMACS-style index (.ndx) file
   with two groups named `Upper` and `Lower` (e.g. as written by `CALM link
   write_ndx`), or an MDAnalysis selection string (e.g. `"name PO4"`) for
   per-frame dynamic leaflet detection.
+- `-o`, `--out` - output directory for the saved arrays.
+
+## Leaflet selection tuning
+
 - `--min-balance` (default 0.6) - only used with a dynamic `-n` selection.
   Minimum acceptable leaflet-size balance (1.0 = perfectly equal, 0.0 =
   all atoms in one leaflet) for a candidate split to be accepted; among

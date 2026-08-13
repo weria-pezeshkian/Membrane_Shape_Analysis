@@ -14,23 +14,25 @@ CALM analyze full --sft sft_dir -o out_dir [options]
 ## Required arguments
 
 - `-o`, `--out` - output directory for the saved arrays.
-- Either `-f`/`--trajectory` and `-s`/`--structure`, or `--sft`.
+- Either all three of `-f`/`--trajectory`, `-s`/`--structure`, and
+  `-n`/`--index`, or `--sft`.
 
 ## Reusing a precomputed fit
 
 - `--sft` - directory containing a previously built fit (`Amn.npy`,
   `qmn.npy`, `dimensions.npy`, as written by `CALM analyze sft`). If given,
-  `-f`/`-s` are not required and no fitting is redone.
+  `-f`/`-s`/`-n` are not required and no fitting is redone.
 - `--method` - space-separated list of analysis methods to run: `thickness`,
   `Z_fitted`, `mean`, `gaussian`, `principal`, `principal_directions`. If
   omitted, all methods run.
 
 ## Leaflet selection
 
-- `-n`, `--index` - either a path to a GROMACS-style index (.ndx) file
-  with two groups named `Upper` and `Lower` (e.g. as written by `CALM link
-  write_ndx`), or an MDAnalysis selection string (e.g. `"name PO4"`) for
-  per-frame dynamic leaflet detection.
+- `-n`, `--index` (part of the required trio above when not using `--sft`)
+  - either a path to a GROMACS-style index (.ndx) file with two groups
+  named `Upper` and `Lower` (e.g. as written by `CALM link write_ndx`), or
+  an MDAnalysis selection string (e.g. `"name PO4"`) for per-frame dynamic
+  leaflet detection.
 - `--min-balance` (default 0.6) - only used with a dynamic `-n` selection.
   Minimum acceptable leaflet-size balance (1.0 = perfectly equal, 0.0 =
   all atoms in one leaflet) for a candidate split to be accepted; among

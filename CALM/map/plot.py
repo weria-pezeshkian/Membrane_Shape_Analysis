@@ -342,7 +342,8 @@ def draw(
     try:
         sft = SFT.from_directory(Dir)
         if rotation_was_used(sft):
-            circle_radius = fixed_circle_radius(sft)
+            assert sft.dimensions is not None
+            circle_radius = fixed_circle_radius(sft.dimensions)
     except FileNotFoundError:
         pass
 
@@ -489,9 +490,9 @@ def draw(
         contour3 = axes[3].contourf(X, Y, curvature_data3, cmap="plasma", norm=norm, levels=levels)
         _clip_to_circle(contour3, axes[3], circle_radius, box_size)
 
-        axes[1].set_title(f"{layer1} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
-        axes[2].set_title(f"{layer2} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
-        axes[3].set_title(f"{layer3} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+        axes[1].set_title(f"{layer1} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+        axes[2].set_title(f"{layer2} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+        axes[3].set_title(f"{layer3} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes(((1.728 + shift) / fig_w, 0.15, 0.64 / fig_w, 0.7))
         fig.colorbar(contour0, cax=cbar_ax).set_label("Thickness (nm)", fontsize=fontsize)
@@ -525,7 +526,7 @@ def draw(
         for i in range(3):
             c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
             _clip_to_circle(c, axes[i], circle_radius, box_size)
-            axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+            axes[i].set_title(f"{layers[i]} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
@@ -550,7 +551,7 @@ def draw(
         for i in range(3):
             c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
             _clip_to_circle(c, axes[i], circle_radius, box_size)
-            axes[i].set_title(f"{layers[i]} Bilayer: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+            axes[i].set_title(f"{layers[i]} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
@@ -575,7 +576,7 @@ def draw(
             ax = axes[0, i]
             c = ax.contourf(X, Y, curvature_k1[i], cmap="plasma", norm=norm, levels=levels)
             _clip_to_circle(c, ax, circle_radius, box_size)
-            ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Bilayer: k1",
+            ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Surface: k1",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
                 step = 5
@@ -587,7 +588,7 @@ def draw(
             ax = axes[1, i]
             c = ax.contourf(X, Y, curvature_k2[i], cmap="plasma", norm=norm, levels=levels)
             _clip_to_circle(c, ax, circle_radius, box_size)
-            ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Bilayer: k2",
+            ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Surface: k2",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
                 step = 5

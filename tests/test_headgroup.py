@@ -2,10 +2,16 @@
 (core/headgroup.py's _require_bonds/_contract_rings/_terminal_arms/
 _headgroup_atoms_from_graph/_headgroup_centers): identifying a lipid's
 headgroup structurally from its bond graph, rather than by atom name or
-by any single atom's own distance to the interface.
+by any single atom's own distance to the interface. Also covers the
+--lipids RESNAME:NAME1,NAME2 opt-in override (_parse_lipids_argument/
+_validate_headgroup_override/_named_headgroup_centers) that lets a user
+bypass the bond graph for specific species and name the headgroup atom(s)
+directly instead.
 """
 
 from __future__ import annotations
+
+import logging
 
 import MDAnalysis as mda
 import networkx as nx
@@ -16,8 +22,11 @@ from CALM.core.headgroup import (
     _contract_rings,
     _headgroup_atoms_from_graph,
     _headgroup_centers,
+    _named_headgroup_centers,
+    _parse_lipids_argument,
     _require_bonds,
     _terminal_arms,
+    _validate_headgroup_override,
 )
 from CALM.core.fourier_core import Fourier_Series_Function
 
@@ -274,3 +283,95 @@ def test_headgroup_centers_gives_multiple_hub_points_for_a_double_headgroup_lipi
     assert hub_xy[0].shape[0] == 2  # two separate hub points, not one averaged midpoint
     xs = sorted(hub_xy[0][:, 0])
     assert xs[0] < 35.0 < xs[1]  # one point near ring1 (x~30), one near ring2 (x~45)
+
+
+def _named_universe(
+    resnames: list[str], names: list[str], positions: np.ndarray, resindex: list[int] | None = None
+) -> mda.Universe:
+    n = len(names)
+    if resindex is None:
+        resindex = list(range(n))  # one atom per residue, by default
+    n_residues = max(resindex) + 1
+    u = mda.Universe.empty(n_atoms=n, n_residues=n_residues, atom_resindex=resindex, trajectory=True)
+    u.add_TopologyAttr("resname", resnames)
+    u.add_TopologyAttr("name", names)
+    u.atoms.positions = positions
+    return u
+
+
+def test_parse_lipids_argument_separates_species_and_override() -> None:
+    species, override = _parse_lipids_argument(["POPC:PO4", "TCL1:PO41,PO42", "SAPE24"])
+
+    assert species == ["POPC", "TCL1", "SAPE24"]
+    assert override == {"POPC": ["PO4"], "TCL1": ["PO41", "PO42"]}
+
+
+def test_named_headgroup_centers_uses_the_single_named_atom_directly() -> None:
+    # Two POPC residues, each with a PO4 (the named headgroup atom) and an
+    # unrelated tail atom that must be ignored since it isn't named.
+    u = _named_universe(
+        ["POPC", "POPC"],
+        ["PO4", "C1A", "PO4", "C1A"],
+        np.array([[10.0, 20.0, 70.0], [10.0, 20.0, 40.0], [30.0, 40.0, 70.0], [30.0, 40.0, 40.0]]),
+        resindex=[0, 0, 1, 1],
+    )
+
+    xy, z, hub_xy = _named_headgroup_centers(u.select_atoms("resname POPC"), ["PO4"])
+
+    assert np.allclose(xy, [[10.0, 20.0], [30.0, 40.0]])
+    assert np.allclose(z, [70.0, 70.0])
+    assert [h.shape for h in hub_xy] == [(1, 2), (1, 2)]
+
+
+def test_named_headgroup_centers_gives_one_point_per_named_atom() -> None:
+    # A single cardiolipin-like residue with two named phosphates.
+    u = _named_universe(
+        ["TCL1"],
+        ["PO41", "PO42", "C1A1"],
+        np.array([[10.0, 20.0, 70.0], [20.0, 20.0, 69.0], [15.0, 20.0, 40.0]]),
+        resindex=[0, 0, 0],
+    )
+
+    xy, z, hub_xy = _named_headgroup_centers(u.select_atoms("resname TCL1"), ["PO41", "PO42"])
+
+    assert hub_xy[0].shape == (2, 2)
+    assert np.allclose(sorted(hub_xy[0][:, 0].tolist()), [10.0, 20.0])
+    assert np.allclose(xy[0], [15.0, 20.0])  # xy_avg is still the mean across both
+
+
+def test_validate_headgroup_override_exits_when_named_atom_matches_nothing() -> None:
+    u = _named_universe(["POPC"], ["PO4"], np.array([[0.0, 0.0, 70.0]]))
+
+    with pytest.raises(SystemExit):
+        _validate_headgroup_override(u, ["POPC"], {"POPC": ["NOPE"]})
+
+
+def test_validate_headgroup_override_warns_when_only_some_species_are_covered(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    u = _named_universe(["POPC", "POPE"], ["PO4", "PO4"], np.array([[0.0, 0.0, 70.0], [10.0, 0.0, 70.0]]))
+
+    with caplog.at_level(logging.WARNING, logger="CALM.core.headgroup"):
+        _validate_headgroup_override(u, ["POPC", "POPE"], {"POPC": ["PO4"]})
+
+    assert any("POPE" in r.message and "automatic" in r.message for r in caplog.records)
+
+
+def test_validate_headgroup_override_does_not_warn_when_fully_covered(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    u = _named_universe(["POPC", "POPE"], ["PO4", "PO4"], np.array([[0.0, 0.0, 70.0], [10.0, 0.0, 70.0]]))
+
+    with caplog.at_level(logging.WARNING, logger="CALM.core.headgroup"):
+        _validate_headgroup_override(u, ["POPC", "POPE"], {"POPC": ["PO4"], "POPE": ["PO4"]})
+
+    assert caplog.records == []
+
+
+def test_validate_headgroup_override_does_not_warn_when_empty(caplog: pytest.LogCaptureFixture) -> None:
+    u = _named_universe(["POPC"], ["PO4"], np.array([[0.0, 0.0, 70.0]]))
+
+    with caplog.at_level(logging.WARNING, logger="CALM.core.headgroup"):
+        _validate_headgroup_override(u, ["POPC"], {})
+
+    assert caplog.records == []

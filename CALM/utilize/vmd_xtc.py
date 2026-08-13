@@ -40,7 +40,7 @@ def build_rotation_tcl(sft: SFT, out_path: str) -> bool:
     assert sft.dimensions is not None
     cx = sft.dimensions[:, 0] / 2.0
     cy = sft.dimensions[:, 1] / 2.0
-    radius = fixed_circle_radius(sft)
+    radius = fixed_circle_radius(sft.dimensions)
     thetas_deg = np.degrees(thetas)
 
     lines = [

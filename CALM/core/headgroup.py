@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 
 import MDAnalysis as mda
@@ -7,6 +8,85 @@ import networkx as nx
 import numpy as np
 
 from ..core.fourier_core import Fourier_Series_Function
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_lipids_argument(tokens: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """(species, override) from '--lipids' tokens.
+
+    Each token is either a bare resname, or 'RESNAME:NAME1,NAME2,...' -
+    which also gives that species' own explicit headgroup atom(s) to use
+    directly, instead of the automatic bond-graph detection.
+    """
+    species: list[str] = []
+    override: dict[str, list[str]] = {}
+    for token in tokens:
+        resname, sep, names = token.partition(":")
+        species.append(resname)
+        if sep:
+            override[resname] = names.split(",")
+    return species, override
+
+
+def _validate_headgroup_override(
+    universe: mda.Universe, species: list[str], override: dict[str, list[str]]
+) -> None:
+    """Fail clearly on a bad override; warn loudly if it covers only some of `species`.
+
+    An override atom name that matches nothing in `universe` is almost
+    certainly a typo - failing immediately avoids silently computing
+    nothing for that species. Mixing the two headgroup-position methods
+    across species is allowed (it is the whole point of the override), but
+    it is a real methodological difference between species, not merely a
+    formatting choice, so it gets a loud warning rather than passing
+    silently.
+    """
+    for resname, names in override.items():
+        found = universe.select_atoms(f"resname {resname} and name {' '.join(names)}")
+        if len(found) == 0:
+            sys.exit(f"--lipids {resname}:{','.join(names)} matched no atoms in --structure.")
+
+    if override and set(override) != set(species):
+        named = sorted(override)
+        automatic = sorted(set(species) - set(override))
+        logger.warning(
+            f"--lipids gives explicit headgroup atoms for {', '.join(named)} but not for "
+            f"{', '.join(automatic)} - {', '.join(automatic)} will use the automatic bond-graph "
+            "headgroup detection instead, a different method from the named-atom species. Compare "
+            "results between the two groups with care; give every species its own atom name(s) "
+            "(or none at all) for one consistent method throughout."
+        )
+
+
+def _named_headgroup_centers(
+    atomgroup: mda.core.groups.AtomGroup, atom_names: list[str]
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    """(xy_avg, z_avg, hub_xy) per residue in `atomgroup`, using only `atom_names` directly - no bond graph.
+
+    Mirrors `_headgroup_centers`' return contract exactly (one row per
+    residue for `xy_avg`/`z_avg`; `hub_xy[i]` one point per named atom found
+    in that residue - e.g. two points for a cardiolipin-like species given
+    two phosphate names), so callers don't need to know whether a species'
+    headgroup position came from an explicit name-based override or the
+    structural bond-graph classification.
+    """
+    residues = atomgroup.residues
+    if len(residues) == 0:
+        return np.empty((0, 2)), np.empty((0,)), []
+
+    xy_avg = np.zeros((len(residues), 2))
+    z_avg = np.zeros(len(residues))
+    hub_xy: list[np.ndarray] = []
+
+    name_selection = " ".join(atom_names)
+    for i, res in enumerate(residues):
+        pos = res.atoms.select_atoms(f"name {name_selection}").positions
+        xy_avg[i] = pos[:, :2].mean(axis=0)
+        z_avg[i] = pos[:, 2].mean()
+        hub_xy.append(pos[:, :2])
+
+    return xy_avg, z_avg, hub_xy
 
 
 def _require_bonds(universe: mda.Universe) -> None:

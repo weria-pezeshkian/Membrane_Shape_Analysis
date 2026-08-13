@@ -1,10 +1,12 @@
-"""Tests for core/argument_parser.py::write_replay_file.
+"""Tests for core/argument_parser.py.
 
-Regression coverage for a bug where adding --man broke replay-file
-writing: write_replay_file iterates every registered CLI action and reads
-its namespace value, but fire-and-exit actions (-h/--help, -v/--version,
---man) are SUPPRESS-defaulted, so argparse never sets a namespace attribute
-for them unless invoked - getattr(ns, action.dest) raised AttributeError.
+write_replay_file coverage is regression coverage for a bug where adding
+--man broke replay-file writing: write_replay_file iterates every
+registered CLI action and reads its namespace value, but fire-and-exit
+actions (-h/--help, -v/--version, --man) are SUPPRESS-defaulted, so argparse
+never sets a namespace attribute for them unless invoked - getattr(ns,
+action.dest) raised AttributeError. lipids_species_token covers --lipids'
+'RESNAME' / 'RESNAME:NAME1,NAME2,...' token format validation.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ def _fail_if_called(*args: object, **kwargs: object) -> str:
 
 def test_write_replay_file_does_not_crash_on_suppress_defaulted_actions(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
     parser.add_argument("-v", "--version", action="version", version="1.0")
     add_manual(parser, "test")
 
@@ -36,7 +38,7 @@ def test_write_replay_file_does_not_crash_on_suppress_defaulted_actions(tmp_path
 
 def test_write_replay_file_omits_replay_and_out_replay(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
     ns = parser.parse_args(["-o", str(tmp_path), "--replay", "some_replay_file.log"])
 
     replay_path = tmp_path / "replay.log"
@@ -54,7 +56,7 @@ def test_write_replay_file_records_input_checksums(tmp_path: Path) -> None:
     struct.write_bytes(b"structure bytes")
 
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
     ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj), "-s", str(struct)])
 
     replay_path = tmp_path / "replay.log"
@@ -70,7 +72,7 @@ def test_apply_replay_proceeds_silently_when_checksums_match(tmp_path: Path, mon
     traj.write_bytes(b"trajectory bytes")
 
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
     ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj)])
     replay_path = tmp_path / "replay.log"
     arg_helper.write_replay_file(str(replay_path), parser, ns)
@@ -84,7 +86,7 @@ def test_apply_replay_proceeds_silently_when_checksums_match(tmp_path: Path, mon
 
 def test_remove_tmd_parses_bare_as_true_and_with_value_as_the_string(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
 
     assert parser.parse_args(["-o", str(tmp_path)]).remove_tmd is False
     assert parser.parse_args(["-o", str(tmp_path), "--Remove-TMD"]).remove_tmd is True
@@ -94,7 +96,7 @@ def test_remove_tmd_parses_bare_as_true_and_with_value_as_the_string(tmp_path: P
 
 def test_validate_rotation_args_requires_center_only_for_bare_remove_tmd(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
 
     bare = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD"])
     with pytest.raises(SystemExit):
@@ -106,7 +108,7 @@ def test_validate_rotation_args_requires_center_only_for_bare_remove_tmd(tmp_pat
 
 def test_write_replay_file_round_trips_all_three_remove_tmd_states(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
 
     cases = [
         (["-o", str(tmp_path)], False),
@@ -128,7 +130,7 @@ def test_apply_replay_aborts_when_checksum_mismatched_and_not_confirmed(
     traj.write_bytes(b"original bytes")
 
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
     ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj)])
     replay_path = tmp_path / "replay.log"
     arg_helper.write_replay_file(str(replay_path), parser, ns)
@@ -148,7 +150,7 @@ def test_apply_replay_proceeds_when_checksum_mismatched_and_confirmed(
     traj.write_bytes(b"original bytes")
 
     parser = argparse.ArgumentParser()
-    arg_helper.add_build_arguments(parser)
+    arg_helper.add_build_arguments(parser, require_inputs=False)
     ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj)])
     replay_path = tmp_path / "replay.log"
     arg_helper.write_replay_file(str(replay_path), parser, ns)
@@ -159,3 +161,14 @@ def test_apply_replay_proceeds_when_checksum_mismatched_and_confirmed(
     pre_ns = argparse.Namespace(replay=str(replay_path))
     result = arg_helper.apply_replay(parser, pre_ns, ["-o", str(tmp_path), "-f", str(traj)])
     assert result.trajectory == str(traj)
+
+
+@pytest.mark.parametrize("token", ["POPC", "POPC:PO4", "TCL1:PO41,PO42"])
+def test_lipids_species_token_accepts_valid_formats(token: str) -> None:
+    assert arg_helper.lipids_species_token(token) == token  # returned unchanged, for replay round-tripping
+
+
+@pytest.mark.parametrize("token", ["", ":PO4", "POPC:", "POPC:PO4,", "POPC:PO4,,PO42"])
+def test_lipids_species_token_rejects_malformed_tokens(token: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        arg_helper.lipids_species_token(token)

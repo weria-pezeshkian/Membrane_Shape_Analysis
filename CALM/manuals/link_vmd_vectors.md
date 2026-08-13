@@ -32,21 +32,26 @@ CALM link vmd_vectors -i full_out_dir -o vmd_out_dir
   same nm scale as CALM's other reported quantities; the default of 10
   converts that to VMD's Angstrom coordinate system. Raise or lower it to
   make arrows more visible against the loaded structure (e.g. bead radii).
+- `--draw-all-frames` - also write the per-frame animated script (see
+  `principal_vectors_dynamic.tcl` below). Off by default: building it
+  reads every frame's own `*_principal_dirs.npy`/`*_Z_fitted.npy`, which
+  the static-only default skips.
 
 ## Output
 
-- `principal_vectors_static.tcl` - one arrow per grid point, drawn once, no
-  frame-tracking. Directions are the trajectory-mean (nematic-tensor
-  averaged - see Notes) of `principal_dirs.npy`; positions use the plain
-  mean of `Z_fitted.npy`, the same average `average_structure.gro` (from
-  `CALM link vmd_xtc`) is built from. Source this script against
-  `average_structure.gro`.
-- `principal_vectors_dynamic.tcl` - each fit-frame's own directions and
-  heights. Registers a `vmd_frame` trace so the arrows are deleted and
-  redrawn every time the displayed frame changes (slider, `animate goto`,
-  play), and draws frame 0 immediately. Source this script against
-  `trajectory.xtc` (also from `CALM link vmd_xtc`) - it warns if the loaded
-  molecule's frame count doesn't match.
+- `principal_vectors_static.tcl` - always written. One arrow per grid
+  point, drawn once, no frame-tracking. Directions are the trajectory-mean
+  (nematic-tensor averaged - see Notes) of `principal_dirs.npy`; positions
+  use the plain mean of `Z_fitted.npy`, the same average
+  `average_structure.gro` (from `CALM link vmd_xtc`) is built from. Source
+  this script against `average_structure.gro`.
+- `principal_vectors_dynamic.tcl` - written only with `--draw-all-frames`.
+  Each fit-frame's own directions and heights. Registers a `vmd_frame`
+  trace so the arrows are deleted and redrawn every time the displayed
+  frame changes (slider, `animate goto`, play), and draws frame 0
+  immediately. Source this script against `trajectory.xtc` (also from
+  `CALM link vmd_xtc`) - it warns if the loaded molecule's frame count
+  doesn't match.
 
 Arrows are colored red for k1, blue for k2. Grid points flagged as holes
 (`--Remove-TMD`) in that frame, or `NaN` (e.g. outside the `--rotate` circle),

@@ -151,7 +151,8 @@ def draw(
     try:
         sft = SFT.from_directory(Dir)
         if rotation_was_used(sft):
-            circle_radius = fixed_circle_radius(sft)
+            assert sft.dimensions is not None
+            circle_radius = fixed_circle_radius(sft.dimensions)
     except FileNotFoundError:
         pass
 

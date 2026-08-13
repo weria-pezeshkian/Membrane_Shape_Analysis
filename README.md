@@ -52,6 +52,8 @@ overview, or jump straight to a command below.
     per-frame Fourier fit.
   - [`analyze full`](CALM/manuals/analyze_full.md) - run the full
     analysis pipeline, building the fit itself or reusing one from `sft`.
+  - [`analyze lipids`](CALM/manuals/analyze_lipids.md) - per-species lipid
+    composition and area-per-lipid, computed frame by frame.
 - [`link`](CALM/manuals/link.md) - utility commands supporting the
   pipeline.
   - [`link write_ndx`](CALM/manuals/link_write_ndx.md) - detect the two
@@ -66,6 +68,10 @@ overview, or jump straight to a command below.
     thickness, averaged over the trajectory.
   - [`map dynamic_plot`](CALM/manuals/map_dynamic_plot.md) - render a
     rolling-window-averaged curvature/thickness video.
+  - [`map radial_plot`](CALM/manuals/map_radial_plot.md) - plot mean
+    curvature radially averaged outward from the box center.
+  - [`map lipids_plot`](CALM/manuals/map_lipids_plot.md) - render
+    `analyze lipids` output (reserved entry point, not yet implemented).
 
 ## Tests
 

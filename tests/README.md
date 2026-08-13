@@ -23,10 +23,17 @@ pytest
 - `test_curvature.py` - `shape_operator_curvatures`.
 - `test_analyze_rotation.py` - the rotation path in `analyze/analyze.py`.
 - `test_argument_parser.py` - `write_replay_file` and replay-checksum
-  verification.
+  verification, `--Remove-TMD` parsing/validation, and the
+  `--lipids RESNAME[:NAME1,NAME2,...]` token validator
+  (`lipids_species_token`).
 - `test_calibrate.py` - the `calibrate` CLI scaffold.
+- `test_headgroup.py` - forcefield-agnostic, bond-graph-based headgroup
+  detection (`core/headgroup.py`): ring contraction, hub/branch
+  classification, multi-hub grouping for dual-headgroup lipids like
+  cardiolipin, the `--lipids RESNAME:NAME1,NAME2,...` override parsing and
+  validation.
 - `test_analyze_lipids.py` - per-species lipid-composition assignment
-  (`_residue_centers`, `_assign_nearest_leaflet`, `_lipid_kernel_fractions`,
+  (`_assign_nearest_leaflet`, `_lipid_voronoi_fractions`,
   `_true_surface_area`, `_one_lipid_frame`) and the trajectory-averaged
   `area_per_lipid.csv` (`_write_area_per_lipid_csv`).
 - `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic

@@ -20,6 +20,29 @@ def none_or_int(x: str) -> int | None:
     return None if x.lower() == "none" else int(x)
 
 
+def lipids_species_token(x: str) -> str:
+    """Validate one '--lipids' token's format: a bare resname, or 'RESNAME:NAME1,NAME2,...' giving that
+    species' own headgroup atom(s) explicitly instead of the automatic bond-graph detection. Returns
+    it unchanged.
+
+    Returning the input string itself, rather than a parsed tuple, keeps
+    this a plain str-typed argument for write_replay_file's generic
+    multi-value handling (str(x) round-trips a string as itself); the real
+    RESNAME/NAME1,NAME2 split happens downstream in
+    core/headgroup.py's _parse_lipids_argument.
+    """
+    resname, sep, names = x.partition(":")
+    if not resname:
+        raise argparse.ArgumentTypeError(
+            f"'{x}' is not a valid --lipids token (RESNAME or RESNAME:NAME1,NAME2,...)"
+        )
+    if sep and (not names or any(not n for n in names.split(","))):
+        raise argparse.ArgumentTypeError(
+            f"'{x}' is not RESNAME:NAME1,NAME2,... (e.g. POPC:PO4 or TCL1:PO41,PO42)"
+        )
+    return x
+
+
 def _sha256_of_file(path: str, chunk_size: int = 2 ** 20) -> str:
     """SHA-256 hex digest of the file at `path`, read in chunks to bound memory use for large trajectories."""
     digest = hashlib.sha256()
@@ -164,84 +187,122 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
     Path(path).write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-def add_build_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the CLI arguments shared by 'CALM analyze sft' and 'CALM analyze full'
-    for building the per-frame Fourier coefficient stack (SFT) from a trajectory.
+def add_build_arguments(
+    parser: argparse.ArgumentParser, require_inputs: bool = True,
+    required_group: "argparse._ArgumentGroup | None" = None, optional_group: "argparse._ArgumentGroup | None" = None,
+) -> tuple["argparse._ArgumentGroup", "argparse._ArgumentGroup"]:
+    """Add the CLI arguments shared by 'CALM analyze sft', 'CALM analyze full',
+    and 'CALM analyze lipids' for building the per-frame Fourier coefficient
+    stack (SFT) from a trajectory. Returns (required_group, optional_group).
 
-    --trajectory/--structure are left optional here (default=None): 'sft' always
-    requires them, 'full' only requires them when --sft isn't supplied. Each
-    caller enforces that with its own parser.error(...) after parsing.
+    `require_inputs` marks --trajectory/--structure/--index as
+    argparse-required - true for 'sft' and 'lipids', which always need
+    them. 'full' passes False: they're individually optional there (only
+    argparse-enforced as a whole "give --sft, or all three" requirement,
+    via full.py's own check and its required_group's description), since
+    that condition depends on an argument add_build_arguments doesn't add.
+    Either way they are listed under "Required arguments" - the caller's
+    group title/description says which flavor of "required" applies.
+
+    `required_group`/`optional_group` let a caller pass in groups it
+    already created (and already added its own arguments to, e.g.
+    'CALM analyze lipids' putting --lipids first in "Required arguments",
+    or 'CALM analyze full' giving its group a description explaining its
+    "--sft, or -f/-s/-n" either/or relationship) instead of always
+    creating fresh ones.
     """
-    parser.add_argument('-f', '--trajectory', type=str, default=None, help="trajectory file (.xtc)")
-    parser.add_argument('-s', '--structure', type=str, default=None, help="structure file (.tpr)")
-    parser.add_argument(
-        '-n', '--index', type=str,
+    required = required_group if required_group is not None else parser.add_argument_group("Required arguments")
+    optional = optional_group if optional_group is not None else parser.add_argument_group("Optional arguments")
+
+    required.add_argument(
+        '-f', '--trajectory', type=str, default=None, required=require_inputs, help="trajectory file (.xtc)"
+    )
+    required.add_argument(
+        '-s', '--structure', type=str, default=None, required=require_inputs, help="structure file (.tpr)"
+    )
+    required.add_argument(
+        '-n', '--index', type=str, required=require_inputs,
         help="index file (Upper/Lower groups) or dynamic selection string, e.g. 'name PO4'",
     )
-    parser.add_argument('-o', '--out', type=str, required=True, help="output directory")
-    parser.add_argument('-F', '--From', default=0, type=int, help="first frame, inclusive (default: 0)")
-    parser.add_argument('-U', '--Until', default=None, type=none_or_int, help="last frame, exclusive (default: end)")
-    parser.add_argument('-S', '--Step', default=1, type=int, help="frame stride (default: 1)")
-    parser.add_argument('--lambda_x', type=float, default=None, help="Fourier wavelength scale in x (nm)")
-    parser.add_argument('--lambda_y', type=float, default=None, help="Fourier wavelength scale in y (nm)")
-    parser.add_argument('--gridsize', default=100, type=int, help="grid points per side (default: 100)")
-    parser.add_argument('-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on")
-    parser.add_argument(
+    required.add_argument('-o', '--out', type=str, required=True, help="output directory")
+
+    optional.add_argument('-F', '--From', default=0, type=int, help="first frame, inclusive (default: 0)")
+    optional.add_argument('-U', '--Until', default=None, type=none_or_int, help="last frame, exclusive (default: end)")
+    optional.add_argument('-S', '--Step', default=1, type=int, help="frame stride (default: 1)")
+    optional.add_argument('--lambda_x', type=float, default=None, help="Fourier wavelength scale in x (nm)")
+    optional.add_argument('--lambda_y', type=float, default=None, help="Fourier wavelength scale in y (nm)")
+    optional.add_argument('--gridsize', default=100, type=int, help="grid points per side (default: 100)")
+    optional.add_argument(
+        '-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on"
+    )
+    optional.add_argument(
         '--rotate', default=False, action="store_true",
         help="rotation alignment per frame; requires --center",
     )
-    parser.add_argument(
+    optional.add_argument(
         '--rotation-direction', default=None, type=str,
         help="MDAnalysis selection defining the rotation reference direction; requires --rotate",
     )
-    parser.add_argument(
+    optional.add_argument(
         '--Remove-TMD', dest='remove_tmd', nargs='?', const=True, default=False, metavar='SELECTION',
         help="flag unsupported grid points as holes. With no value, protein "
              "atoms for hole detection come from --center's selection, which "
              "is then required; given a value (e.g. 'name BB SC1'), that "
              "selection is used instead and --center is not required (see --man)",
     )
-    parser.add_argument(
+    optional.add_argument(
         '--regularization', dest='regularize', default=False, action="store_true",
         help="enable Tikhonov regularization of the fit (see --man)",
     )
-    parser.add_argument(
+    optional.add_argument(
         '--min-balance', dest='min_balance', default=0.6, type=float,
         help="leaflet-split balance threshold for dynamic -n (default: 0.6, see --man)",
     )
-    parser.add_argument(
+    optional.add_argument(
         '--margin', dest='margin', default=2.0, type=float,
         help="leaflet margin-filter ratio for dynamic -n (default: 2.0, see --man)",
     )
-    parser.add_argument("--replay", help="load arguments from a replay file")
-    parser.add_argument("--out-replay", default=None, help="path to write this run's replay file")
-    parser.add_argument('-W', '--Workers', default=1, type=int, help="parallel workers (default: 1)")
-    parser.add_argument(
+    optional.add_argument("--replay", help="load arguments from a replay file")
+    optional.add_argument("--out-replay", default=None, help="path to write this run's replay file")
+    optional.add_argument('-W', '--Workers', default=1, type=int, help="parallel workers (default: 1)")
+    optional.add_argument(
         '-c', '--clear', default=False, action=argparse.BooleanOptionalAction,
         help="remove existing .npy files in --out before running",
     )
-    parser.add_argument(
+    optional.add_argument(
         '--loud', default=False, action="store_true",
         help="also print info-level log messages to the console (default: only warnings/errors "
              "print; info-level messages still go to the replay log)",
     )
 
+    return required, optional
+
+
+def validate_remove_tmd_requires_center(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
+    """--Remove-TMD given bare (no selection) needs --center to identify protein atoms for hole detection.
+
+    Called internally by `validate_rotation_args`, which every subcommand
+    that offers --Remove-TMD ('sft'/'full'/'lipids') calls directly.
+    """
+    if ns.center is None and ns.remove_tmd is True:
+        parser.error(
+            "--Remove-TMD with no selection requires --center: --center's "
+            "selection identifies which atoms are protein for hole "
+            "detection. Give --Remove-TMD its own selection instead "
+            "(e.g. --Remove-TMD 'name BB SC1') to run it without --center."
+        )
+
 
 def validate_rotation_args(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:
     """Shared --center/--rotate/--rotation-direction/--Remove-TMD
-    consistency checks for 'CALM analyze sft' and 'CALM analyze full'."""
+    consistency checks for 'CALM analyze sft', 'CALM analyze full', and
+    'CALM analyze lipids'."""
     if ns.center is None:
         if ns.rotate:
             parser.error("--rotate requires --center")
         if ns.rotation_direction is not None:
             parser.error("--rotation-direction requires --center")
-        if ns.remove_tmd is True:
-            parser.error(
-                "--Remove-TMD with no selection requires --center: --center's "
-                "selection identifies which atoms are protein for hole "
-                "detection. Give --Remove-TMD its own selection instead "
-                "(e.g. --Remove-TMD 'name BB SC1') to run it without --center."
-            )
+    validate_remove_tmd_requires_center(parser, ns)
     if ns.rotation_direction is not None and not ns.rotate:
         parser.error("--rotation-direction requires --rotate")
 

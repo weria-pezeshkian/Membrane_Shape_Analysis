@@ -66,16 +66,18 @@ def rotation_was_used(sft: SFT, tolerance: float = ROTATION_ANGLE_TOLERANCE) -> 
     return bool(np.any(np.abs(recover_all_rotation_angles(sft)) > tolerance))
 
 
-def fixed_circle_radius(sft: SFT) -> float:
+def fixed_circle_radius(dimensions: np.ndarray) -> float:
     """Radius of the largest same-centered circle that fits inside every frame's box.
 
-    Box size can drift per frame (NPT); each frame's own circle radius is
+    `dimensions` is (n_frames, >=2): each row's first two columns are that
+    frame's own Lx, Ly (an SFT's own `dimensions`, or dimensions.csv's
+    columns for a command with no SFT, e.g. 'CALM analyze lipids'). Box
+    size can drift per frame (NPT); each frame's own circle radius is
     min(Lx, Ly)/2 of that frame's box (see `circle_cutter` in
     `analyze/analyze.py`). Since all such circles share the same center,
     the region valid across every frame is the smallest of these radii.
     """
-    assert sft.dimensions is not None
-    return float(np.min(np.minimum(sft.dimensions[:, 0], sft.dimensions[:, 1])) / 2.0)
+    return float(np.min(np.minimum(dimensions[:, 0], dimensions[:, 1])) / 2.0)
 
 
 def rotated_grid(
