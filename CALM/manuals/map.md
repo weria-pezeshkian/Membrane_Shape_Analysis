@@ -17,7 +17,7 @@ CALM map <command> [args...]
 - `radial_plot` - plot mean curvature (upper/lower) radially averaged
   outward from the box center, from a `CALM analyze full` output
   directory.
-- `lipids_plot` - render `CALM analyze lipids` output (composition/density
-  maps). Reserved entry point; rendering isn't implemented yet.
+- `lipids_plot` - render `CALM analyze lipids` output: every species' own
+  continuous occupancy-frequency map, per leaflet.
 
 Run `CALM map <command> --man` for a command's full manual.

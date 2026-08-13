@@ -59,6 +59,29 @@ def _validate_headgroup_override(
         )
 
 
+def _validate_species_exist(universe: mda.Universe, species: list[str]) -> None:
+    """Every '--lipids' resname must match at least one atom in --structure.
+
+    Automatic bond-graph detection has no equivalent of
+    `_validate_headgroup_override`'s "named atom matched nothing" check,
+    since it never looks for a specific atom name - it just walks
+    whatever atoms exist for that resname. A resname that matches zero
+    atoms at all (a typo, a case mismatch, or a .gro file's 4-character
+    resname truncation) would otherwise silently contribute zero points
+    to every leaflet's Voronoi competition, forever - no crash, no
+    warning, just a species that never appears anywhere in the output.
+    """
+    for name in species:
+        if len(universe.select_atoms(f"resname {name}")) == 0:
+            sys.exit(
+                f"--lipids {name} matched no atoms in --structure. Check the resname is spelled and "
+                "cased exactly as it appears there - a common cause is a .gro file truncating resnames "
+                "to 4 characters, or a name that only matches under a different case. Inspect the real "
+                "resnames with e.g. `python -c \"import MDAnalysis as mda; "
+                f"print(sorted(set(mda.Universe('<structure>').residues.resnames)))\"`."
+            )
+
+
 def _named_headgroup_centers(
     atomgroup: mda.core.groups.AtomGroup, atom_names: list[str]
 ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:

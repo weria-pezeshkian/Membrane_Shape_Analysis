@@ -34,7 +34,9 @@ pytest
   validation.
 - `test_analyze_lipids.py` - per-species lipid-composition assignment
   (`_assign_nearest_leaflet`, `_lipid_voronoi_fractions`,
-  `_true_surface_area`, `_one_lipid_frame`) and the trajectory-averaged
+  `_true_surface_area`, `_one_lipid_frame`), `--rotate`'s effect on
+  `_one_lipid_frame` (identical `area_per_lipid`/counts, a genuinely
+  rotated `lipid_fractions.npy`), and the trajectory-averaged
   `area_per_lipid.csv` (`_write_area_per_lipid_csv`).
 - `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic
   direction averaging, sign alignment, and rendering.
@@ -43,7 +45,10 @@ pytest
   streaming GIF assembly, and the Pillow (`--in-memory`) fallback.
 - `test_radial_plot.py` - `map/radial_plot.py`'s radial binning and
   upper/lower-only rendering.
-- `test_lipids_plot.py` - `map/lipids_plot.py`'s reserved entry point.
+- `test_lipids_plot.py` - `map/lipids_plot.py`'s per-species,
+  per-leaflet occupancy-frequency rendering: hole-mask NaN-poisoning
+  across frames, the combined-overview-plus-per-species output files, and
+  fixed-circle clipping when `--rotate` was used.
 - `test_thickness_root.py` - `analyze/analyze.py`'s `_thickness_root`
   brentq search, including rejecting a root only found via a widened
   bracket.

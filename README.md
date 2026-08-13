@@ -71,7 +71,7 @@ overview, or jump straight to a command below.
   - [`map radial_plot`](CALM/manuals/map_radial_plot.md) - plot mean
     curvature radially averaged outward from the box center.
   - [`map lipids_plot`](CALM/manuals/map_lipids_plot.md) - render
-    `analyze lipids` output (reserved entry point, not yet implemented).
+    `analyze lipids` output: per-species, per-leaflet occupancy maps.
 
 ## Tests
 

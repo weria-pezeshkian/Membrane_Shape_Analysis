@@ -24,6 +24,11 @@ CALM analyze lipids -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" --lipi
   atoms directly; SAPE24 still auto-detects. Warns loudly if only some
   species in the run get explicit names, since mixing the two methods
   makes species-to-species comparisons methodologically inconsistent.
+  Every resname (bare or named) must match at least one atom in
+  `--structure`, checked before any fitting starts - a typo, a case
+  mismatch, or a `.gro` file's 4-character resname truncation exits
+  immediately with a descriptive error, rather than silently producing
+  zero area/composition for that species everywhere in the output.
 - `-f`, `--trajectory` - path to the trajectory file (e.g. `.xtc`).
 - `-s`, `--structure` - path to the structure file. Must carry bonds for
   any species using automatic headgroup detection - a bare `.gro` has
@@ -103,15 +108,34 @@ area, using `sqrt(1 + Zx^2 + Zy^2)` per cell from the freshly fit surface.
 ## Other build arguments
 
 Shares the rest of `CALM analyze sft`'s arguments
-(`-F`/`-U`/`-S`/`--lambda_x`/`--lambda_y`/`--gridsize`/`-C`/
-`--Remove-TMD`/`--regularization`/`-W`/`-c`/`--loud`/`--replay`/
-`--out-replay`) - see `CALM analyze sft --man` for those. `--Remove-TMD`
-grid points are excluded from the area-per-lipid sums the same way they're
-excluded elsewhere. There is no `--rotate`/`--rotation-direction` here
-(unlike `sft`/`full`): composition and area-per-lipid are computed
-independently per frame in the fit's own raw coordinate frame, which has
-no use for cross-frame rotational alignment. `--center` still applies
-(needed by `--Remove-TMD`).
+(`-F`/`-U`/`-S`/`--lambda_x`/`--lambda_y`/`--gridsize`/`-C`/`--rotate`/
+`--rotation-direction`/`--Remove-TMD`/`--regularization`/`-W`/`-c`/
+`--loud`/`--replay`/`--out-replay`) - see `CALM analyze sft --man` for
+those.
+
+`--rotate` only ever affects the *saved spatial output*
+(`{frame}_lipid_fractions.npy`/`{frame}_hole_mask.npy`), never
+`area_per_lipid.csv`. `area_per_lipid.npy` is always built from each
+frame's own raw, unrotated grid - it's a whole-leaflet sum, and which
+physical position each grid index happens to query doesn't change that
+sum. The saved spatial arrays are different: with `--rotate`, real lipid
+and protein positions are never moved (same "only the query point is
+transformed" mechanism `sft`/`full` use for curvature/thickness - see
+`core/rotation.py`), but the *grid queried* to build them is rotationally
+aligned to a fixed reference direction across the trajectory, so a real,
+protein-relative composition pattern (e.g. one species enriching near a
+particular face of a transmembrane region) survives frame-to-frame
+averaging instead of washing out as the protein itself rotates. Use this
+if you actually want to detect that kind of pattern; skip it if you only
+want `area_per_lipid.csv`, which is unaffected either way. `map
+lipids_plot` restricts its own rendering to the largest circle that
+stays valid across every frame once `--rotate` is used, the same way
+`map plot` does for rotated curvature/thickness.
+
+`--Remove-TMD` grid points are excluded from the area-per-lipid sums the
+same way they're excluded elsewhere, and (if `--rotate` is also given)
+from the saved spatial output too. `--center` still applies (needed by
+`--Remove-TMD` and by `--rotate` itself).
 
 ## Output
 
@@ -123,10 +147,16 @@ no use for cross-frame rotational alignment. `--center` still applies
   not yet averaged.
 - `{frame}_lipid_counts.npy` - shape `(n_species, 2)` (species x [upper,
   lower]): the real residue count found for each species in each leaflet.
+- `{frame}_hole_mask.npy` - shape `(2, gridsize, gridsize)` (upper,
+  lower): written only if `--Remove-TMD` was given.
 - `lipid_species.txt` - the `--lipids` list, in the fixed order indexing
-  all three arrays above, written once.
+  all the arrays above, written once.
+- `rotated.npy` - a single boolean, whether `--rotate` was used, written
+  once. Read by `map lipids_plot` to decide whether to restrict its own
+  rendering to the fixed circle.
 - `area_per_lipid.csv` - written once, after every frame is processed: the
   trajectory mean of every frame's `area_per_lipid`/`lipid_counts`, one row
   per (leaflet, species): `leaflet,species,area_per_lipid_flat,
   area_per_lipid_curved,mean_count`.
-- `dimensions.csv` - box size per frame, same convention as `analyze sft`.
+- `dimensions.csv` - box size per frame (no header row, unlike `analyze
+  sft`/`full`'s own `dimensions.csv`).

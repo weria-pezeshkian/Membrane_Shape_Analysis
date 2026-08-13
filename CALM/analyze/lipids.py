@@ -34,6 +34,7 @@ from ..core.headgroup import (
     _parse_lipids_argument,
     _require_bonds,
     _validate_headgroup_override,
+    _validate_species_exist,
 )
 from ..core.manual import add_manual
 from ..core.packing import median_multiple_threshold
@@ -344,6 +345,7 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
     trajectory-averaged `area_per_lipid.csv` once every frame is done.
     """
     species, headgroup_override = _parse_lipids_argument(args.lipids)
+    _validate_species_exist(u, species)
     _validate_headgroup_override(u, species, headgroup_override)
     if set(species) - set(headgroup_override):
         # Bonds are only needed for species that will actually go through

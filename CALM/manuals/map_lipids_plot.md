@@ -1,7 +1,7 @@
 # CALM map lipids_plot
 
-Render each leaflet's own dominant-species lipid composition map from
-`CALM analyze lipids` output.
+Render every species' own continuous occupancy-frequency map from `CALM
+analyze lipids` output, per leaflet.
 
 ## Usage
 
@@ -13,42 +13,47 @@ CALM map lipids_plot -i lipids_out_dir -o lipids.png
 
 - `-i`, `--numpys_directory` (required) - `CALM analyze lipids` output
   directory.
-- `-o`, `--outfile` (default `lipids.png`) - output image path.
-- `--purity-floor` (default 0.35) - minimum color opacity for a grid point
-  contested among several species (see "How it's rendered" below).
+- `-o`, `--outfile` (default `lipids.png`) - output image path. Also
+  names every other file this command writes (see Output).
 
 ## What's plotted
 
-Two panels, Upper and Lower leaflet. Every `{frame}_lipid_fractions.npy`
-(species x [upper, lower] x grid) is a hard per-point species assignment -
-1 for that frame's own nearest species at that point, 0 for the rest (see
-`CALM analyze lipids --man`). Averaging these across every frame in
-`--numpys_directory` turns that into each point's own occupancy
-*frequency*: 1.0 where one species always wins there, lower where the
-winner changes trajectory frame to frame (e.g. right at a boundary between
-two species' territory). Each panel shows, at every grid point, whichever
-species has the highest such frequency there.
+Every `{frame}_lipid_fractions.npy` (species x [upper, lower] x grid) is a
+hard per-point species assignment - 1 for that frame's own nearest species
+at that point, 0 for the rest (see `CALM analyze lipids --man`). Averaging
+these across every frame in `--numpys_directory` turns that into each
+point's own occupancy *frequency*: 1.0 where one species always wins
+there, lower where the winner changes trajectory frame to frame (e.g.
+right at a boundary between two species' territory).
 
-## How it's rendered
+Each species gets its own panel showing that continuous value directly -
+no collapsing species against each other into a single "dominant species
+here" map. That was tried and rejected: it throws away the graded
+competition CALM already computes, and with only two species it
+degenerates into a plain binary map that shows less than the two
+continuous fields it was built from.
 
-- A fixed color per species (`matplotlib`'s `tab10`/`tab20` categorical
-  palette, in `lipid_species.txt` order - `tab20` once there are more than
-  10 species; beyond 20, colors repeat and a warning is logged).
-- A point's own color opacity scales linearly with its winning species'
-  occupancy frequency there, from `--purity-floor` up to fully opaque -
-  contested boundary regions read visually faded/blended, stable
-  single-species territory reads solid.
-- A point with no lipid of any requested species assigned to it in any
-  averaged frame (e.g. a typo'd `--lipids` leaving a leaflet with nothing
-  selected at all) is left plain white.
-- Each panel's own legend gives that leaflet's real mean residue count per
-  species too (from `area_per_lipid.csv`'s `mean_count` column, if that
-  file is present alongside the `.npy` output - omitted otherwise).
+A point held out by `--Remove-TMD` in even one averaged frame is left
+unfilled (same all-or-nothing convention `CALM map plot` uses for its own
+holes) - see `{frame}_hole_mask.npy` in `CALM analyze lipids --man`.
 
-## Known limitation
+## Rotation
 
-Unlike `CALM map plot`, `--Remove-TMD` grid points are **not** excluded
-here: `CALM analyze lipids` never saves a hole mask (no
-`Amn.npy`/`qmn.npy`/`holemask.npy`, only the per-frame composition/area
-arrays), so a hole under a protein still shows whichever requested species
-happens to be nearest in the raw Voronoi tessellation there.
+If the `CALM analyze lipids` run used `--rotate`, rendering is restricted
+to the largest box-centered circle that stays valid across every averaged
+frame - the same restriction `CALM map plot` applies to rotated
+curvature/thickness output, and for the same reason (`rotated_grid` in
+`core/rotation.py`: only points within that circle have a meaningful
+rotated lookup). Detected automatically from `rotated.npy` in
+`--numpys_directory`; nothing to pass here.
+
+## Output
+
+- `{outfile}` - one combined overview: every species' own row (Upper/Lower
+  columns), one shared colorbar. Good for a quick at-a-glance summary.
+- `{stem}_{species}{suffix}` per species (e.g. `lipids_POPC.png`) - that
+  species' own two-panel figure (Upper, Lower), its own colorbar, for
+  closer inspection. Each panel's title also gives that leaflet's real
+  mean residue count for that species (from `area_per_lipid.csv`'s
+  `mean_count` column, if that file is present alongside the `.npy`
+  output - omitted otherwise).

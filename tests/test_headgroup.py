@@ -27,6 +27,7 @@ from CALM.core.headgroup import (
     _require_bonds,
     _terminal_arms,
     _validate_headgroup_override,
+    _validate_species_exist,
 )
 from CALM.core.fourier_core import Fourier_Series_Function
 
@@ -375,3 +376,16 @@ def test_validate_headgroup_override_does_not_warn_when_empty(caplog: pytest.Log
         _validate_headgroup_override(u, ["POPC"], {})
 
     assert caplog.records == []
+
+
+def test_validate_species_exist_exits_on_a_resname_with_no_atoms() -> None:
+    u = _named_universe(["POPC"], ["PO4"], np.array([[0.0, 0.0, 70.0]]))
+
+    with pytest.raises(SystemExit, match="POPE"):
+        _validate_species_exist(u, ["POPC", "POPE"])
+
+
+def test_validate_species_exist_passes_when_every_species_has_atoms() -> None:
+    u = _named_universe(["POPC", "POPE"], ["PO4", "PO4"], np.array([[0.0, 0.0, 70.0], [10.0, 0.0, 70.0]]))
+
+    _validate_species_exist(u, ["POPC", "POPE"])  # does not raise
