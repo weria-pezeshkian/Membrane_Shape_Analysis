@@ -173,7 +173,7 @@ def _build_coords(
     ])
 
 
-def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = None) -> None:
+def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT) -> None:
     """Build a pseudo-universe from *_Z_fitted.npy files; write GRO (first frame), XTC trajectory, and average GRO.
 
     Grid points that are NaN in any frame (e.g. outside the inscribed
@@ -183,16 +183,15 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = No
     every frame's valid points, since which points are NaN can differ per
     frame (box size can drift under NPT).
 
-    If `sft` is given and has a hole_mask (--Remove-TMD was used to
-    build), grid points with no real fitting support in any frame (see
+    If `sft` has a hole_mask (--Remove-TMD was used to build), grid points
+    with no real fitting support in any frame (see
     `_trajectory_hole_union`) are kept but renamed from atom name "C" to
     "S", so they can be filtered out in VMD with "not name S" without
     changing the atom count. Z_fitted's values are copied unchanged either
     way; only the atom name differs.
     """
-    dim_file = os.path.join(curvature_dir, "dimensions.csv")
-    box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1,
-                          max_rows=1, usecols=(1, 2, 3))
+    assert sft.dimensions is not None
+    box_size = sft.dimensions[0]
 
     z_files = sorted(glob.glob(os.path.join(curvature_dir, "*_Z_fitted.npy")))
     if not z_files:
@@ -275,26 +274,21 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT | None = No
 def vmd_xtc(args: list[str]) -> None:
     """CLI entry: export a 'CALM analyze full' run's fitted surface as GRO + XTC for VMD."""
     parser = argparse.ArgumentParser(description="Export the fitted surface as a GRO + XTC trajectory for VMD")
-    parser.add_argument("-i", "--input", help="directory with *_Z_fitted.npy and dimensions.csv")
+    parser.add_argument("-i", "--input", help="directory with *_Z_fitted.npy and Amn.npy/qmn.npy/dimensions.npy")
     parser.add_argument("-o", "--output", help="output directory")
     add_manual(parser, "link_vmd_xtc")
     ns = parser.parse_args(args)
 
     os.makedirs(ns.output, exist_ok=True)
 
-    try:
-        sft = SFT.from_directory(ns.input)
-    except FileNotFoundError:
-        sft = None
-
+    sft = SFT.from_directory(ns.input)
     get_vmd_visualisation(ns.input, ns.output, sft=sft)
 
-    if sft is not None:
-        tcl_path = os.path.join(ns.output, "rotate_and_select.tcl")
-        if build_rotation_tcl(sft, tcl_path):
-            print(f"Rotation detected in q_mn: wrote VMD script to {tcl_path}")
-        else:
-            print("q_mn found but shows no rotation was applied (--rotate wasn't used) - skipping VMD script.")
+    tcl_path = os.path.join(ns.output, "rotate_and_select.tcl")
+    if build_rotation_tcl(sft, tcl_path):
+        print(f"Rotation detected in q_mn: wrote VMD script to {tcl_path}")
+    else:
+        print("q_mn found but shows no rotation was applied (--rotate wasn't used) - skipping VMD script.")
 
 
 if __name__ == "__main__":

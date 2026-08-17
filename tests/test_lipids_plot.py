@@ -37,11 +37,18 @@ def test_was_rotated_reads_the_saved_marker(tmp_path: Path) -> None:
 
 
 def test_lipids_dimensions_filters_by_frame_number(tmp_path: Path) -> None:
-    (tmp_path / "dimensions.csv").write_text("0,100.0,100.0,60.0\n1,90.0,110.0,60.0\n2,80.0,120.0,60.0\n")
+    np.save(tmp_path / "00_dimensions.npy", np.array([100.0, 100.0, 60.0]))
+    np.save(tmp_path / "01_dimensions.npy", np.array([90.0, 110.0, 60.0]))
+    np.save(tmp_path / "02_dimensions.npy", np.array([80.0, 120.0, 60.0]))
     dims = _lipids_dimensions(str(tmp_path), frame_numbers=[0, 2])
     np.testing.assert_array_equal(dims, [[100.0, 100.0, 60.0], [80.0, 120.0, 60.0]])
     dims_all = _lipids_dimensions(str(tmp_path), frame_numbers=None)
     assert dims_all.shape == (3, 3)
+
+
+def test_lipids_dimensions_raises_when_nothing_matches(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        _lipids_dimensions(str(tmp_path), frame_numbers=None)
 
 
 def _write_lipids_output(
@@ -50,12 +57,11 @@ def _write_lipids_output(
     """A minimal 'CALM analyze lipids' output directory: one frame's own fractions, species list, dimensions.
 
     `fractions` is (n_species, 2, gridsize, gridsize) - the same shape
-    '{frame}_lipid_fractions.npy' saves. dimensions.csv is written with no
-    header row, matching calc_lipids's own convention (unlike calc_fourier's).
+    '{frame}_lipid_fractions.npy' saves.
     """
     (out_dir / "lipid_species.txt").write_text("\n".join(species) + "\n")
     np.save(out_dir / "00_lipid_fractions.npy", fractions)
-    (out_dir / "dimensions.csv").write_text(f"0,{box[0]},{box[1]},{box[2]}\n")
+    np.save(out_dir / "00_dimensions.npy", np.array(box))
 
 
 def test_read_species_returns_the_saved_order(tmp_path: Path) -> None:

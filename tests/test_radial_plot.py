@@ -148,6 +148,21 @@ def test_quantity_files_mapping_covers_mean_and_height() -> None:
     assert _QUANTITY_FILES["height"][0] == "*_Z_fitted.npy"
 
 
+def _write_dimensions_sft(d: Path, Lx: float, Ly: float, Nx: int = 1, Ny: int = 1) -> None:
+    """A minimal single-frame, non-rotated SFT - just enough for draw()'s own box_size read."""
+    rng = np.random.default_rng(0)
+    s = SFT()
+    s.A_mn = rng.uniform(-1, 1, size=(1, 3, 2 * Nx + 1, 2 * Ny + 1)).astype(np.float32)
+    M, N = 2 * Nx + 1, 2 * Ny + 1
+    m = np.where(np.arange(M) > M // 2, np.arange(M) - M, np.arange(M))
+    n = np.where(np.arange(N) > N // 2, np.arange(N) - N, np.arange(N))
+    qx, qy = np.meshgrid(2 * np.pi * m / Lx, 2 * np.pi * n / Ly, indexing="ij")
+    s.q_mn = np.stack([np.stack([qx, qy])]).astype(np.float32)  # theta=0 -> no rotation
+    s.frame_indices = np.array([0])
+    s.dimensions = np.array([[Lx, Ly, 60.0]])
+    s.write(d)
+
+
 def _draw_with_captured_axes(tmp_path: Path, **draw_kwargs) -> plt.Axes:
     real_fig, real_ax = plt.subplots()
     with patch("CALM.map.radial_plot.plt.subplots", return_value=(real_fig, real_ax)):
@@ -158,7 +173,7 @@ def _draw_with_captured_axes(tmp_path: Path, **draw_kwargs) -> plt.Axes:
 def test_draw_plots_only_upper_and_lower_with_no_sign_change(tmp_path: Path) -> None:
     gridsize = 20
     Lx = Ly = 100.0
-    (tmp_path / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
+    _write_dimensions_sft(tmp_path, Lx, Ly)
 
     x = np.linspace(0, Lx, gridsize, endpoint=False)
     y = np.linspace(0, Ly, gridsize, endpoint=False)
@@ -188,7 +203,7 @@ def test_draw_plots_only_upper_and_lower_with_no_sign_change(tmp_path: Path) -> 
 def test_draw_skips_a_masked_center_but_xaxis_still_starts_at_zero(tmp_path: Path) -> None:
     gridsize = 40
     Lx = Ly = 100.0
-    (tmp_path / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
+    _write_dimensions_sft(tmp_path, Lx, Ly)
 
     x = np.linspace(0, Lx, gridsize, endpoint=False)
     y = np.linspace(0, Ly, gridsize, endpoint=False)
@@ -225,7 +240,7 @@ def test_draw_skips_a_masked_center_but_xaxis_still_starts_at_zero(tmp_path: Pat
 def test_draw_wedge_line_passes_through_each_leaflets_own_starting_point(tmp_path: Path) -> None:
     gridsize = 40
     Lx = Ly = 100.0
-    (tmp_path / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
+    _write_dimensions_sft(tmp_path, Lx, Ly)
 
     x = np.linspace(0, Lx, gridsize, endpoint=False)
     y = np.linspace(0, Ly, gridsize, endpoint=False)
@@ -262,7 +277,7 @@ def test_draw_wedge_line_passes_through_each_leaflets_own_starting_point(tmp_pat
 def test_draw_height_quantity_is_relative_to_mid_surface(tmp_path: Path) -> None:
     gridsize = 20
     Lx = Ly = 100.0
-    (tmp_path / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
+    _write_dimensions_sft(tmp_path, Lx, Ly)
 
     upper = np.full((gridsize, gridsize), 7.0)
     lower = np.full((gridsize, gridsize), 3.0)
@@ -289,7 +304,7 @@ def test_draw_height_quantity_not_contaminated_by_the_other_leaflets_hole(tmp_pa
     # pulled out to upper's hole radius by the mid-surface reference.
     gridsize = 20
     Lx = Ly = 100.0
-    (tmp_path / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
+    _write_dimensions_sft(tmp_path, Lx, Ly)
 
     x = np.linspace(0, Lx, gridsize, endpoint=False)
     y = np.linspace(0, Ly, gridsize, endpoint=False)
@@ -321,7 +336,7 @@ def test_draw_height_quantity_not_contaminated_by_the_other_leaflets_hole(tmp_pa
 def test_draw_styling_linewidth_and_hidden_spines(tmp_path: Path) -> None:
     gridsize = 20
     Lx = Ly = 100.0
-    (tmp_path / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
+    _write_dimensions_sft(tmp_path, Lx, Ly)
 
     rng = np.random.default_rng(0)
     np.save(tmp_path / "0_mean_curvature.npy", rng.uniform(-0.1, 0.1, size=(3, gridsize, gridsize)))

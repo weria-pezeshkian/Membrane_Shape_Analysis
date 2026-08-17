@@ -13,7 +13,8 @@ CALM link vmd_vectors -i full_out_dir -o vmd_out_dir
 ## Arguments
 
 - `-i`, `--input` - `CALM analyze full` output directory, containing
-  `*_principal_dirs.npy`, `*_Z_fitted.npy`, and `dimensions.csv`.
+  `*_principal_dirs.npy`, `*_Z_fitted.npy`, and
+  `Amn.npy`/`qmn.npy`/`dimensions.npy`.
 - `-o`, `--output` - directory to write the generated files to.
 - `--which` (default `both`) - one of `k1`, `k2`, `both`: which principal
   direction(s) to draw.

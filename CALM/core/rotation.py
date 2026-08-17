@@ -70,9 +70,10 @@ def fixed_circle_radius(dimensions: np.ndarray) -> float:
     """Radius of the largest same-centered circle that fits inside every frame's box.
 
     `dimensions` is (n_frames, >=2): each row's first two columns are that
-    frame's own Lx, Ly (an SFT's own `dimensions`, or dimensions.csv's
-    columns for a command with no SFT, e.g. 'CALM analyze lipids'). Box
-    size can drift per frame (NPT); each frame's own circle radius is
+    frame's own Lx, Ly (an SFT's own `dimensions`, or every
+    `{frame}_dimensions.npy` stacked for a command with no SFT, e.g. 'CALM
+    analyze lipids'). Box size can drift per frame (NPT); each frame's own
+    circle radius is
     min(Lx, Ly)/2 of that frame's box (see `circle_cutter` in
     `analyze/analyze.py`). Since all such circles share the same center,
     the region valid across every frame is the smallest of these radii.

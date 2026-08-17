@@ -185,8 +185,14 @@ def _one_lipid_frame(
     X, Y = np.meshgrid(x, y)
     cell_area = (Lx / sqrt_n_atoms) * (Ly / sqrt_n_atoms)
 
-    with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
-        dims.write(f"{frame},{','.join(map(str, dimensions[:3]))}\n")
+    # One file per frame (not a single shared dimensions.csv, appended to by
+    # every worker with no locking) - matches every other per-frame output
+    # here (e.g. {frame}_lipid_fractions.npy), and each worker owns its own
+    # file with zero cross-process contention.
+    np.save(
+        Path(out_dir) / f"{frame:0{num_digits}d}_dimensions.npy",
+        np.asarray(dimensions[:3], dtype=np.float64),
+    )
 
     if dynamic_select:
         assert dynamic_leaflets is not None

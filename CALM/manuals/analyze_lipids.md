@@ -158,5 +158,8 @@ from the saved spatial output too. `--center` still applies (needed by
   trajectory mean of every frame's `area_per_lipid`/`lipid_counts`, one row
   per (leaflet, species): `leaflet,species,area_per_lipid_flat,
   area_per_lipid_curved,mean_count`.
-- `dimensions.csv` - box size per frame (no header row, unlike `analyze
-  sft`/`full`'s own `dimensions.csv`).
+- `{frame}_dimensions.npy` - that frame's own `(Lx, Ly, Lz)`, one file per
+  frame (not a single shared file - each worker process owns its own,
+  avoiding the unlocked-concurrent-append problem a single shared file
+  would have). Read by `map lipids_plot` for box size and, with
+  `--rotate`, the fixed-circle radius.

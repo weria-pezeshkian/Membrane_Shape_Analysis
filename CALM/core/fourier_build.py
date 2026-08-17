@@ -551,9 +551,6 @@ def _one_frame(
     y = np.linspace(0, dimensions[:3][1], sqrt_n_atoms, endpoint=False)
     X, Y = np.meshgrid(x, y)
 
-    with open(f"{out_dir}/dimensions.csv", "a", encoding="UTF8") as dims:
-        dims.write(f"{frame},{','.join(map(str, dimensions[:3]))}\n")
-
     if dynamic_select:
         # Leaflets for this frame were already determined by the sequential
         # _track_dynamic_leaflets pass in calc_fourier, as 0-based global
@@ -637,10 +634,6 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
         dynamic_select = True
         dynamic_selection = ndx
         ndx_groups = None
-
-    dimensions = u.trajectory[0].dimensions
-    with open(f"{args.out}/dimensions.csv", "w", encoding="UTF8") as dims:
-        dims.write(f"#Box Parameters: {' '.join(map(str, dimensions[3:]))}\n")
 
     frames = list(range(args.From, Until, args.Step))
 

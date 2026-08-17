@@ -12,8 +12,8 @@ CALM map plot -i full_out_dir --mode mean -o mean.png
 ## Arguments
 
 - `-i`, `--numpys_directory` - directory containing `CALM analyze full`
-  output (`dimensions.csv`, `*_thickness.npy`, `*_mean_curvature.npy`,
-  etc.).
+  output (`Amn.npy`/`qmn.npy`/`dimensions.npy`, `*_thickness.npy`,
+  `*_mean_curvature.npy`, etc.).
 - `--mode` (default `mean`) - one of `mean`, `gaussian`, `principal`,
   `thickness`.
 - `-o`, `--outfile` (default `mean.png`) - path to save the figure to.

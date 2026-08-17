@@ -88,20 +88,17 @@ def _was_rotated(Dir: str) -> bool:
 
 
 def _lipids_dimensions(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndarray:
-    """dimensions.csv's rows (frame, Lx, Ly, Lz), restricted to `frame_numbers` if given.
+    """Every {frame}_dimensions.npy, stacked: shape (n_frames, 3) - that frame's own Lx, Ly, Lz.
 
     Feeds core.rotation.fixed_circle_radius (built for an SFT's own
-    `dimensions` there) - 'analyze lipids' has no SFT of its own, but its
-    dimensions.csv carries the same per-frame Lx/Ly.
+    `dimensions` there) - 'analyze lipids' has no SFT of its own, but
+    writes the same per-frame box size directly, one file per frame (see
+    analyze/lipids.py's _one_lipid_frame).
     """
-    # ndmin=2 guards a single-frame run's dimensions.csv (one row) - without
-    # it, np.loadtxt collapses to a 1D array and the [:, 1:]/row[0] indexing
-    # below breaks.
-    rows = np.loadtxt(os.path.join(Dir, "dimensions.csv"), delimiter=",", ndmin=2)
-    if frame_numbers is not None:
-        keep = set(frame_numbers)
-        rows = rows[[int(row[0]) in keep for row in rows]]
-    return rows[:, 1:]
+    files = _frame_filtered_glob(os.path.join(Dir, "*_dimensions.npy"), frame_numbers)
+    if not files:
+        raise FileNotFoundError(f"No *_dimensions.npy files found in {Dir}")
+    return np.stack([np.load(f) for f in files])
 
 
 def _render_panel(
@@ -154,10 +151,8 @@ def draw(
     species = _read_species(Dir)
     n_species = len(species)
 
-    dim_file = os.path.join(Dir, "dimensions.csv")
-    # No header row here (unlike 'CALM analyze sft'/'full's dimensions.csv) -
-    # calc_lipids never writes one, so the very first row is already frame data.
-    box_size = np.loadtxt(dim_file, delimiter=",", max_rows=1, usecols=(1, 2, 3))
+    dims = _lipids_dimensions(Dir, frame_numbers)
+    box_size = dims[0]
 
     mean_fractions = _mean_fractions(Dir, frame_numbers)
     gridsize = mean_fractions.shape[-1]
@@ -168,7 +163,7 @@ def draw(
     # every averaged frame's own box is meaningful (rotated_grid says so
     # explicitly) - same restriction 'CALM map plot' applies to rotated
     # curvature/thickness output, via the same fixed_circle_radius formula.
-    circle_radius = fixed_circle_radius(_lipids_dimensions(Dir, frame_numbers)) if _was_rotated(Dir) else None
+    circle_radius = fixed_circle_radius(dims) if _was_rotated(Dir) else None
 
     leaflet_names = ("Upper", "Lower")
     counts = {leaflet: _leaflet_counts(Dir, leaflet) for leaflet in ("upper", "lower")}

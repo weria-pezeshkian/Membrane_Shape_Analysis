@@ -34,13 +34,6 @@ def _make_q_mn(Lx: float, Ly: float, Nx: int, Ny: int, theta: float) -> np.ndarr
     return np.stack([c * qx_grid - s * qy_grid, s * qx_grid + c * qy_grid], axis=0)
 
 
-def _write_dimensions_csv(d: Path, n_frames: int, Lx: float, Ly: float) -> None:
-    with open(d / "dimensions.csv", "w") as f:
-        f.write("#header\n")
-        for i in range(n_frames):
-            f.write(f"{i},{Lx},{Ly},60.0\n")
-
-
 def _write_sft(d: Path, theta: float, n_frames: int, Lx: float, Ly: float, Nx: int = 3, Ny: int = 3) -> None:
     rng = np.random.default_rng(0)
     sft = SFT()
@@ -60,8 +53,6 @@ def _setup_plot_dir(
 
     if write_sft:
         _write_sft(d, theta, n_frames, Lx, Ly)
-
-    _write_dimensions_csv(d, n_frames, Lx, Ly)
 
     for i in range(n_frames):
         if write_mean:
@@ -85,35 +76,37 @@ def test_no_circle_when_rotation_not_used(tmp_path: Path) -> None:
     assert mock_circle.call_count == 0
 
 
-def test_no_circle_when_no_sft_present(tmp_path: Path) -> None:
+def test_raises_clearly_when_sft_files_are_missing(tmp_path: Path) -> None:
+    # box_size now comes from Amn/qmn/dimensions.npy (SFT.from_directory),
+    # not a separate dimensions.csv - a directory missing those is a
+    # genuinely broken/incomplete 'analyze full' output.
     _setup_plot_dir(tmp_path, theta=0.0, write_sft=False)
-    with patch.object(mpatches, "Circle", wraps=mpatches.Circle) as mock_circle:
+    with pytest.raises(FileNotFoundError, match="Amn.npy"):
         draw(str(tmp_path), mode="mean", filename=str(tmp_path / "out.png"))
-    assert mock_circle.call_count == 0
 
 
 def test_grid_resolution_matches_actual_data_not_hardcoded(tmp_path: Path) -> None:
     # Deliberately NOT 100: get_XY must size itself from the actual data,
     # not assume a fixed grid regardless of --gridsize.
-    _setup_plot_dir(tmp_path, theta=0.0, grid=37, write_sft=False)
+    _setup_plot_dir(tmp_path, theta=0.0, grid=37)
     draw(str(tmp_path), mode="mean", filename=str(tmp_path / "out.png"))
     assert (tmp_path / "out.png").exists()
 
 
 def test_missing_mean_curvature_files_raises_clear_error(tmp_path: Path) -> None:
-    _setup_plot_dir(tmp_path, theta=0.0, write_sft=False, write_mean=False, write_thickness=True)
+    _setup_plot_dir(tmp_path, theta=0.0, write_mean=False, write_thickness=True)
     with pytest.raises(FileNotFoundError, match="mean_curvature"):
         draw(str(tmp_path), mode="mean", filename=str(tmp_path / "out.png"))
 
 
 def test_missing_thickness_files_raises_clear_error_in_thickness_mode(tmp_path: Path) -> None:
-    _setup_plot_dir(tmp_path, theta=0.0, write_sft=False, write_mean=True, write_thickness=False)
+    _setup_plot_dir(tmp_path, theta=0.0, write_mean=True, write_thickness=False)
     with pytest.raises(FileNotFoundError, match="thickness"):
         draw(str(tmp_path), mode="thickness", filename=str(tmp_path / "out.png"))
 
 
 def test_mean_mode_uses_2x2_layout_when_thickness_present(tmp_path: Path) -> None:
-    _setup_plot_dir(tmp_path, theta=0.0, write_sft=False, write_mean=True, write_thickness=True)
+    _setup_plot_dir(tmp_path, theta=0.0, write_mean=True, write_thickness=True)
     import matplotlib.pyplot as plt
     with patch.object(plt, "subplots", wraps=plt.subplots) as mock_subplots:
         draw(str(tmp_path), mode="mean", filename=str(tmp_path / "out.png"))
@@ -122,7 +115,7 @@ def test_mean_mode_uses_2x2_layout_when_thickness_present(tmp_path: Path) -> Non
 
 
 def test_mean_mode_uses_1x3_layout_when_thickness_absent(tmp_path: Path) -> None:
-    _setup_plot_dir(tmp_path, theta=0.0, write_sft=False, write_mean=True, write_thickness=False)
+    _setup_plot_dir(tmp_path, theta=0.0, write_mean=True, write_thickness=False)
     import matplotlib.pyplot as plt
     with patch.object(plt, "subplots", wraps=plt.subplots) as mock_subplots:
         draw(str(tmp_path), mode="mean", filename=str(tmp_path / "out.png"))
@@ -131,7 +124,7 @@ def test_mean_mode_uses_1x3_layout_when_thickness_absent(tmp_path: Path) -> None
 
 
 def test_thickness_mode_uses_single_panel(tmp_path: Path) -> None:
-    _setup_plot_dir(tmp_path, theta=0.0, write_sft=False, write_mean=False, write_thickness=True)
+    _setup_plot_dir(tmp_path, theta=0.0, write_mean=False, write_thickness=True)
     import matplotlib.pyplot as plt
     with patch.object(plt, "subplots", wraps=plt.subplots) as mock_subplots:
         draw(str(tmp_path), mode="thickness", filename=str(tmp_path / "out.png"))
@@ -292,7 +285,7 @@ def test_average_principal_directions_poisons_on_any_nan(tmp_path: Path) -> None
 def test_draw_principal_mode_vector_frame_uses_only_that_frame(tmp_path: Path) -> None:
     n_frames = 3
     gridsize = 5
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, theta=0.0, n_frames=n_frames, Lx=100.0, Ly=80.0)
     rng = np.random.default_rng(0)
     for i in range(n_frames):
         np.save(tmp_path / f"{i}_principal_curvatures.npy", rng.uniform(-0.1, 0.1, size=(6, gridsize, gridsize)))
@@ -356,7 +349,7 @@ def test_align_signs_leaves_nan_points_as_nan() -> None:
 def test_draw_principal_mode_sign_aligns_before_display(tmp_path: Path) -> None:
     n_frames = 2
     gridsize = 5
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, theta=0.0, n_frames=n_frames, Lx=100.0, Ly=80.0)
     rng = np.random.default_rng(0)
     for i in range(n_frames):
         np.save(tmp_path / f"{i}_principal_curvatures.npy", rng.uniform(-0.1, 0.1, size=(6, gridsize, gridsize)))

@@ -13,7 +13,7 @@ CALM link vmd_xtc -i full_out_dir -o vmd_out_dir
 ## Arguments
 
 - `-i`, `--input` - directory containing `*_Z_fitted.npy` and
-  `dimensions.csv`, as written by `CALM analyze full`.
+  `Amn.npy`/`qmn.npy`/`dimensions.npy`, as written by `CALM analyze full`.
 - `-o`, `--output` - directory to write the generated files to.
 
 ## Output

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -143,18 +142,13 @@ def draw(
     if not Dir.endswith("/"):
         Dir += "/"
 
-    dim_file = os.path.join(Dir, "dimensions.csv")
-    box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1, max_rows=1, usecols=(1, 2, 3))
+    sft = SFT.from_directory(Dir)
+    assert sft.dimensions is not None
+    box_size = sft.dimensions[0]
 
-    sft = None
     circle_radius = None
-    try:
-        sft = SFT.from_directory(Dir)
-        if rotation_was_used(sft):
-            assert sft.dimensions is not None
-            circle_radius = fixed_circle_radius(sft.dimensions)
-    except FileNotFoundError:
-        pass
+    if rotation_was_used(sft):
+        circle_radius = fixed_circle_radius(sft.dimensions)
 
     pattern, ylabel = _QUANTITY_FILES[quantity]
     # Middle is loaded with its raw value at every grid point. For

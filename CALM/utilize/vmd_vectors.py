@@ -40,7 +40,7 @@ def _frame_vector_list(
     """(x, y, z, dx, dy, dz, k_index, k_value) tuples for one unit-direction field, subsampled by `step`.
 
     Positions are real coordinates: x, y directly from the box (Angstrom,
-    matching dimensions.csv), z from Z_fitted*10 (matching
+    matching sft.dimensions), z from Z_fitted*10 (matching
     get_vmd_visualisation's own nm -> Angstrom convention). (dx, dy, dz) is
     a dimensionless unit tangent vector, unaffected by that unit choice.
     Points where `dirs_slice` is NaN (hole-masked or outside the --rotate
@@ -139,7 +139,7 @@ def _selected_vectors(
 
 
 def build_static_vectors_tcl(
-    sft: SFT | None,
+    sft: SFT,
     curvature_dir: str,
     out_path: str,
     which: str = "both",
@@ -186,8 +186,8 @@ def build_static_vectors_tcl(
     else:
         k_mean = np.zeros(dirs_mean.shape[:-1])
 
-    dim_file = curvature_dir + "dimensions.csv"
-    box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1, max_rows=1, usecols=(1, 2, 3))
+    assert sft.dimensions is not None
+    box_size = sft.dimensions[0]
     gridsize = dirs_mean.shape[1]
     x = np.linspace(0, box_size[0], gridsize, endpoint=False)
     y = np.linspace(0, box_size[1], gridsize, endpoint=False)
@@ -217,7 +217,7 @@ def build_static_vectors_tcl(
 
 
 def build_dynamic_vectors_tcl(
-    sft: SFT | None,
+    sft: SFT,
     curvature_dir: str,
     out_path: str,
     which: str = "both",
@@ -256,10 +256,10 @@ def build_dynamic_vectors_tcl(
         )
 
     layer_sources = ["upper", "upper", "lower", "lower", "union", "union"]
-    dim_file = curvature_dir + "dimensions.csv"
-    box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1, max_rows=1, usecols=(1, 2, 3))
+    assert sft.dimensions is not None
+    box_size = sft.dimensions[0]
 
-    sft_with_holes = sft if (sft is not None and sft.hole_mask is not None) else None
+    sft_with_holes = sft if sft.hole_mask is not None else None
     thetas = None
     if sft_with_holes is not None and rotation_was_used(sft_with_holes):
         thetas = recover_all_rotation_angles(sft_with_holes)
@@ -375,10 +375,7 @@ def vmd_vectors(args: list[str]) -> None:
 
     os.makedirs(ns.output, exist_ok=True)
 
-    try:
-        sft = SFT.from_directory(ns.input)
-    except FileNotFoundError:
-        sft = None
+    sft = SFT.from_directory(ns.input)
 
     static_path = os.path.join(ns.output, "principal_vectors_static.tcl")
     build_static_vectors_tcl(

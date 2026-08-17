@@ -333,19 +333,15 @@ def draw(
     if not Dir.endswith("/"):
         Dir += "/"
 
-    dim_file = os.path.join(Dir, "dimensions.csv")
-    box_size = np.loadtxt(dim_file, delimiter=",", skiprows=1, max_rows=1, usecols=(1, 2, 3))
+    # Amn/qmn/dimensions.npy are always written together (see SFT.write) -
+    # box_size comes straight from here now, not a separate dimensions.csv.
+    sft = SFT.from_directory(Dir)
+    assert sft.dimensions is not None
+    box_size = sft.dimensions[0]
 
-    # Detect whether --rotate / --Remove-TMD were used for this run.
-    sft = None
     circle_radius = None
-    try:
-        sft = SFT.from_directory(Dir)
-        if rotation_was_used(sft):
-            assert sft.dimensions is not None
-            circle_radius = fixed_circle_radius(sft.dimensions)
-    except FileNotFoundError:
-        pass
+    if rotation_was_used(sft):
+        circle_radius = fixed_circle_radius(sft.dimensions)
 
     if mode == "thickness":
         thickness_mean = _load_and_mask(

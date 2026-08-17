@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from CALM.core.fourier_sft import SFT
 from CALM.map import plot as plot_module
 from CALM.map.dynamic_plot import (
     _draw_frame_isolated,
@@ -57,11 +58,19 @@ def test_windows_larger_than_sequence_includes_everything() -> None:
     assert _windows([0, 1, 2], 100) == [[0, 1, 2], [0, 1, 2], [0, 1, 2]]
 
 
-def _write_dimensions_csv(d: Path, n_frames: int, Lx: float, Ly: float) -> None:
-    with open(d / "dimensions.csv", "w") as f:
-        f.write("#header\n")
-        for i in range(n_frames):
-            f.write(f"{i},{Lx},{Ly},60.0\n")
+def _write_sft(d: Path, n_frames: int, Lx: float, Ly: float, Nx: int = 3, Ny: int = 3) -> None:
+    """A minimal non-rotated SFT - just enough for draw()'s own box_size read."""
+    rng = np.random.default_rng(0)
+    s = SFT()
+    s.A_mn = rng.uniform(-1, 1, size=(n_frames, 3, 2 * Nx + 1, 2 * Ny + 1)).astype(np.float32)
+    M, N = 2 * Nx + 1, 2 * Ny + 1
+    m = np.where(np.arange(M) > M // 2, np.arange(M) - M, np.arange(M))
+    n = np.where(np.arange(N) > N // 2, np.arange(N) - N, np.arange(N))
+    qx, qy = np.meshgrid(2 * np.pi * m / Lx, 2 * np.pi * n / Ly, indexing="ij")
+    s.q_mn = np.stack([np.stack([qx, qy])] * n_frames).astype(np.float32)  # theta=0 -> no rotation
+    s.frame_indices = np.arange(n_frames)
+    s.dimensions = np.tile([Lx, Ly, 60.0], (n_frames, 1))
+    s.write(d)
 
 
 def _write_mean_curvature_frames(d: Path, n_frames: int, gridsize: int = 10) -> None:
@@ -78,7 +87,7 @@ def _write_thickness_frames(d: Path, n_frames: int, gridsize: int = 10) -> None:
 
 def test_windowed_minmax_percentile_zero_matches_the_plain_min_max(tmp_path: Path) -> None:
     n_frames = 5
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_thickness_frames(tmp_path, n_frames)
     # One deliberate outlier, planted after the fact so it's a known, exact value.
     outlier_frame = np.load(tmp_path / "2_thickness.npy")
@@ -93,7 +102,7 @@ def test_windowed_minmax_percentile_zero_matches_the_plain_min_max(tmp_path: Pat
 
 def test_windowed_minmax_percentile_trims_a_rare_outlier(tmp_path: Path) -> None:
     n_frames = 5
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_thickness_frames(tmp_path, n_frames)
     outlier_frame = np.load(tmp_path / "2_thickness.npy")
     outlier_frame[0, 0] = 100.0  # 1 of 500 pooled points - well under a 2.5% tail
@@ -106,7 +115,7 @@ def test_windowed_minmax_percentile_trims_a_rare_outlier(tmp_path: Path) -> None
 
 
 def test_draw_frame_numbers_filters_files_passed_to_load_and_mask(tmp_path: Path) -> None:
-    _write_dimensions_csv(tmp_path, 3, 100.0, 80.0)
+    _write_sft(tmp_path, 3, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, 3)
 
     with patch.object(plot_module, "_load_and_mask", wraps=plot_module._load_and_mask) as mock_load:
@@ -118,7 +127,7 @@ def test_draw_frame_numbers_filters_files_passed_to_load_and_mask(tmp_path: Path
 
 
 def test_draw_frame_numbers_omitted_uses_every_file(tmp_path: Path) -> None:
-    _write_dimensions_csv(tmp_path, 3, 100.0, 80.0)
+    _write_sft(tmp_path, 3, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, 3)
 
     with patch.object(plot_module, "_load_and_mask", wraps=plot_module._load_and_mask) as mock_load:
@@ -143,7 +152,7 @@ def _draw_in_process(**kwargs) -> None:
 
 def test_draw_dynamic_renders_one_frame_per_available_frame(tmp_path: Path) -> None:
     n_frames = 4
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, n_frames)
 
     out_gif = tmp_path / "out.gif"
@@ -156,7 +165,7 @@ def test_draw_dynamic_renders_one_frame_per_available_frame(tmp_path: Path) -> N
 
 def test_draw_dynamic_fixes_thickness_scale_across_windows(tmp_path: Path) -> None:
     n_frames = 6
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, n_frames)
     _write_thickness_frames(tmp_path, n_frames)
 
@@ -181,7 +190,7 @@ def test_draw_dynamic_uses_each_windows_own_frame_for_vectors(tmp_path: Path) ->
     # The vector overlay must reflect that video frame's own instantaneous
     # directions, never the rolling window used for the curvature background.
     n_frames = 6
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_principal_frames(tmp_path, n_frames)
 
     with patch("CALM.map.dynamic_plot._draw_frame_isolated", side_effect=_draw_in_process) as mock_draw:
@@ -192,13 +201,13 @@ def test_draw_dynamic_uses_each_windows_own_frame_for_vectors(tmp_path: Path) ->
 
 
 def test_draw_dynamic_raises_for_missing_mode_files(tmp_path: Path) -> None:
-    _write_dimensions_csv(tmp_path, 2, 100.0, 80.0)
+    _write_sft(tmp_path, 2, 100.0, 80.0)
     with pytest.raises(FileNotFoundError):
         draw_dynamic(str(tmp_path), mode="mean", out_gif=str(tmp_path / "out.gif"))
 
 
 def test_draw_frame_isolated_runs_draw_in_a_subprocess(tmp_path: Path) -> None:
-    _write_dimensions_csv(tmp_path, 1, 100.0, 80.0)
+    _write_sft(tmp_path, 1, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, 1)
 
     out_png = tmp_path / "frame.png"
@@ -286,7 +295,7 @@ def test_stitch_gif_in_memory_produces_a_valid_multi_frame_gif(tmp_path: Path) -
 
 def test_draw_dynamic_in_memory_flag_uses_the_pillow_path(tmp_path: Path) -> None:
     n_frames = 3
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, n_frames)
 
     with patch("CALM.map.dynamic_plot._stitch_gif_in_memory") as mock_in_memory, \
@@ -302,7 +311,7 @@ def test_draw_dynamic_in_memory_flag_uses_the_pillow_path(tmp_path: Path) -> Non
 
 def test_draw_dynamic_default_uses_the_ffmpeg_path(tmp_path: Path) -> None:
     n_frames = 3
-    _write_dimensions_csv(tmp_path, n_frames, 100.0, 80.0)
+    _write_sft(tmp_path, n_frames, 100.0, 80.0)
     _write_mean_curvature_frames(tmp_path, n_frames)
 
     with patch("CALM.map.dynamic_plot._stitch_gif_in_memory") as mock_in_memory, \

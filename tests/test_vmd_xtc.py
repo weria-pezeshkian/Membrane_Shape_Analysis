@@ -40,11 +40,10 @@ def test_nan_grid_points_are_dropped_not_written(tmp_path: Path) -> None:
     z1[:, 7:, 7:] = np.nan
     np.save(in_dir / "1_Z_fitted.npy", z1)
 
-    (in_dir / "dimensions.csv").write_text(
-        "#header\n0,100.0,100.0,60.0\n1,98.0,98.0,60.0\n"
-    )
+    sft = _make_sft([0.0, 0.0])
+    sft.dimensions = np.array([[100.0, 100.0, 60.0], [98.0, 98.0, 60.0]])
 
-    get_vmd_visualisation(str(in_dir), str(out_dir))
+    get_vmd_visualisation(str(in_dir), str(out_dir), sft=sft)
 
     expected_valid = np.ones((10, 10), dtype=bool)
     expected_valid[8:, 8:] = False
@@ -70,10 +69,10 @@ def test_all_nan_raises_descriptive_error(tmp_path: Path) -> None:
 
     z = np.full((3, 5, 5), np.nan)
     np.save(in_dir / "0_Z_fitted.npy", z)
-    (in_dir / "dimensions.csv").write_text("#header\n0,100.0,100.0,60.0\n")
+    sft = _make_sft([0.0], Lx=100.0, Ly=100.0)
 
     with pytest.raises(ValueError, match="No grid points are valid"):
-        get_vmd_visualisation(str(in_dir), str(out_dir))
+        get_vmd_visualisation(str(in_dir), str(out_dir), sft=sft)
 
 
 def _make_q_mn(Lx: float, Ly: float, Nx: int, Ny: int, theta: float) -> np.ndarray:
@@ -131,9 +130,8 @@ def test_vmd_xtc_generates_tcl_only_when_rotation_present(tmp_path: Path, capsys
     rng = np.random.default_rng(1)
     z = rng.uniform(-1, 1, size=(3, 10, 10))
     np.save(in_dir / "0_Z_fitted.npy", z)
-    (in_dir / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
 
-    sft = _make_sft([0.4])
+    sft = _make_sft([0.4], Lx=Lx, Ly=Ly)
     sft.write(in_dir)
 
     vmd_xtc(["-i", str(in_dir), "-o", str(out_dir)])
@@ -154,7 +152,6 @@ def test_hole_grid_points_are_renamed_not_dropped(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     z = rng.uniform(-1, 1, size=(3, gridsize, gridsize))
     np.save(in_dir / "0_Z_fitted.npy", z)
-    (in_dir / "dimensions.csv").write_text("#header\n0,100.0,100.0,60.0\n")
 
     sft = _make_sft([0.0], Lx=100.0, Ly=100.0)
     hole = np.zeros((1, 2, gridsize, gridsize), dtype=bool)
@@ -190,7 +187,6 @@ def test_no_hole_mask_names_everything_carbon(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     z = rng.uniform(-1, 1, size=(3, 6, 6))
     np.save(in_dir / "0_Z_fitted.npy", z)
-    (in_dir / "dimensions.csv").write_text("#header\n0,100.0,100.0,60.0\n")
 
     sft = _make_sft([0.0], Lx=100.0, Ly=100.0)  # hole_mask left as None
 
@@ -215,9 +211,6 @@ def test_hole_mask_union_across_trajectory_frames(tmp_path: Path) -> None:
     z1 = rng.uniform(-1, 1, size=(3, gridsize, gridsize))
     np.save(in_dir / "0_Z_fitted.npy", z0)
     np.save(in_dir / "1_Z_fitted.npy", z1)
-    (in_dir / "dimensions.csv").write_text(
-        "#header\n0,100.0,100.0,60.0\n1,100.0,100.0,60.0\n"
-    )
 
     sft = _make_sft([0.0, 0.0], Lx=100.0, Ly=100.0)
     hole = np.zeros((2, 2, gridsize, gridsize), dtype=bool)
@@ -243,7 +236,6 @@ def test_hole_mask_lookup_is_rotation_aware(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     z = rng.uniform(-1, 1, size=(3, gridsize, gridsize))
     np.save(in_dir / "0_Z_fitted.npy", z)
-    (in_dir / "dimensions.csv").write_text(f"#header\n0,{Lx},{Ly},60.0\n")
 
     sft = _make_sft([0.7], Lx=Lx, Ly=Ly)
     hole = np.zeros((1, 2, gridsize, gridsize), dtype=bool)

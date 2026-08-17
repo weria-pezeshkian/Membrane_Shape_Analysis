@@ -99,6 +99,11 @@ def full(args: list[str]) -> None:
 
         if using_precomputed_sft:
             sft_obj = SFT.from_directory(ns.sft)
+            # Copied into --out too (not just kept in --sft) so this run's
+            # own output directory is self-contained - 'CALM map plot' and
+            # friends read Amn/qmn/dimensions.npy from --out directly, the
+            # same way they do for a freshly-built fit.
+            sft_obj.write(ns.out)
         else:
             sft_obj = build_sft(ns, universe)
 
