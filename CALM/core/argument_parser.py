@@ -189,11 +189,13 @@ def write_replay_file(path: str, parser: argparse.ArgumentParser, ns: argparse.N
 
 def add_build_arguments(
     parser: argparse.ArgumentParser, require_inputs: bool = True,
+    include_rotation: bool = True, include_center: bool = True,
     required_group: "argparse._ArgumentGroup | None" = None, optional_group: "argparse._ArgumentGroup | None" = None,
 ) -> tuple["argparse._ArgumentGroup", "argparse._ArgumentGroup"]:
     """Add the CLI arguments shared by 'CALM analyze sft', 'CALM analyze full',
-    and 'CALM analyze lipids' for building the per-frame Fourier coefficient
-    stack (SFT) from a trajectory. Returns (required_group, optional_group).
+    'CALM analyze lipids', and 'CALM analyze diffusion' for building the
+    per-frame Fourier coefficient stack (SFT) from a trajectory. Returns
+    (required_group, optional_group).
 
     `require_inputs` marks --trajectory/--structure/--index as
     argparse-required - true for 'sft' and 'lipids', which always need
@@ -203,6 +205,9 @@ def add_build_arguments(
     that condition depends on an argument add_build_arguments doesn't add.
     Either way they are listed under "Required arguments" - the caller's
     group title/description says which flavor of "required" applies.
+
+    `include_rotation` adds --rotate/--rotation-direction; `include_center`
+    adds -C/--center. 'CALM analyze diffusion' omits both.
 
     `required_group`/`optional_group` let a caller pass in groups it
     already created (and already added its own arguments to, e.g.
@@ -232,17 +237,19 @@ def add_build_arguments(
     optional.add_argument('--lambda_x', type=float, default=None, help="Fourier wavelength scale in x (nm)")
     optional.add_argument('--lambda_y', type=float, default=None, help="Fourier wavelength scale in y (nm)")
     optional.add_argument('--gridsize', default=100, type=int, help="grid points per side (default: 100)")
-    optional.add_argument(
-        '-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on"
-    )
-    optional.add_argument(
-        '--rotate', default=False, action="store_true",
-        help="rotation alignment per frame; requires --center",
-    )
-    optional.add_argument(
-        '--rotation-direction', default=None, type=str,
-        help="MDAnalysis selection defining the rotation reference direction; requires --rotate",
-    )
+    if include_center:
+        optional.add_argument(
+            '-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on"
+        )
+    if include_rotation:
+        optional.add_argument(
+            '--rotate', default=False, action="store_true",
+            help="rotation alignment per frame; requires --center",
+        )
+        optional.add_argument(
+            '--rotation-direction', default=None, type=str,
+            help="MDAnalysis selection defining the rotation reference direction; requires --rotate",
+        )
     optional.add_argument(
         '--Remove-TMD', dest='remove_tmd', nargs='?', const=True, default=False, metavar='SELECTION',
         help="flag unsupported grid points as holes. With no value, protein "

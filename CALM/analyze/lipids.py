@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -17,6 +18,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from ..core import argument_parser as arg_helper
+from ..core.curvature import shape_operator_curvatures
 from ..core.fourier_build import (
     Rotation_and_Center_tracker,
     _fetch_dynamic_positions,
@@ -124,6 +126,20 @@ def _true_surface_area(fourier: Fourier_Series_Function, X: np.ndarray, Y: np.nd
     return np.sqrt(1 + fx ** 2 + fy ** 2) * cell_area
 
 
+def _curvature_at_points(fourier: Fourier_Series_Function, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Mean curvature of `fourier`'s surface at each scattered (x, y).
+
+    `shape_operator_curvatures` computes curvature pointwise (no dependency
+    between neighboring input points), so reshaping a flat array of
+    scattered positions into a column lets it be reused directly for
+    per-residue points, not just a meshgrid.
+    """
+    if len(x) == 0:
+        return np.empty(0)
+    H, *_ = shape_operator_curvatures(fourier, x.reshape(-1, 1), y.reshape(-1, 1))
+    return H.ravel()
+
+
 def _one_lipid_frame(
     frame: int,
     *,
@@ -151,9 +167,10 @@ def _one_lipid_frame(
 
     Saves `{frame}_lipid_fractions.npy` (species x [upper, lower] x grid),
     `{frame}_area_per_lipid.npy` (species x [upper, lower] x [flat,
-    curved]), and `{frame}_lipid_counts.npy` (species x [upper, lower]) -
-    aggregating these into a trajectory-averaged `area_per_lipid.csv` is
-    the caller's job, once every frame is done.
+    curved]), `{frame}_lipid_counts.npy` (species x [upper, lower]), and
+    `{frame}_curvature_preference.npy` (species x [upper, lower]) -
+    aggregating these into trajectory-averaged `area_per_lipid.csv` and
+    `curvature_preference.csv` is the caller's job, once every frame is done.
 
     `area_per_lipid.npy` is always built from each frame's own raw,
     unrotated grid, regardless of --rotate - it's a whole-leaflet sum, and
@@ -219,6 +236,38 @@ def _one_lipid_frame(
     area_upper = _true_surface_area(fourier_upper, X, Y, cell_area)
     area_lower = _true_surface_area(fourier_lower, X, Y, cell_area)
 
+    # Hoisted above the per-species loop (a pure reorder - this block doesn't
+    # depend on anything the loop produces) so valid_upper/valid_lower are
+    # available for the curvature baseline below, computed once per frame.
+    hole_mask = None
+    if remove_tmd:
+        hole_mask, _ = _remove_tmd_hole_mask(
+            remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
+            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_far_multiple,
+        )
+        valid_upper = ~hole_mask[0]
+        valid_lower = ~hole_mask[1]
+    else:
+        valid_upper = np.ones(X.shape, dtype=bool)
+        valid_lower = np.ones(X.shape, dtype=bool)
+
+    # The leaflet's own ambient curvature, excluding --Remove-TMD hole grid
+    # points the same way area_per_lipid already excludes them from its own
+    # sum - those points aren't real lipid-accessible membrane, so including
+    # them would bias what "typical for this leaflet" means. Subtracted from
+    # each species' own sampled curvature below, so a bulk curvature imposed
+    # on the whole leaflet (e.g. by a protein) doesn't show up identically in
+    # every species' preference.
+    H_grid_upper, *_ = shape_operator_curvatures(fourier_upper, X, Y)
+    H_grid_lower, *_ = shape_operator_curvatures(fourier_lower, X, Y)
+    baseline_upper = float(H_grid_upper[valid_upper].mean())
+    baseline_lower = float(H_grid_lower[valid_lower].mean())
+    # [species, upper/lower], curvature relative to the leaflet's own mean
+    # (Angstrom^-1), sign-adjusted so both leaflets share one convention (see
+    # analyze_lipids.md) - NaN where a species has zero residues in a
+    # leaflet this frame, distinct from a genuine 0.0 preference.
+    curvature_preference = np.full((len(species), 2), np.nan)
+
     species_xy_upper: list[np.ndarray] = []
     species_xy_lower: list[np.ndarray] = []
     counts_upper = np.zeros(len(species))
@@ -251,17 +300,27 @@ def _one_lipid_frame(
                 "implausibly far from both fitted surfaces",
             ))
 
-    hole_mask = None
-    if remove_tmd:
-        hole_mask, _ = _remove_tmd_hole_mask(
-            remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
-            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_far_multiple,
-        )
-        valid_upper = ~hole_mask[0]
-        valid_lower = ~hole_mask[1]
-    else:
-        valid_upper = np.ones(X.shape, dtype=bool)
-        valid_lower = np.ones(X.shape, dtype=bool)
+        # xy (one averaged headgroup position per residue, the same point
+        # _assign_nearest_leaflet used) rather than hub_xy - curvature
+        # preference is a property of the whole lipid molecule, not of each
+        # structural headgroup junction separately.
+        #
+        # shape_operator_curvatures's raw H is negative for a patch bulging
+        # away from the bilayer core toward the upper leaflet's own water
+        # side (a lysolipid-like outward bulge, e.g. Z = z0 + bump(x,y), has
+        # Zxx<0/Zyy<0 at its peak) - the opposite sign of the field-standard
+        # convention (positive C0 = outward/conical, like a micelle). The
+        # upper leaflet's own value is negated to match that convention; the
+        # lower leaflet needs no negation, since its own outward direction
+        # (-z) already flips the raw sign back the other way.
+        if is_upper.any():
+            curvature_preference[i, 0] = -(
+                _curvature_at_points(fourier_upper, xy[is_upper, 0], xy[is_upper, 1]).mean() - baseline_upper
+            )
+        if is_lower.any():
+            curvature_preference[i, 1] = (
+                _curvature_at_points(fourier_lower, xy[is_lower, 0], xy[is_lower, 1]).mean() - baseline_lower
+            )
 
     # Always built on the raw (X, Y) grid, feeding area_per_lipid only -
     # this is what keeps --rotate from touching area_per_lipid.csv at all.
@@ -309,6 +368,7 @@ def _one_lipid_frame(
     np.save(out / f"{frame:0{num_digits}d}_lipid_fractions.npy", out_fractions)
     np.save(out / f"{frame:0{num_digits}d}_area_per_lipid.npy", area_per_lipid)
     np.save(out / f"{frame:0{num_digits}d}_lipid_counts.npy", counts)
+    np.save(out / f"{frame:0{num_digits}d}_curvature_preference.npy", curvature_preference)
     if out_hole_mask is not None:
         # Same (2, gridsize, gridsize) [upper, lower] convention as
         # calc_fourier's own {frame}_hole_mask.npy, saved flat here (not
@@ -340,6 +400,66 @@ def _write_area_per_lipid_csv(out_dir: str, species: list[str], frames: list[int
                 f"{mean_area[i, leaflet_idx, 1]:.6f},{mean_count[i, leaflet_idx]:.2f}"
             )
     (out / "area_per_lipid.csv").write_text("\n".join(lines) + "\n")
+
+
+def _write_curvature_preference_csv(out_dir: str, species: list[str], frames: list[int], until: int) -> None:
+    """Average every frame's {frame}_curvature_preference.npy/{frame}_lipid_counts.npy into curvature_preference.csv.
+
+    One row per (leaflet, species) for leaflet in {upper, lower, both}:
+    C0_nm-1 (converted from the code's native Angstrom^-1), C0_stderr_nm-1,
+    mean_count, n_frames_sampled. A species' NaN frames in a leaflet (it
+    had zero residues there that frame) are skipped via nanmean/nanstd
+    rather than pulled toward zero. The "both" row is a count-weighted
+    average of the upper/lower C0 values (with standard error propagation),
+    falling back to whichever leaflet has data when the other is entirely
+    absent, and NaN when neither leaflet ever had this species.
+    """
+    num_digits = len(str(abs(until)))
+    out = Path(out_dir)
+    curvature_stack = np.stack(
+        [np.load(out / f"{frame:0{num_digits}d}_curvature_preference.npy") for frame in frames]
+    )  # (n_frames, n_species, 2)
+    count_stack = np.stack(
+        [np.load(out / f"{frame:0{num_digits}d}_lipid_counts.npy") for frame in frames]
+    )  # (n_frames, n_species, 2)
+
+    with warnings.catch_warnings():
+        # A species absent from a leaflet for the whole trajectory gives an
+        # all-NaN slice here - the resulting NaN is the correct answer (no
+        # data), not a bug to silence differently.
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        c0_mean = np.nanmean(curvature_stack, axis=0) * 10.0  # (n_species, 2): Angstrom^-1 -> nm^-1
+        c0_std = np.nanstd(curvature_stack, axis=0) * 10.0
+    n_sampled = np.sum(~np.isnan(curvature_stack), axis=0)  # (n_species, 2)
+    c0_stderr = np.where(n_sampled > 0, c0_std / np.sqrt(np.maximum(n_sampled, 1)), np.nan)
+    mean_count = np.mean(count_stack, axis=0)  # (n_species, 2)
+
+    lines = ["leaflet,species,C0_nm-1,C0_stderr_nm-1,mean_count,n_frames_sampled"]
+    for i, name in enumerate(species):
+        for leaflet_idx, leaflet_name in enumerate(("upper", "lower")):
+            lines.append(
+                f"{leaflet_name},{name},{c0_mean[i, leaflet_idx]:.6f},{c0_stderr[i, leaflet_idx]:.6f},"
+                f"{mean_count[i, leaflet_idx]:.2f},{int(n_sampled[i, leaflet_idx])}"
+            )
+
+        weight_u = mean_count[i, 0] if not np.isnan(c0_mean[i, 0]) else 0.0
+        weight_l = mean_count[i, 1] if not np.isnan(c0_mean[i, 1]) else 0.0
+        total_weight = weight_u + weight_l
+        if total_weight > 0:
+            c0_both = (
+                weight_u * np.nan_to_num(c0_mean[i, 0]) + weight_l * np.nan_to_num(c0_mean[i, 1])
+            ) / total_weight
+            var_both = (
+                weight_u ** 2 * np.nan_to_num(c0_stderr[i, 0]) ** 2
+                + weight_l ** 2 * np.nan_to_num(c0_stderr[i, 1]) ** 2
+            ) / total_weight ** 2
+            stderr_both = float(np.sqrt(var_both))
+            n_both = int(n_sampled[i, 0] + n_sampled[i, 1])
+        else:
+            c0_both, stderr_both, n_both = float("nan"), float("nan"), 0
+        lines.append(f"both,{name},{c0_both:.6f},{stderr_both:.6f},{weight_u + weight_l:.2f},{n_both}")
+
+    (out / "curvature_preference.csv").write_text("\n".join(lines) + "\n")
 
 
 def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
@@ -436,6 +556,7 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
                     log_fn(f"frame {frame_num}: {message}")
 
     _write_area_per_lipid_csv(args.out, species, frames, Until)
+    _write_curvature_preference_csv(args.out, species, frames, Until)
 
 
 def lipids(args: list[str]) -> None:

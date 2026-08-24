@@ -53,7 +53,11 @@ overview, or jump straight to a command below.
   - [`analyze full`](CALM/manuals/analyze_full.md) - run the full
     analysis pipeline, building the fit itself or reusing one from `sft`.
   - [`analyze lipids`](CALM/manuals/analyze_lipids.md) - per-species lipid
-    composition and area-per-lipid, computed frame by frame.
+    composition, area-per-lipid, and preferred (spontaneous) curvature,
+    computed frame by frame.
+  - [`analyze diffusion`](CALM/manuals/analyze_diffusion.md) -
+    curvature-aware lateral diffusion coefficient per lipid species and/or
+    an MDAnalysis selection.
 - [`link`](CALM/manuals/link.md) - utility commands supporting the
   pipeline.
   - [`link write_ndx`](CALM/manuals/link_write_ndx.md) - detect the two

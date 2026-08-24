@@ -127,12 +127,30 @@ def render_markdown_for_terminal(markdown: str) -> str:
 
 
 def strip_inline_markdown(text: str) -> str:
-    text = re.sub(r"`([^`]*)`", r"\1", text)
+    """Strip Markdown code spans, bold/italic emphasis, and links, rendering plain text.
+
+    Code-span content is protected from every later substitution (stashed
+    behind a placeholder, restored verbatim at the end) - otherwise an
+    identifier with two or more underscores (e.g. `_assign_nearest_leaflet`)
+    would have its own underscores misread as italic markers once the
+    surrounding backticks are gone, corrupting it (e.g. into
+    "assignnearest_leaflet").
+    """
+    code_spans: list[str] = []
+
+    def _stash_code(match: "re.Match[str]") -> str:
+        code_spans.append(match.group(1))
+        return f"\x00{len(code_spans) - 1}\x00"
+
+    text = re.sub(r"`([^`]*)`", _stash_code, text)
     text = re.sub(r"\*\*([^*]*)\*\*", r"\1", text)
     text = re.sub(r"__([^_]*)__", r"\1", text)
     text = re.sub(r"\*([^*]*)\*", r"\1", text)
     text = re.sub(r"_([^_]*)_", r"\1", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+    for i, code in enumerate(code_spans):
+        text = text.replace(f"\x00{i}\x00", code)
     return text
 
 

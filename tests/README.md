@@ -20,7 +20,9 @@ pytest
 - `test_leaflet.py` - the leaflet-detection/tracking algorithm
   (`core/leaflet.py`).
 - `test_packing.py` - `median_multiple_threshold`.
-- `test_curvature.py` - `shape_operator_curvatures`.
+- `test_curvature.py` - `shape_operator_curvatures`, and `f`/`_thickness_root`
+  (the ray-surface-intersection brentq search behind bilayer thickness),
+  including rejecting a root only found via a widened bracket.
 - `test_analyze_rotation.py` - the rotation path in `analyze/analyze.py`.
 - `test_argument_parser.py` - `write_replay_file` and replay-checksum
   verification, `--Remove-TMD` parsing/validation, and the
@@ -36,8 +38,33 @@ pytest
   (`_assign_nearest_leaflet`, `_lipid_voronoi_fractions`,
   `_true_surface_area`, `_one_lipid_frame`), `--rotate`'s effect on
   `_one_lipid_frame` (identical `area_per_lipid`/counts, a genuinely
-  rotated `lipid_fractions.npy`), and the trajectory-averaged
-  `area_per_lipid.csv` (`_write_area_per_lipid_csv`).
+  rotated `lipid_fractions.npy`), the trajectory-averaged
+  `area_per_lipid.csv` (`_write_area_per_lipid_csv`), per-lipid preferred
+  curvature (`_curvature_at_points`, `_one_lipid_frame`'s
+  `curvature_preference` output - including the sign convention on both
+  leaflets for a known synthetic outward bulge), and the trajectory-averaged
+  `curvature_preference.csv` (`_write_curvature_preference_csv`: nm^-1
+  conversion, NaN-frame skipping, count-weighted `"both"` row).
+- `test_manual.py` - `core/manual.py`'s `strip_inline_markdown`: a
+  backtick code span's own content survives later emphasis stripping even
+  with 2+ underscores in it, real italic/bold/link markup still strips.
+- `test_diffusion.py` - the numerical core behind `CALM analyze diffusion`
+  (`core/diffusion.py`): surface projection recovering a known point from
+  both sides of a curved surface, segment-breaking at a leaflet flip/hole
+  change/unassigned frame, multi-tau MSD pooling across segments, and
+  `_fit_diffusion_coefficient` recovering a known D from a synthetic
+  random walk (and flagging synthetic ballistic motion via its
+  log-log slope).
+- `test_analyze_diffusion.py` - the `CALM analyze diffusion` pipeline
+  (`analyze/diffusion.py`): the tracked-point roster
+  (`_track_blocks`/`_resolve_tracked_points`), `_one_diffusion_frame`'s
+  leaflet/hole assignment and saved surface, the PBC-aware
+  whole-and-continuous position extraction
+  (`_extract_whole_continuous_positions`, covering both a within-frame
+  bond-unwrap split and a cross-frame periodic wrap), CLI validation
+  (bare `--Remove-TMD`, missing `--lipids`/`--select`, a bond-free
+  structure), and a full `calc_diffusion` end-to-end run recovering a
+  known diffusion coefficient from a synthetic random walk.
 - `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic
   direction averaging, sign alignment, and rendering.
 - `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video:
@@ -49,9 +76,6 @@ pytest
   per-leaflet occupancy-frequency rendering: hole-mask NaN-poisoning
   across frames, the combined-overview-plus-per-species output files, and
   fixed-circle clipping when `--rotate` was used.
-- `test_thickness_root.py` - `analyze/analyze.py`'s `_thickness_root`
-  brentq search, including rejecting a root only found via a widened
-  bracket.
 - `test_vmd_xtc.py` - `get_vmd_visualisation`'s NaN-grid-point handling,
   `vmd_xtc`'s rotation-TCL auto-detection, and `_trajectory_hole_union`'s
   per-trajectory hole combining.

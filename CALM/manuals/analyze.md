@@ -18,8 +18,14 @@ CALM analyze <command> [args...]
 - `full` - run the full geometric analysis pipeline (thickness, curvature)
   that `CALM map` can plot. Builds the fit itself unless `--sft` points to
   output already produced by `sft`.
-- `lipids` - per-species lipid composition and area-per-lipid, computed
-  frame by frame from a live trajectory. Always re-fits the surfaces
-  itself (no `--sft` reuse), since lipid identity needs real atoms.
+- `lipids` - per-species lipid composition, area-per-lipid, and preferred
+  (spontaneous) curvature, computed frame by frame from a live trajectory.
+  Always re-fits the surfaces itself (no `--sft` reuse), since lipid
+  identity needs real atoms.
+- `diffusion` - curvature-aware lateral diffusion coefficient per lipid
+  species and/or an arbitrary MDAnalysis selection, projecting each
+  tracked point onto its own leaflet's fitted surface every frame before
+  measuring displacement. Always re-fits the surfaces itself, for the
+  same reason `lipids` does.
 
 Run `CALM analyze <command> --man` for a command's full manual.

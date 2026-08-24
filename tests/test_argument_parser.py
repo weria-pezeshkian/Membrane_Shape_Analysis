@@ -172,3 +172,23 @@ def test_lipids_species_token_accepts_valid_formats(token: str) -> None:
 def test_lipids_species_token_rejects_malformed_tokens(token: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         arg_helper.lipids_species_token(token)
+
+
+def test_add_build_arguments_includes_rotation_and_center_by_default() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out"])
+    assert hasattr(ns, "center")
+    assert hasattr(ns, "rotate")
+    assert hasattr(ns, "rotation_direction")
+
+
+def test_add_build_arguments_can_omit_rotation_and_center() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False, include_rotation=False, include_center=False)
+    ns = parser.parse_args(["-o", "out"])
+    assert not hasattr(ns, "center")
+    assert not hasattr(ns, "rotate")
+    assert not hasattr(ns, "rotation_direction")
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-o", "out", "--center", "protein"])

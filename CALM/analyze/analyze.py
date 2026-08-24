@@ -7,11 +7,10 @@ from collections.abc import Sequence
 import MDAnalysis as mda
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
-from scipy.optimize import brentq
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from ..core.curvature import shape_operator_curvatures
+from ..core.curvature import _thickness_root, shape_operator_curvatures
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
 from ..core.fourier_sft import SFT
 from ..core.rotation import recover_rotation_angle, rotated_grid
@@ -64,62 +63,6 @@ def periodic_gradient(
         dz_dy = np.gradient(Z, dy, axis=0)
 
     return dz_dy, dz_dx
-
-
-def f(
-    t: float,
-    interp: RectBivariateSpline,
-    mx: float, my: float, mz: float,
-    nx: float, ny: float, nz: float,
-    Lx: float, Ly: float,
-) -> float:
-    """Root function for brentq: signed distance along a normal ray between
-    a query point and the interpolated surface."""
-    xq = mx + t * nx
-    yq = my + t * ny
-    zq = mz + t * nz
-
-    xq = np.mod(xq, Lx)
-    yq = np.mod(yq, Ly)
-
-    return zq - interp(yq, xq, grid=False)[()]
-
-
-def _thickness_root(
-    interp: RectBivariateSpline,
-    mx: float, my: float, mz: float,
-    nx: float, ny: float, nz: float,
-    Lx: float, Ly: float,
-    t_max_base: float,
-    upper: bool,
-) -> float | None:
-    """Root of `f` along the local normal ray, widening the search bracket up to 3 times if the previous one fails to bracket a root.
-
-    A root is only accepted if it falls within the original, un-widened
-    `t_max_base` of the query point - itself twice the max observed
-    upper/lower z-difference across the whole frame, so a genuine nearby
-    leaflet intersection is comfortably inside it. The wider brackets
-    (2x, 4x, 8x) exist only to help `brentq` find a sign change to
-    bracket; a root that only exists that much farther out most likely
-    crosses an unrelated, distant part of the periodic surface rather than
-    the true nearby leaflet, so it's treated the same as a bracket that
-    never found a root at all.
-
-    Returns None if every widened bracket (t_max_base, 2x, 4x, 8x) still
-    fails to bracket a root, or if the only root found lies beyond
-    `t_max_base` itself.
-    """
-    t_max = t_max_base
-    for _ in range(4):
-        try:
-            if upper:
-                root = brentq(f, 0.0, t_max, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
-            else:
-                root = brentq(f, -t_max, 0.0, args=(interp, mx, my, mz, nx, ny, nz, Lx, Ly))
-            return root if abs(root) <= t_max_base else None
-        except ValueError:
-            t_max *= 2
-    return None
 
 
 def _rotate_direction_vectors(vecs: np.ndarray, angle: float) -> np.ndarray:

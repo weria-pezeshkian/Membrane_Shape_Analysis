@@ -126,5 +126,17 @@ def lookup_mask_at_rotated_grid(
     return mask[row_idx, col_idx]
 
 
+def lookup_mask_at_point(
+    mask: np.ndarray, x: np.ndarray, y: np.ndarray, Lx: float, Ly: float
+) -> np.ndarray:
+    """Nearest-grid-cell lookup of a boolean mask at an arbitrary scattered (x, y).
+
+    Delegates to `lookup_mask_at_rotated_grid` with no rotation
+    (`angle=0`, pivot at the origin), so a caller with no rotation concept
+    of its own can look up a point's own mask value directly.
+    """
+    return lookup_mask_at_rotated_grid(mask, x, y, Lx, Ly, cx=0.0, cy=0.0, angle=0.0)
+
+
 if __name__ == "__main__":
     pass

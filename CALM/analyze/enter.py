@@ -5,11 +5,12 @@ import sys
 from importlib.metadata import version
 
 from ..core.manual import add_manual
+from .diffusion import diffusion
 from .full import full
 from .lipids import lipids
 from .sft import sft
 
-MODULES = ["sft", "full", "lipids"]
+MODULES = ["sft", "full", "lipids", "diffusion"]
 
 
 def run_module(module_name: str, args: list[str]) -> None:
@@ -21,6 +22,8 @@ def run_module(module_name: str, args: list[str]) -> None:
         full(args)
     elif module_name == "lipids":
         lipids(args)
+    elif module_name == "diffusion":
+        diffusion(args)
     else:
         print(f"Unknown module: {module_name}")
 

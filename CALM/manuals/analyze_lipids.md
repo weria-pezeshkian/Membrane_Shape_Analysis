@@ -1,9 +1,10 @@
 # CALM analyze lipids
 
-Per-species lipid composition and area-per-lipid, computed frame by frame
-from a live trajectory: fits both leaflet surfaces itself every frame, since
-lipid identity (`resname`) only exists on real atoms, which a previously
-built fit's `Amn`/`qmn` coefficients alone don't carry.
+Per-species lipid composition, area-per-lipid, and preferred (spontaneous)
+curvature, computed frame by frame from a live trajectory: fits both leaflet
+surfaces itself every frame, since lipid identity (`resname`) only exists on
+real atoms, which a previously built fit's `Amn`/`qmn` coefficients alone
+don't carry.
 
 ## Usage
 
@@ -105,6 +106,62 @@ that leaflet. Two area conventions are reported: the flat (projected)
 area, the usual literature quantity, and the true (curvature-corrected)
 area, using `sqrt(1 + Zx^2 + Zy^2)` per cell from the freshly fit surface.
 
+## Preferred (spontaneous) curvature C0
+
+The inverse of what a tool like TS2CG
+(https://pubs.acs.org/jctcce/article/21/18/9136/3693441/TS2CG-as-a-Membrane-Builder)
+consumes as a per-lipid input parameter to *build* a target membrane shape:
+here, C0 is *measured* from an existing trajectory. Every `--lipids`
+residue's own local mean curvature is sampled at its own headgroup
+position (the same single averaged position `_assign_nearest_leaflet`
+already uses, not a multi-hub lipid's separate junction points - C0 is a
+property of the whole lipid molecule, not of each structural headgroup
+junction) on whichever leaflet's fitted surface it's assigned to that
+frame, then averaged over every frame and every residue of that species.
+
+That raw sampled curvature is reported **relative to the leaflet's own
+mean curvature that frame**, not as a raw absolute number: a species'
+own value is its own sampled curvature minus the whole leaflet's own
+average (grid points flagged by `--Remove-TMD` are excluded from that
+leaflet average, the same way `area_per_lipid` already excludes them from
+its own sum - they aren't real lipid-accessible membrane, so including
+them would bias what "typical for this leaflet" means; a real lipid's own
+sample is never excluded this way, even if it sits near or under a hole
+region - a lipid actually embedded near a curvature-inducing protein is
+experiencing real curvature, which is exactly the signal this measurement
+is meant to capture). Without this baseline subtraction, any bulk
+curvature imposed on the whole leaflet (e.g. by a protein under
+`--Remove-TMD`) would show up identically in every species' number,
+drowning out each species' own curvature-sorting preference.
+
+**Sign convention.** The raw mean curvature this reuses
+(`core/curvature.py`'s `shape_operator_curvatures`) is computed in a
+single fixed z-up convention, independent of which leaflet it's applied
+to. A patch bulging *outward* - away from the bilayer core, toward a
+leaflet's own water side, the field-standard positive-C0 shape (conical,
+headgroup-splaying, like a lysolipid or a micelle) - gives **negative**
+raw curvature when that bulge is on the **upper** leaflet (its own peak
+has `Zxx<0`/`Zyy<0`, the opposite sign of the Helfrich/TS2CG convention),
+and **positive** raw curvature for the same physical bulge on the
+**lower** leaflet (whose own outward direction is -z, flipping the sign
+of `Z(x,y)` for the same physical shape). So the upper leaflet's own
+sampled, baseline-relative value is negated before being reported; the
+lower leaflet's is used as-is. The result matches the field-standard
+convention throughout: positive C0 = conical, headgroup-outward (e.g.
+lysolipids); negative C0 = inverted-cone (e.g. PE).
+
+**Units.** Reported in nm^-1 (the standard unit in the membrane-biophysics
+literature, matching what a tool like TS2CG expects as input), converted
+from the code's native Angstrom^-1 (MDAnalysis's internal length unit,
+same as every other length here) only at the final CSV-writing step -
+every per-frame saved value stays in Angstrom^-1.
+
+**Small samples.** A species with only a handful of residues in a given
+leaflet (the same small-N caveat that already applies to that species'
+own composition/area numbers) produces a noisier C0 estimate - check
+`n_frames_sampled`/`mean_count` in `curvature_preference.csv` before
+trusting a value built from very few residues.
+
 ## Other build arguments
 
 Shares the rest of `CALM analyze sft`'s arguments
@@ -147,6 +204,10 @@ from the saved spatial output too. `--center` still applies (needed by
   not yet averaged.
 - `{frame}_lipid_counts.npy` - shape `(n_species, 2)` (species x [upper,
   lower]): the real residue count found for each species in each leaflet.
+- `{frame}_curvature_preference.npy` - shape `(n_species, 2)` (species x
+  [upper, lower]): that frame's own baseline-relative, sign-adjusted mean
+  curvature per species (Angstrom^-1, not yet unit-converted or averaged),
+  `NaN` where a species had zero residues in that leaflet this frame.
 - `{frame}_hole_mask.npy` - shape `(2, gridsize, gridsize)` (upper,
   lower): written only if `--Remove-TMD` was given.
 - `lipid_species.txt` - the `--lipids` list, in the fixed order indexing
@@ -158,6 +219,14 @@ from the saved spatial output too. `--center` still applies (needed by
   trajectory mean of every frame's `area_per_lipid`/`lipid_counts`, one row
   per (leaflet, species): `leaflet,species,area_per_lipid_flat,
   area_per_lipid_curved,mean_count`.
+- `curvature_preference.csv` - written once, after every frame is
+  processed: the trajectory mean of every frame's
+  `curvature_preference`/`lipid_counts` (NaN frames skipped, not pulled
+  toward zero), one row per (leaflet, species) for leaflet in
+  `{upper, lower, both}`: `leaflet,species,C0_nm-1,C0_stderr_nm-1,
+  mean_count,n_frames_sampled`. The `both` row is a count-weighted average
+  of that species' own upper/lower values (falling back to whichever
+  leaflet has data if the other is entirely absent, and `NaN` if both are).
 - `{frame}_dimensions.npy` - that frame's own `(Lx, Ly, Lz)`, one file per
   frame (not a single shared file - each worker process owns its own,
   avoiding the unlocked-concurrent-append problem a single shared file
