@@ -27,12 +27,12 @@ from ..core.diffusion import (
     _SurfaceAsInterp,
 )
 from ..core.fourier_build import (
-    _fetch_dynamic_positions,
+    _build_dynamic_leaflet_reference,
+    _dynamic_leaflet_groups,
     _fourier_by_layer,
     _init_worker,
     _read_ndx,
     _remove_tmd_hole_mask,
-    _track_dynamic_leaflets,
     _worker_state,
 )
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
@@ -150,7 +150,6 @@ def _one_diffusion_frame(
     blocks: list[_TrackBlock],
     headgroup_override: dict[str, list[str]],
     dynamic_select: bool,
-    dynamic_leaflets: dict[int, tuple[list[int], list[int]]] | None,
     until: int,
     Nx: float | None = 3,
     Ny: float | None = 3,
@@ -191,10 +190,7 @@ def _one_diffusion_frame(
     np.save(out / f"{frame:0{num_digits}d}_dimensions.npy", np.asarray(dimensions[:3], dtype=np.float64))
 
     if dynamic_select:
-        assert dynamic_leaflets is not None
-        upper_index, lower_index = dynamic_leaflets[frame]
-        layer_group = universe.atoms[upper_index]
-        layer_group_2 = universe.atoms[lower_index]
+        layer_group, layer_group_2 = _dynamic_leaflet_groups(universe, dimensions)
 
     Nx_modes, Ny_modes = get_fourier_modes(dimensions[:3], lambda_x=Nx, lambda_y=Ny, diagnostics=diagnostics)
     fourier_upper, _ = _fourier_by_layer(
@@ -519,28 +515,24 @@ def calc_diffusion(args: argparse.Namespace, u: mda.Universe) -> None:
 
     frames = list(range(args.From, Until, args.Step))
 
+    dynamic_ref = None
+    if dynamic_select:
+        assert dynamic_selection is not None
+        dynamic_ref = _build_dynamic_leaflet_reference(
+            u, frames[0], dynamic_selection, args.min_balance, args.margin
+        )
+
     with ProcessPoolExecutor(
         max_workers=args.Workers,
         initializer=_init_worker,
-        initargs=(args.structure, args.trajectory, ndx_groups, dynamic_select, None, None, False),
+        initargs=(args.structure, args.trajectory, ndx_groups, dynamic_select, dynamic_ref, None, None, False),
     ) as ex:
-        dynamic_leaflets = None
-        if dynamic_select:
-            assert dynamic_selection is not None
-            fetch = partial(_fetch_dynamic_positions, dynamic_selection=dynamic_selection)
-            ordered_results = list(ex.map(fetch, frames))
-            selection_global_indices = u.select_atoms(dynamic_selection).atoms.indices
-            dynamic_leaflets = _track_dynamic_leaflets(
-                ordered_results, selection_global_indices, args.min_balance, margin=args.margin
-            )
-
         fn = partial(
             _one_diffusion_frame,
             out_dir=args.out,
             blocks=blocks,
             headgroup_override=headgroup_override,
             dynamic_select=dynamic_select,
-            dynamic_leaflets=dynamic_leaflets,
             until=Until,
             Nx=args.lambda_x,
             Ny=args.lambda_y,

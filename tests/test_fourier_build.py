@@ -6,9 +6,9 @@
 - _one_frame's remove_tmd selection resolution: bare (True) falls back to
   --center's selection, a string uses that selection directly with no
   --center required
-- _fetch_dynamic_positions / _track_dynamic_leaflets: the two-phase dynamic
-  leaflet detection pipeline (parallel position-fetch + sequential,
-  history-aware leaflet tracking)
+- _build_dynamic_leaflet_reference / _dynamic_leaflet_split: dynamic leaflet
+  detection matched against a fixed first-frame reference, independent of
+  every other frame
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from CALM.core.fourier_build import (
     _grid_to_atom_distances,
     _tmd_protein_atoms,
     _tmd_threshold,
-    _track_dynamic_leaflets,
 )
 from CALM.core.fourier_core import Fourier_Series_Function
 
@@ -172,7 +171,6 @@ def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: 
             0,
             out_dir=str(tmp_path),
             dynamic_select=False,
-            dynamic_leaflets=None,
             until=1,
             Nx=5.0, Ny=5.0,  # lambda_x/lambda_y (nm) -> Nx=Ny=6 for Lx=Ly=300 A
             sqrt_n_atoms=60,
@@ -240,7 +238,7 @@ def test_one_frame_closes_gaps_wider_than_a_single_grid_cell(tmp_path: Path) -> 
     try:
         with patch.object(fb, "_close_enclosed_gaps", wraps=fb._close_enclosed_gaps) as mock_close:
             fb._one_frame(
-                0, out_dir=str(tmp_path), dynamic_select=False, dynamic_leaflets=None, until=1,
+                0, out_dir=str(tmp_path), dynamic_select=False, until=1,
                 Nx=5.0, Ny=5.0, sqrt_n_atoms=60, remove_tmd=True, regularize=False,
             )
     finally:
@@ -291,7 +289,6 @@ def test_one_frame_uses_its_own_tmd_selection_with_no_center_at_all(tmp_path: Pa
             0,
             out_dir=str(tmp_path),
             dynamic_select=False,
-            dynamic_leaflets=None,
             until=1,
             Nx=5.0, Ny=5.0,
             sqrt_n_atoms=60,
@@ -348,7 +345,6 @@ def test_one_frame_does_not_flag_fully_dense_disordered_leaflet_as_holes(tmp_pat
             0,
             out_dir=str(tmp_path),
             dynamic_select=False,
-            dynamic_leaflets=None,
             until=1,
             Nx=5.0, Ny=5.0,
             sqrt_n_atoms=60,
@@ -401,7 +397,6 @@ def test_one_frame_flags_a_gap_far_enough_from_lipid_with_no_protein_present(tmp
             0,
             out_dir=str(tmp_path),
             dynamic_select=False,
-            dynamic_leaflets=None,
             until=1,
             Nx=5.0, Ny=5.0,
             sqrt_n_atoms=60,
@@ -478,6 +473,7 @@ def test_init_worker_builds_static_leaflets_from_a_real_ndx_group(tmp_path: Path
             trajectory=str(gro_path),
             ndx_groups={"Upper": [1], "Lower": [2]},  # 1-based, as in a real .ndx file
             dynamic_select=False,
+            dynamic_ref=None,
             center=None,
             rotation_direction=None,
             rotate=False,
@@ -498,18 +494,24 @@ def test_init_worker_leaves_leaflets_unset_for_dynamic_selection(tmp_path: Path)
     gro_path = tmp_path / "structure.gro"
     u.atoms.write(str(gro_path))
 
+    ref = fb._DynamicLeafletReference(
+        selection="all", first_upper={0}, first_lower={1},
+        cutoff=5.0, selection_global_indices=np.arange(2), margin=2.0,
+    )
     try:
         fb._init_worker(
             structure=str(gro_path),
             trajectory=str(gro_path),
             ndx_groups=None,
             dynamic_select=True,
+            dynamic_ref=ref,
             center=None,
             rotation_direction=None,
             rotate=False,
         )
         assert fb._worker_state["layer_group"] is None
         assert fb._worker_state["layer_group_2"] is None
+        assert fb._worker_state["dynamic_ref"] is ref
     finally:
         fb._worker_state.clear()
 
@@ -571,24 +573,32 @@ def _two_leaflet_universe(
 
 
 def test_one_frame_dynamic_select_runs_without_error(tmp_path: Path) -> None:
-    # Exercises _one_frame's consumption of a precomputed dynamic_leaflets
-    # dict (as calc_fourier's sequential pre-pass produces): the indices
-    # there are already 0-based global atom indices, used directly (no -1
-    # adjustment, unlike the static ndx-file path).
+    # Exercises _one_frame's use of _dynamic_leaflet_groups against a fixed
+    # _worker_state["dynamic_ref"] - the same reference every frame in a
+    # real run is matched against, with no dependency on any other frame.
     universe, n_per_leaflet = _two_leaflet_universe()
-    upper_index = list(range(n_per_leaflet))
-    lower_index = list(range(n_per_leaflet, 2 * n_per_leaflet))
+    dimensions = np.array(universe.dimensions, dtype=np.float64)
+    first_upper, first_lower, cutoff = fb._bootstrap_dynamic_leaflet_split(
+        universe.atoms.positions, dimensions, min_balance=0.6, margin=2.0
+    )
 
     fb._worker_state["universe"] = universe
     fb._worker_state["layer_group"] = None
     fb._worker_state["layer_group_2"] = None
     fb._worker_state["rotation_and_center"] = None
+    fb._worker_state["dynamic_ref"] = fb._DynamicLeafletReference(
+        selection="all",
+        first_upper=first_upper,
+        first_lower=first_lower,
+        cutoff=cutoff,
+        selection_global_indices=np.arange(2 * n_per_leaflet),
+        margin=2.0,
+    )
     try:
         fb._one_frame(
             0,
             out_dir=str(tmp_path),
             dynamic_select=True,
-            dynamic_leaflets={0: (upper_index, lower_index)},
             until=1,
             Nx=8.0, Ny=8.0,  # lambda_x/lambda_y (nm) -> Nx=Ny=1 for Lx=Ly=100 A
             sqrt_n_atoms=10,
@@ -605,28 +615,28 @@ def test_one_frame_dynamic_select_runs_without_error(tmp_path: Path) -> None:
     assert A_mn.shape[0] == 3  # upper, lower, middle
 
 
-# ---- two-phase dynamic leaflet detection pipeline ----
+# ---- dynamic leaflet detection matched against a fixed reference ----
 
-def test_fetch_dynamic_positions_returns_this_frames_positions_and_box(tmp_path: Path) -> None:
+def test_build_dynamic_leaflet_reference_clusters_the_first_frame() -> None:
     universe, n_per_leaflet = _two_leaflet_universe()
-    fb._worker_state["universe"] = universe
-    try:
-        frame, positions, dimensions = fb._fetch_dynamic_positions(0, dynamic_selection="all")
-    finally:
-        fb._worker_state.clear()
+    ref = fb._build_dynamic_leaflet_reference(universe, 0, "all", min_balance=0.6, margin=2.0)
 
-    assert frame == 0
-    assert positions.shape == (2 * n_per_leaflet, 3)
-    assert np.allclose(dimensions[:3], [100.0, 100.0, 100.0])
+    assert ref.selection == "all"
+    assert len(ref.first_upper) == n_per_leaflet
+    assert len(ref.first_lower) == n_per_leaflet
+    assert set(ref.first_upper).isdisjoint(ref.first_lower)
+    np.testing.assert_array_equal(ref.selection_global_indices, np.arange(2 * n_per_leaflet))
 
 
-def test_track_dynamic_leaflets_follows_a_flip_flopping_atom_across_frames() -> None:
-    # Frame 0: two 3x3 grids (spacing 1 A, densely/redundantly connected so
-    # no single atom is load-bearing for its own group's connectivity), one
-    # at z=70 (upper, atoms 0-8), one at z=30 (lower, atoms 9-17).
+def test_dynamic_leaflet_split_reassigns_a_flip_flopped_atom_against_a_fixed_reference() -> None:
+    # Frame 0 (the fixed reference): two 3x3 grids (spacing 1 A,
+    # densely/redundantly connected so no single atom is load-bearing for
+    # its own group's connectivity), one at z=70 (upper, atoms 0-8), one at
+    # z=30 (lower, atoms 9-17).
     # Frame 1: atom 0 (an upper corner) moves down to join the lower grid -
-    # a flip-flop. Tracking should move it to lower without disturbing
-    # anyone else's assignment.
+    # a flip-flop. Its own split, matched against the frame-0 reference
+    # (not against any intermediate frame), must still move it to lower
+    # without disturbing anyone else's assignment.
     grid = np.array([[i, j] for i in range(3) for j in range(3)], dtype=float)
     upper_xy = grid + [50.0, 50.0]
     lower_xy = grid + [50.0, 50.0]
@@ -640,15 +650,15 @@ def test_track_dynamic_leaflets_follows_a_flip_flopping_atom_across_frames() -> 
     frame1_positions[0] = [lower_xy[0, 0], lower_xy[0, 1], 30.0]  # atom 0 flip-flops to lower
 
     dimensions = np.array([100.0, 100.0, 100.0, 90.0, 90.0, 90.0])
-    ordered_results = [(0, frame0_positions, dimensions), (1, frame1_positions, dimensions)]
-    selection_global_indices = np.arange(18)  # local == global here
 
-    leaflets = _track_dynamic_leaflets(ordered_results, selection_global_indices, min_balance=0.6)
+    ref_upper, ref_lower, cutoff = fb._bootstrap_dynamic_leaflet_split(
+        frame0_positions, dimensions, min_balance=0.6, margin=2.0
+    )
+    assert sorted(ref_upper) == list(range(9))
+    assert sorted(ref_lower) == list(range(9, 18))
 
-    upper0, lower0 = leaflets[0]
-    assert sorted(upper0) == list(range(9))
-    assert sorted(lower0) == list(range(9, 18))
-
-    upper1, lower1 = leaflets[1]
+    upper1, lower1 = fb._dynamic_leaflet_split(
+        frame1_positions, dimensions, ref_upper, ref_lower, cutoff, margin=2.0
+    )
     assert sorted(upper1) == list(range(1, 9))  # atom 0 dropped out
     assert sorted(lower1) == [0] + list(range(9, 18))  # and rejoined the other leaflet

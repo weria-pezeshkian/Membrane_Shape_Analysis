@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import TypedDict, cast
@@ -299,6 +300,26 @@ def _fourier_by_layer(
     return fourier, q
 
 
+@dataclass
+class _DynamicLeafletReference:
+    """The fixed split every dynamic-selection frame is matched against.
+
+    Built once, from the run's first selected frame
+    (`_build_dynamic_leaflet_reference`), before any worker starts fitting
+    frames. Every later frame reproduces its own (upper, lower) split
+    against this same reference independently (`_dynamic_leaflet_groups`) -
+    never against another frame - so frames carry no dependency on each
+    other and can be dispatched to the worker pool in any order.
+    """
+
+    selection: str
+    first_upper: set[int]
+    first_lower: set[int]
+    cutoff: float
+    selection_global_indices: np.ndarray
+    margin: float
+
+
 # Per-worker-process state, populated once by _init_worker at pool startup
 # (not once per frame) so ProcessPoolExecutor never has to pickle the
 # Universe/AtomGroups/tracker into _one_frame's arguments.
@@ -310,6 +331,7 @@ def _init_worker(
     trajectory: str,
     ndx_groups: dict[str, list[int]] | None,
     dynamic_select: bool,
+    dynamic_ref: _DynamicLeafletReference | None,
     center: str | None,
     rotation_direction: str | None,
     rotate: bool,
@@ -340,73 +362,85 @@ def _init_worker(
     _worker_state["layer_group"] = layer_group
     _worker_state["layer_group_2"] = layer_group_2
     _worker_state["rotation_and_center"] = ract
+    _worker_state["dynamic_ref"] = dynamic_ref
 
 
-def _fetch_dynamic_positions(
-    frame: int, *, dynamic_selection: str
-) -> tuple[int, np.ndarray, np.ndarray]:
-    """Fetch one frame's dynamic-selection positions and box dimensions.
+def _bootstrap_dynamic_leaflet_split(
+    positions: np.ndarray, dimensions: np.ndarray, min_balance: float, margin: float,
+) -> tuple[set[int], set[int], float]:
+    """Fresh (upper, lower) split of `positions`, clustered from scratch, plus the cutoff distance used.
 
-    Independent per frame, safe to run across workers in any order.
-    `calc_fourier` calls this via `ProcessPoolExecutor.map()`, which
-    preserves input order regardless of completion order, since the
-    sequential tracking pass that consumes the results
-    (`_track_dynamic_leaflets`) needs trajectory order.
+    Only ever called once per run, on the first selected frame -
+    `_build_dynamic_leaflet_reference` turns the result into the fixed
+    reference every later frame is matched against (`_dynamic_leaflet_split`).
     """
-    universe = cast(mda.Universe, _worker_state["universe"])
-    universe.trajectory[frame]
-    selection = universe.select_atoms(dynamic_selection)
-    return frame, selection.positions.copy(), np.array(universe.dimensions, dtype=np.float64)
+    matrix = distance_array(positions, positions, box=dimensions)
+    (c0, c1), cutoff = get_components(matrix, min_balance=min_balance)
+    upper, lower = _label_by_z(c0, c1, positions)
+    upper, lower = apply_margin_filter(positions, dimensions, upper, lower, margin=margin)
+    return upper, lower, cutoff
 
 
-def _track_dynamic_leaflets(
-    ordered_results: list[tuple[int, np.ndarray, np.ndarray]],
-    selection_global_indices: np.ndarray,
-    min_balance: float,
-    margin: float = 2.0,
-) -> dict[int, tuple[list[int], list[int]]]:
-    """Sequential leaflet-tracking pass over trajectory-ordered per-frame positions.
+def _dynamic_leaflet_split(
+    positions: np.ndarray, dimensions: np.ndarray,
+    ref_upper: set[int], ref_lower: set[int], cutoff: float, margin: float,
+) -> tuple[set[int], set[int]]:
+    """This frame's own (upper, lower) split, re-derived entirely from its own geometry.
 
-    The first frame is clustered fresh via `get_components`; every later
-    frame is incrementally updated via `track_components`, using the
-    previous frame's (upper, lower) and the cutoff persisted from that
-    first clustering, so leaflet identity stays stable across the
-    trajectory instead of being independently re-derived (and possibly
-    reshuffled) every frame.
-
-    `apply_margin_filter` is then applied to every frame's result -
-    XY-connectivity alone can miss an atom that is well-connected sideways
-    to its own leaflet but structurally anomalous in 3D.
-
-    `positions`/`track_components`/`get_components`/`apply_margin_filter`
-    all use local indices (0..len(selection)-1); `selection_global_indices`
-    maps a local index to its 0-based global atom index (assumes the
-    selection's atom membership is the same every frame).
-
-    Returns {frame: (upper_global_indices, lower_global_indices)}.
+    `track_components` only uses `ref_upper`/`ref_lower` as a candidate
+    membership seed - every atom's actual group membership is re-tested
+    against this frame's own distances (still connected to the rest of its
+    seed group; otherwise closer to which group), not against the
+    reference's. That makes the result independent of which frame the
+    reference came from, as long as leaflet flip-flopping is rare relative
+    to how long ago the reference frame was - see `_DynamicLeafletReference`.
     """
-    out: dict[int, tuple[list[int], list[int]]] = {}
-    prev_upper = prev_lower = None
-    cutoff = None
+    upper, lower = track_components(positions, dimensions, ref_upper, ref_lower, cutoff)
+    return apply_margin_filter(positions, dimensions, upper, lower, margin=margin)
 
-    for frame, positions, dimensions in ordered_results:
-        if prev_upper is None:
-            matrix = distance_array(positions, positions, box=dimensions)
-            (c0, c1), cutoff = get_components(matrix, min_balance=min_balance)
-            upper, lower = _label_by_z(c0, c1, positions)
-        else:
-            assert prev_lower is not None and cutoff is not None
-            upper, lower = track_components(positions, dimensions, prev_upper, prev_lower, cutoff)
 
-        upper, lower = apply_margin_filter(positions, dimensions, upper, lower, margin=margin)
+def _build_dynamic_leaflet_reference(
+    u: mda.Universe, frame0: int, dynamic_selection: str, min_balance: float, margin: float,
+) -> _DynamicLeafletReference:
+    """Build the fixed reference `_dynamic_leaflet_groups` matches every frame against.
 
-        out[frame] = (
-            [int(selection_global_indices[i]) for i in sorted(upper)],
-            [int(selection_global_indices[i]) for i in sorted(lower)],
-        )
-        prev_upper, prev_lower = upper, lower
+    Seeks `u` to `frame0` (the run's first selected frame) and clusters it
+    fresh - a single-frame operation, done once in the main process before
+    the worker pool starts, not a pass over the whole trajectory.
+    """
+    u.trajectory[frame0]
+    selection = u.select_atoms(dynamic_selection)
+    dimensions = np.array(u.dimensions, dtype=np.float64)
+    first_upper, first_lower, cutoff = _bootstrap_dynamic_leaflet_split(
+        selection.positions.copy(), dimensions, min_balance, margin
+    )
+    return _DynamicLeafletReference(
+        selection=dynamic_selection,
+        first_upper=first_upper,
+        first_lower=first_lower,
+        cutoff=cutoff,
+        selection_global_indices=selection.atoms.indices,
+        margin=margin,
+    )
 
-    return out
+
+def _dynamic_leaflet_groups(
+    universe: mda.Universe, dimensions: np.ndarray,
+) -> tuple[mda.core.groups.AtomGroup, mda.core.groups.AtomGroup]:
+    """This frame's own (upper, lower) leaflet AtomGroups, matched against `_worker_state`'s fixed reference.
+
+    `universe`'s trajectory must already be positioned at the frame being
+    processed. Independent of every other frame - safe to call from any
+    worker, for any frame, in any order.
+    """
+    ref = cast(_DynamicLeafletReference, _worker_state["dynamic_ref"])
+    selection = universe.select_atoms(ref.selection)
+    upper_local, lower_local = _dynamic_leaflet_split(
+        selection.positions, dimensions, ref.first_upper, ref.first_lower, ref.cutoff, ref.margin
+    )
+    upper_index = [int(ref.selection_global_indices[i]) for i in sorted(upper_local)]
+    lower_index = [int(ref.selection_global_indices[i]) for i in sorted(lower_local)]
+    return universe.atoms[upper_index], universe.atoms[lower_index]
 
 
 def _remove_tmd_hole_mask(
@@ -519,7 +553,6 @@ def _one_frame(
     *,
     out_dir: str,
     dynamic_select: bool,
-    dynamic_leaflets: dict[int, tuple[list[int], list[int]]] | None,
     until: int,
     Nx: float | None = 3,
     Ny: float | None = 3,
@@ -552,13 +585,7 @@ def _one_frame(
     X, Y = np.meshgrid(x, y)
 
     if dynamic_select:
-        # Leaflets for this frame were already determined by the sequential
-        # _track_dynamic_leaflets pass in calc_fourier, as 0-based global
-        # atom indices.
-        assert dynamic_leaflets is not None
-        upper_index, lower_index = dynamic_leaflets[frame]
-        layer_group = universe.atoms[upper_index]
-        layer_group_2 = universe.atoms[lower_index]
+        layer_group, layer_group_2 = _dynamic_leaflet_groups(universe, dimensions)
 
     Nx, Ny = get_fourier_modes(dimensions[:3], lambda_x=Nx, lambda_y=Ny, diagnostics=diagnostics)
 
@@ -637,32 +664,28 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
 
     frames = list(range(args.From, Until, args.Step))
 
+    dynamic_ref = None
+    if dynamic_select:
+        # A single-frame bootstrap, not a whole-trajectory pass: every other
+        # frame's own leaflet split is matched against this one independently
+        # inside its own worker (_dynamic_leaflet_groups), so dispatching
+        # frame fits doesn't wait on anything but this.
+        assert dynamic_selection is not None
+        dynamic_ref = _build_dynamic_leaflet_reference(
+            u, frames[0], dynamic_selection, args.min_balance, args.margin
+        )
+
     with ProcessPoolExecutor(
         max_workers=args.Workers,
         initializer=_init_worker,
         initargs=(
-            args.structure, args.trajectory, ndx_groups, dynamic_select,
+            args.structure, args.trajectory, ndx_groups, dynamic_select, dynamic_ref,
             args.center, args.rotation_direction, args.rotate,
         ),
     ) as ex:
-        dynamic_leaflets = None
-        if dynamic_select:
-            # Parallel phase (order preserved by map()): fetch every frame's
-            # selection positions independently. Then a cheap sequential
-            # pass in this process turns those into a stable per-frame
-            # leaflet assignment - see _track_dynamic_leaflets.
-            assert dynamic_selection is not None
-            fetch = partial(_fetch_dynamic_positions, dynamic_selection=dynamic_selection)
-            ordered_results = list(ex.map(fetch, frames))
-            selection_global_indices = u.select_atoms(dynamic_selection).atoms.indices
-            dynamic_leaflets = _track_dynamic_leaflets(
-                ordered_results, selection_global_indices, args.min_balance, margin=args.margin
-            )
-
         fn = partial(_one_frame,
                     out_dir=args.out,
                     dynamic_select=dynamic_select,
-                    dynamic_leaflets=dynamic_leaflets,
                     until=Until,
                     Nx=args.lambda_x,
                     Ny=args.lambda_y,

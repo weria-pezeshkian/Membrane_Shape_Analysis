@@ -131,7 +131,7 @@ def test_one_diffusion_frame_assigns_leaflet_and_saves_surface(tmp_path: Path) -
     try:
         result = _one_diffusion_frame(
             0, out_dir=str(tmp_path), blocks=blocks, headgroup_override={},
-            dynamic_select=False, dynamic_leaflets=None, until=1,
+            dynamic_select=False, until=1,
             Nx=5.0, Ny=5.0, regularize=False, remove_tmd=False, gridsize=20,
         )
     finally:
@@ -159,7 +159,7 @@ def test_one_diffusion_frame_with_remove_tmd_writes_boolean_hole_column(tmp_path
     try:
         _one_diffusion_frame(
             0, out_dir=str(tmp_path), blocks=blocks, headgroup_override={},
-            dynamic_select=False, dynamic_leaflets=None, until=1,
+            dynamic_select=False, until=1,
             Nx=5.0, Ny=5.0, regularize=False, remove_tmd="resname POPC", gridsize=20,
         )
     finally:

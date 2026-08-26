@@ -234,7 +234,6 @@ def test_one_lipid_frame_flat_surface_area_per_lipid(tmp_path: Path) -> None:
             out_dir=str(tmp_path),
             species=["POPC", "POPE", "CHOL"],
             dynamic_select=False,
-            dynamic_leaflets=None,
             until=1,
             Nx=5.0, Ny=5.0,
             sqrt_n_atoms=40,
@@ -310,7 +309,7 @@ def test_one_lipid_frame_rotate_leaves_area_per_lipid_unchanged_but_rotates_frac
 
     common = dict(
         out_dir=str(tmp_path), species=["POPC", "POPE", "CHOL"], dynamic_select=False,
-        dynamic_leaflets=None, until=2, Nx=5.0, Ny=5.0, sqrt_n_atoms=40, regularize=False,
+        until=2, Nx=5.0, Ny=5.0, sqrt_n_atoms=40, regularize=False,
     )
 
     # Baseline: a real tracker, but rotate=False - isolates --rotate's own
@@ -483,7 +482,7 @@ def test_one_lipid_frame_curvature_preference_positive_for_outward_bulge_on_eith
     try:
         lipids_module._one_lipid_frame(
             0, out_dir=str(tmp_path), species=["POPC", "POPS", "POPE"], dynamic_select=False,
-            dynamic_leaflets=None, until=1, Nx=5.0, Ny=5.0, sqrt_n_atoms=40, regularize=False,
+            until=1, Nx=5.0, Ny=5.0, sqrt_n_atoms=40, regularize=False,
         )
     finally:
         fb._worker_state.clear()

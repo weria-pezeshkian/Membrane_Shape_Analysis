@@ -21,12 +21,12 @@ from ..core import argument_parser as arg_helper
 from ..core.curvature import shape_operator_curvatures
 from ..core.fourier_build import (
     Rotation_and_Center_tracker,
-    _fetch_dynamic_positions,
+    _build_dynamic_leaflet_reference,
+    _dynamic_leaflet_groups,
     _fourier_by_layer,
     _init_worker,
     _read_ndx,
     _remove_tmd_hole_mask,
-    _track_dynamic_leaflets,
     _worker_state,
 )
 from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
@@ -146,7 +146,6 @@ def _one_lipid_frame(
     out_dir: str,
     species: list[str],
     dynamic_select: bool,
-    dynamic_leaflets: dict[int, tuple[list[int], list[int]]] | None,
     until: int,
     Nx: float | None = 3,
     Ny: float | None = 3,
@@ -212,10 +211,7 @@ def _one_lipid_frame(
     )
 
     if dynamic_select:
-        assert dynamic_leaflets is not None
-        upper_index, lower_index = dynamic_leaflets[frame]
-        layer_group = universe.atoms[upper_index]
-        layer_group_2 = universe.atoms[lower_index]
+        layer_group, layer_group_2 = _dynamic_leaflet_groups(universe, dimensions)
 
     theta = 0.0
     if rotation_and_center is not None:
@@ -509,29 +505,25 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
     # the same way 'map plot' does for rotated curvature/thickness output.
     np.save(Path(args.out, "rotated.npy"), np.array(bool(args.rotate)))
 
+    dynamic_ref = None
+    if dynamic_select:
+        assert dynamic_selection is not None
+        dynamic_ref = _build_dynamic_leaflet_reference(
+            u, frames[0], dynamic_selection, args.min_balance, args.margin
+        )
+
     with ProcessPoolExecutor(
         max_workers=args.Workers,
         initializer=_init_worker,
         initargs=(
-            args.structure, args.trajectory, ndx_groups, dynamic_select,
+            args.structure, args.trajectory, ndx_groups, dynamic_select, dynamic_ref,
             args.center, args.rotation_direction, args.rotate,
         ),
     ) as ex:
-        dynamic_leaflets = None
-        if dynamic_select:
-            assert dynamic_selection is not None
-            fetch = partial(_fetch_dynamic_positions, dynamic_selection=dynamic_selection)
-            ordered_results = list(ex.map(fetch, frames))
-            selection_global_indices = u.select_atoms(dynamic_selection).atoms.indices
-            dynamic_leaflets = _track_dynamic_leaflets(
-                ordered_results, selection_global_indices, args.min_balance, margin=args.margin
-            )
-
         fn = partial(_one_lipid_frame,
                     out_dir=args.out,
                     species=species,
                     dynamic_select=dynamic_select,
-                    dynamic_leaflets=dynamic_leaflets,
                     until=Until,
                     Nx=args.lambda_x,
                     Ny=args.lambda_y,
