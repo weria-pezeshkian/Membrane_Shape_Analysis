@@ -32,7 +32,7 @@ plt.rcParams["font.family"] = "serif"
 
 def normalize(v: np.ndarray) -> np.ndarray:
     norm = np.linalg.norm(v, axis=-1, keepdims=True)
-    return np.divide(v, norm, where=norm > 0)
+    return np.divide(v, norm, out=np.zeros_like(v), where=norm > 0)
 
 
 def get_XY(box_size: np.ndarray, gridsize: int) -> tuple[np.ndarray, np.ndarray]:

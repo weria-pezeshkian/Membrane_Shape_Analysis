@@ -194,7 +194,7 @@ def test_headgroup_centers_finds_pendant_head_and_ring_not_diluted_by_tails() ->
     f_upper, f_lower = _flat_leaflet_surfaces(100.0, 100.0, 70.0, 30.0)
     # NC3(pendant head) - PO4 - GL1 - GL2 (ring: PO4-GL1, PO4-GL2, GL1-GL2)
     # - two tails hanging off GL1/GL2 - mirrors MARTINI 3's real POPC bond
-    # topology (verified against the actual .tpr earlier in this session).
+    # topology.
     positions = np.array([
         [40.0, 50.0, 70.0],  # NC3
         [41.0, 50.0, 69.0],  # PO4
@@ -251,11 +251,8 @@ def test_headgroup_centers_gives_multiple_hub_points_for_a_double_headgroup_lipi
     f_upper, f_lower = _flat_leaflet_surfaces(100.0, 100.0, 70.0, 30.0)
     # Mirrors cardiolipin's real bond topology: two phosphate/glycerol
     # rings (one near x=30, one near x=45), each with two tails, joined by
-    # a bridging glycerol (GLC) - verified against the actual .tpr earlier
-    # in this session. The point of this test: the two rings must NOT be
-    # averaged into one midpoint between them (that structurally caps a
-    # double-headgroup lipid's Voronoi footprint at whatever fits around a
-    # single point) - each should compete separately.
+    # a bridging glycerol (GLC). Each ring stays its own separate hub,
+    # competing independently in the Voronoi step, at its own footprint.
     positions = np.array([
         [35.0, 50.0, 69.0],  # GLC (bridge)
         [29.0, 50.0, 70.0],  # P1

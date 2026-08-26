@@ -52,6 +52,12 @@ select = ["E", "F", "W", "I", "UP", "B"]
 ignore_missing_imports = true
 warn_unused_configs = true
 
+[tool.pytest.ini_options]
+# Without this, bare `pytest` from the repo root recursively collects from
+# any vendored environment under the working tree (e.g. a conda env in
+# APLTests/), not just this project's own tests.
+testpaths = ["tests"]
+
 [project.urls]
 Homepage = "https://weria-pezeshkian.github.io/"
 Repository = "https://github.com/weria-pezeshkian/Membrane_Shape_Analysis"
