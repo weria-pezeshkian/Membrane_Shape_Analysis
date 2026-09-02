@@ -106,10 +106,10 @@ def test_resolve_tracked_points_orders_rows_by_block_and_residue() -> None:
     assert list(tracked["index"]) == [0, 1, 2]
     assert set(tracked["label"]) == {"POPC"}
     assert list(tracked["kind"]) == ["lipids", "lipids", "lipids"]
-    assert list(tracked["resindex"]) == sorted(tracked["resindex"])
+    assert list(tracked["fragindex"]) == sorted(tracked["fragindex"])
 
 
-def test_resolve_tracked_points_select_whole_gives_single_row_with_sentinel_resindex() -> None:
+def test_resolve_tracked_points_select_whole_gives_single_row_with_sentinel_fragindex() -> None:
     u, _, _ = _flat_diffusion_universe(n_lipids_upper=2, n_lipids_lower=1)
     blocks = _track_blocks([], "resname POPC", True, "popc_group")
 
@@ -117,7 +117,7 @@ def test_resolve_tracked_points_select_whole_gives_single_row_with_sentinel_resi
 
     assert len(tracked) == 1
     assert tracked["label"][0] == "popc_group"
-    assert tracked["resindex"][0] == -1
+    assert tracked["fragindex"][0] == -1
 
 
 def test_one_diffusion_frame_assigns_leaflet_and_saves_surface(tmp_path: Path) -> None:
@@ -279,6 +279,7 @@ def test_calc_diffusion_rejects_bond_free_structure(tmp_path: Path) -> None:
     ns.structure = str(struct_path)
     ns.trajectory = str(traj_path)
     ns.index = "resname FITRES"
+    ns.index_file = None
     ns.From = 0
     ns.Until = 1
     ns.Step = 1
@@ -373,7 +374,7 @@ def test_calc_diffusion_recovers_known_diffusion_coefficient(tmp_path: Path) -> 
 
     out_dir = tmp_path / "out"
     diffusion([
-        "-f", str(traj_path), "-s", str(struct_path), "-n", str(ndx_path), "-o", str(out_dir),
+        "-f", str(traj_path), "-s", str(struct_path), "--index-file", str(ndx_path), "-o", str(out_dir),
         "--lipids", "POPC", "--gridsize", "20", "--min-segment-fraction", "0.05",
     ])
 

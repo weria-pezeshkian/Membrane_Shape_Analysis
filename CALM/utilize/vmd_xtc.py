@@ -271,12 +271,22 @@ def get_vmd_visualisation(curvature_dir: str, out_dir: str, sft: SFT) -> None:
     u.atoms.write(avg_gro_path)
 
 
+def _build_vmd_xtc_parser() -> argparse.ArgumentParser:
+    """The 'CALM link vmd_xtc' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
+    parser = argparse.ArgumentParser(description="Export the fitted surface as a GRO + XTC trajectory for VMD")
+    parser.add_argument(
+        "-i", "--input", required=True,
+        help="directory with *_Z_fitted.npy and Amn.npy/qmn.npy/dimensions.npy",
+    )
+    parser.add_argument("-o", "--output", required=True, help="output directory")
+    add_manual(parser, "link_vmd_xtc")
+    return parser
+
+
 def vmd_xtc(args: list[str]) -> None:
     """CLI entry: export a 'CALM analyze full' run's fitted surface as GRO + XTC for VMD."""
-    parser = argparse.ArgumentParser(description="Export the fitted surface as a GRO + XTC trajectory for VMD")
-    parser.add_argument("-i", "--input", help="directory with *_Z_fitted.npy and Amn.npy/qmn.npy/dimensions.npy")
-    parser.add_argument("-o", "--output", help="output directory")
-    add_manual(parser, "link_vmd_xtc")
+    parser = _build_vmd_xtc_parser()
     ns = parser.parse_args(args)
 
     os.makedirs(ns.output, exist_ok=True)

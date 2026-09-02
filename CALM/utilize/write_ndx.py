@@ -83,12 +83,16 @@ def write(
         return ndx, upper_index, lower_index
 
 
-def write_ndx(args: list[str]) -> None:
-    """CLI entry: write a leaflet index file from a trajectory and selection."""
+def _build_write_ndx_parser() -> argparse.ArgumentParser:
+    """The 'CALM link write_ndx' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(description="Write a leaflet index file")
-    parser.add_argument('-f', '--trajectory', type=str, help="trajectory file")
-    parser.add_argument('-s', '--structure', type=str, help="structure file")
-    parser.add_argument('-n', '--selection', type=str, help="MDAnalysis selection to split into leaflets")
+    parser.add_argument('-f', '--trajectory', required=True, type=str, help="trajectory file")
+    parser.add_argument('-s', '--structure', required=True, type=str, help="structure file")
+    parser.add_argument(
+        '-n', '--selection', required=True, type=str,
+        help="MDAnalysis selection to split into leaflets",
+    )
     parser.add_argument(
         '-o', '--out', default="monolayers.ndx", type=str,
         help="output index file (default: monolayers.ndx)",
@@ -103,6 +107,12 @@ def write_ndx(args: list[str]) -> None:
         help="leaflet margin-filter ratio (default: 2.0, see --man)",
     )
     add_manual(parser, "link_write_ndx")
+    return parser
+
+
+def write_ndx(args: list[str]) -> None:
+    """CLI entry: write a leaflet index file from a trajectory and selection."""
+    parser = _build_write_ndx_parser()
 
     ns = parser.parse_args(args)
     logging.basicConfig(level=logging.INFO)

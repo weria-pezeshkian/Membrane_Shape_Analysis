@@ -192,3 +192,48 @@ def test_add_build_arguments_can_omit_rotation_and_center() -> None:
     assert not hasattr(ns, "rotation_direction")
     with pytest.raises(SystemExit):
         parser.parse_args(["-o", "out", "--center", "protein"])
+
+
+def test_validate_index_arguments_errors_when_required_and_neither_given() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out"])
+    with pytest.raises(SystemExit):
+        arg_helper.validate_index_arguments(parser, ns, required=True)
+
+
+def test_validate_index_arguments_allows_neither_when_not_required() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out"])
+    arg_helper.validate_index_arguments(parser, ns, required=False)  # does not raise
+
+
+def test_validate_index_arguments_warns_when_both_given(caplog: pytest.LogCaptureFixture) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out", "-n", "name PO4", "--index-file", "some.ndx"])
+    with caplog.at_level("WARNING", logger="CALM.core.argument_parser"):
+        arg_helper.validate_index_arguments(parser, ns, required=True)
+    assert "using --index-file" in caplog.text
+
+
+def test_resolve_index_source_returns_dynamic_selection_from_index() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out", "-n", "name PO4"])
+    ndx_groups, dynamic_selection = arg_helper.resolve_index_source(ns)
+    assert ndx_groups is None
+    assert dynamic_selection == "name PO4"
+
+
+def test_resolve_index_source_prefers_index_file_over_index(tmp_path: Path) -> None:
+    ndx_path = tmp_path / "index.ndx"
+    ndx_path.write_text("[ Upper ]\n1 2\n[ Lower ]\n3 4\n")
+
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out", "-n", "name PO4", "--index-file", str(ndx_path)])
+    ndx_groups, dynamic_selection = arg_helper.resolve_index_source(ns)
+    assert ndx_groups == {"Upper": [1, 2], "Lower": [3, 4]}
+    assert dynamic_selection is None

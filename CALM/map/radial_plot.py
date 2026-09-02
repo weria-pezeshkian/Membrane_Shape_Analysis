@@ -217,8 +217,9 @@ def draw(
     plt.close(fig)
 
 
-def radial_plot(argv: list[str]) -> None:
-    """CLI entry: render a radial mean-curvature or height profile (upper/lower) from a 'CALM analyze full' output directory."""
+def _build_radial_plot_parser() -> argparse.ArgumentParser:
+    """The 'CALM map radial_plot' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(description="Render a radial mean-curvature or height profile (upper/lower)")
     parser.add_argument(
         '-i', '--numpys_directory', type=str, required=True,
@@ -235,6 +236,12 @@ def radial_plot(argv: list[str]) -> None:
     parser.add_argument('--minimum', type=float, default=None, help="fix the y-axis lower bound")
     parser.add_argument('--maximum', type=float, default=None, help="fix the y-axis upper bound")
     add_manual(parser, "map_radial_plot")
+    return parser
+
+
+def radial_plot(argv: list[str]) -> None:
+    """CLI entry: render a radial mean-curvature or height profile (upper/lower) from a 'CALM analyze full' output directory."""
+    parser = _build_radial_plot_parser()
 
     ns = parser.parse_args(argv)
     minmax = [ns.minimum, ns.maximum] if ns.minimum is not None and ns.maximum is not None else None

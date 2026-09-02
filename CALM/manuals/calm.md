@@ -24,3 +24,10 @@ CALM <module> [args...]
 
 Run `CALM <module> --man` for the commands within each module, and
 `CALM <module> <command> --man` for a specific command's full manual.
+
+## GUI
+
+`CALM-gui` runs a Tkinter interface over these same commands - one tab
+per module, one sub-tab per command, its form generated directly from
+that command's own CLI flags. It runs the real `CALM` command as a
+subprocess; it does not re-implement any argument logic of its own.

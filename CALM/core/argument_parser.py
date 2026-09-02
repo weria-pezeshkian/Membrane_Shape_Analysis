@@ -7,6 +7,24 @@ import shlex
 from datetime import datetime
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
+
+def _read_ndx(filename: str) -> dict[str, list[int]]:
+    # TODO: confirm whether MDAnalysis has a built-in reader for this format
+    # now, and replace this with it if so.
+    groups: dict[str, list[int]] = {}
+    with open(filename) as f:
+        group_name = None
+        for line in f:
+            line = line[:line.find(";")].strip()
+            if line.startswith('['):
+                group_name = line[1:-1].strip()
+                groups[group_name] = []
+            elif group_name is not None:
+                groups[group_name].extend(map(int, line.split()))
+    return groups
+
 
 def default_replay_name(out_dir: str | None) -> str:
     ts = datetime.now().strftime("%Y_%m_%d_%H_%M")
@@ -197,14 +215,22 @@ def add_build_arguments(
     per-frame Fourier coefficient stack (SFT) from a trajectory. Returns
     (required_group, optional_group).
 
-    `require_inputs` marks --trajectory/--structure/--index as
-    argparse-required - true for 'sft' and 'lipids', which always need
-    them. 'full' passes False: they're individually optional there (only
-    argparse-enforced as a whole "give --sft, or all three" requirement,
-    via full.py's own check and its required_group's description), since
-    that condition depends on an argument add_build_arguments doesn't add.
-    Either way they are listed under "Required arguments" - the caller's
-    group title/description says which flavor of "required" applies.
+    `require_inputs` marks --trajectory/--structure as argparse-required -
+    true for 'sft' and 'lipids', which always need them. 'full' passes
+    False: they're individually optional there (only argparse-enforced as
+    a whole "give --sft, or all three" requirement, via full.py's own
+    check and its required_group's description), since that condition
+    depends on an argument add_build_arguments doesn't add. Either way
+    they are listed under "Required arguments" - the caller's group
+    title/description says which flavor of "required" applies.
+
+    -n/--index and --index-file are never argparse-required directly
+    (regardless of `require_inputs`), since exactly one of them - not
+    always the same one - is what's actually needed: a caller validates
+    that either/or requirement itself via `validate_index_arguments`
+    (`required=True` for 'sft'/'lipids'/'diffusion', which always need one
+    of them; `required=False` for 'full', which folds the same check into
+    its own "--sft, or all three" validation instead).
 
     `include_rotation` adds --rotate/--rotation-direction; `include_center`
     adds -C/--center. 'CALM analyze diffusion' omits both.
@@ -226,8 +252,15 @@ def add_build_arguments(
         '-s', '--structure', type=str, default=None, required=require_inputs, help="structure file (.tpr)"
     )
     required.add_argument(
-        '-n', '--index', type=str, required=require_inputs,
-        help="index file (Upper/Lower groups) or dynamic selection string, e.g. 'name PO4'",
+        '-n', '--index', type=str, default=None,
+        help="MDAnalysis dynamic selection string for per-frame leaflet detection, e.g. 'name PO4' "
+             "(ignored, with a warning, if --index-file is also given)",
+    )
+    required.add_argument(
+        '--index-file', type=str, default=None,
+        help="GROMACS-style index (.ndx) file with Upper/Lower groups (e.g. as written by "
+             "'CALM link write_ndx'), for static leaflet membership instead of per-frame detection. "
+             "Takes precedence over -n/--index if both are given. One of -n/--index-file is required.",
     )
     required.add_argument('-o', '--out', type=str, required=True, help="output directory")
 
@@ -283,6 +316,44 @@ def add_build_arguments(
     )
 
     return required, optional
+
+
+def validate_index_arguments(parser: argparse.ArgumentParser, ns: argparse.Namespace, required: bool) -> None:
+    """-n/--index and --index-file consistency check, shared by every subcommand `add_build_arguments` serves.
+
+    `required=True` errors out if neither was given at all - 'sft',
+    'lipids', and 'diffusion' always need one of them. 'full' passes
+    `required=False` since it folds the same requirement into its own
+    "--sft, or all three of -f/-s/-n" check instead, but still gets the
+    "both given" warning below unconditionally.
+
+    If both are given, --index-file takes precedence (a static ndx file is
+    unambiguous; treating -n as dynamic-selection on top of it would be
+    meaningless) - -n is not cleared here, just ignored downstream by
+    `resolve_index_source`, and a warning names which one won.
+    """
+    if required and ns.index is None and ns.index_file is None:
+        parser.error("One of -n/--index or --index-file is required.")
+    if ns.index is not None and ns.index_file is not None:
+        logger.warning(
+            f"both -n/--index ({ns.index!r}) and --index-file ({ns.index_file!r}) were given - "
+            "using --index-file; -n/--index is ignored."
+        )
+
+
+def resolve_index_source(ns: argparse.Namespace) -> tuple[dict[str, list[int]] | None, str | None]:
+    """(ndx_groups, dynamic_selection): exactly one is not None, from --index-file/-n's own precedence.
+
+    Replaces the old `try: _read_ndx(ndx) except FileNotFoundError:`
+    sniffing (ambiguous - a typo'd --index-file path and a genuine dynamic
+    selection string were indistinguishable by that alone) with an
+    explicit, unambiguous choice: --index-file, when given, is always
+    read as an ndx file - a missing/unreadable file is a real error, not
+    a silent fallback to treating it as a selection string instead.
+    """
+    if ns.index_file is not None:
+        return _read_ndx(ns.index_file), None
+    return None, ns.index
 
 
 def validate_remove_tmd_requires_center(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> None:

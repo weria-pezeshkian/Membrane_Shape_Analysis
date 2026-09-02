@@ -27,26 +27,34 @@ def build_sft(args: argparse.Namespace, universe: mda.Universe) -> SFT:
     return built
 
 
-def sft(args: list[str]) -> None:
-    """CLI entry: build and save the SFT (A_mn/q_mn/dimensions) from a
-    trajectory. This is the starting point for 'CALM analyze full' and,
-    eventually, 'CALM calibrate'."""
+def _build_sft_parser() -> argparse.ArgumentParser:
+    """The 'CALM analyze sft' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(
         description="Build and save the per-frame Fourier coefficient stack from a trajectory.",
     )
     arg_helper.add_build_arguments(parser)
     add_manual(parser, "analyze_sft")
+    return parser
+
+
+def sft(args: list[str]) -> None:
+    """CLI entry: build and save the SFT (A_mn/q_mn/dimensions) from a
+    trajectory. This is the starting point for 'CALM analyze full' and,
+    eventually, 'CALM calibrate'."""
+    parser = _build_sft_parser()
 
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
     pre_ns, remaining = pre.parse_known_args(args)
 
     # Validation runs on the fully-resolved args (replay file's tokens, if
-    # any, merged with the direct CLI) - required= on -f/-s/-n means a
-    # replay-only invocation (no -f/-s/-n given directly) must not be
+    # any, merged with the direct CLI) - required= on -f/-s means a
+    # replay-only invocation (no -f/-s given directly) must not be
     # validated before the replay file's own values are merged in.
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
     arg_helper.validate_rotation_args(parser, ns)
+    arg_helper.validate_index_arguments(parser, ns, required=True)
 
     os.makedirs(ns.out, exist_ok=True)
 

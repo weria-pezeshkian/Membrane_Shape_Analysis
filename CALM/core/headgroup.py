@@ -12,6 +12,22 @@ from ..core.fourier_core import Fourier_Series_Function
 logger = logging.getLogger(__name__)
 
 
+def _grouped_atoms(atomgroup: mda.core.groups.AtomGroup, compound: str) -> list[mda.core.groups.AtomGroup]:
+    """Split `atomgroup` into one sub-AtomGroup per residue or per bonded fragment, in a stable order.
+
+    `compound="residues"` (the default `_headgroup_centers`/`_named_headgroup_centers` use) gives
+    each residue's own full atom membership - the natural per-molecule unit when a species' resname
+    selects exactly one residue per real molecule. `compound="fragments"` instead groups by bonded
+    connectivity, restricted to `atomgroup`'s own atoms (the same unit `_selection_centers` and
+    `_extract_whole_continuous_positions` already use in `analyze diffusion`) - the more robust choice
+    when a molecule's residue boundaries can't be relied on to match its physical, bonded extent.
+    """
+    if compound == "fragments":
+        fragindices = atomgroup.fragindices
+        return [atomgroup[fragindices == fi] for fi in np.unique(fragindices)]
+    return [res.atoms for res in atomgroup.residues]
+
+
 def _parse_lipids_argument(tokens: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     """(species, override) from '--lipids' tokens.
 
@@ -83,28 +99,29 @@ def _validate_species_exist(universe: mda.Universe, species: list[str]) -> None:
 
 
 def _named_headgroup_centers(
-    atomgroup: mda.core.groups.AtomGroup, atom_names: list[str]
+    atomgroup: mda.core.groups.AtomGroup, atom_names: list[str], compound: str = "residues"
 ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
-    """(xy_avg, z_avg, hub_xy) per residue in `atomgroup`, using only `atom_names` directly - no bond graph.
+    """(xy_avg, z_avg, hub_xy) per residue or fragment in `atomgroup`, using only `atom_names` directly - no bond graph.
 
     Mirrors `_headgroup_centers`' return contract exactly (one row per
-    residue for `xy_avg`/`z_avg`; `hub_xy[i]` one point per named atom found
-    in that residue - e.g. two points for a cardiolipin-like species given
+    group for `xy_avg`/`z_avg`; `hub_xy[i]` one point per named atom found
+    in that group - e.g. two points for a cardiolipin-like species given
     two phosphate names), so callers don't need to know whether a species'
     headgroup position came from an explicit name-based override or the
-    structural bond-graph classification.
+    structural bond-graph classification. `compound` picks the grouping
+    unit - see `_grouped_atoms`.
     """
-    residues = atomgroup.residues
-    if len(residues) == 0:
+    groups = _grouped_atoms(atomgroup, compound)
+    if len(groups) == 0:
         return np.empty((0, 2)), np.empty((0,)), []
 
-    xy_avg = np.zeros((len(residues), 2))
-    z_avg = np.zeros(len(residues))
+    xy_avg = np.zeros((len(groups), 2))
+    z_avg = np.zeros(len(groups))
     hub_xy: list[np.ndarray] = []
 
     name_selection = " ".join(atom_names)
-    for i, res in enumerate(residues):
-        pos = res.atoms.select_atoms(f"name {name_selection}").positions
+    for i, atoms in enumerate(groups):
+        pos = atoms.select_atoms(f"name {name_selection}").positions
         xy_avg[i] = pos[:, :2].mean(axis=0)
         z_avg[i] = pos[:, 2].mean()
         hub_xy.append(pos[:, :2])
@@ -257,9 +274,9 @@ def _headgroup_atoms_from_graph(graph: "nx.Graph", d_min: np.ndarray) -> list[se
 
 def _headgroup_centers(
     atomgroup: mda.core.groups.AtomGroup, fourier_upper: Fourier_Series_Function, fourier_lower: Fourier_Series_Function,
-    min_mass: float = 3.0,
+    min_mass: float = 3.0, compound: str = "residues",
 ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
-    """(xy_avg, z_avg, hub_xy) per residue in `atomgroup`: a forcefield-agnostic headgroup position, found from bonds.
+    """(xy_avg, z_avg, hub_xy) per group in `atomgroup`: a forcefield-agnostic headgroup position, found from bonds.
 
     A lipid's headgroup is identified structurally rather than by name or
     by any single atom's own distance to the interface. Atoms lighter than
@@ -268,27 +285,27 @@ def _headgroup_centers(
     before it is built, so an all-atom force field's explicit hydrogens
     can't manufacture spurious branch points the way they would if degree
     were counted directly. `_headgroup_atoms_from_graph` then does the
-    structural classification and hub grouping per residue.
+    structural classification and hub grouping per group. `compound` picks
+    the grouping unit - see `_grouped_atoms`.
 
-    `xy_avg`/`z_avg` are each residue's own single average position across
+    `xy_avg`/`z_avg` are each group's own single average position across
     every kept headgroup atom, regardless of how many hubs it has - used
-    for leaflet assignment, where one coarse position per residue is
-    enough. `hub_xy[i]` is that same residue's kept atoms grouped by hub
+    for leaflet assignment, where one coarse position per group is
+    enough. `hub_xy[i]` is that same group's kept atoms grouped by hub
     instead: one row per structurally distinct headgroup junction, so a
     multi-headgroup lipid (cardiolipin) contributes multiple competing
     points to the Voronoi tessellation rather than being collapsed to one
     averaged midpoint between them.
     """
-    residues = atomgroup.residues
-    if len(residues) == 0:
+    groups = _grouped_atoms(atomgroup, compound)
+    if len(groups) == 0:
         return np.empty((0, 2)), np.empty((0,)), []
 
-    xy_avg = np.zeros((len(residues), 2))
-    z_avg = np.zeros(len(residues))
+    xy_avg = np.zeros((len(groups), 2))
+    z_avg = np.zeros(len(groups))
     hub_xy: list[np.ndarray] = []
 
-    for i, res in enumerate(residues):
-        atoms = res.atoms
+    for i, atoms in enumerate(groups):
         pos = atoms.positions
         heavy_mask = atoms.masses >= min_mass
         if not heavy_mask.any():

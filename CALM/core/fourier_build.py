@@ -16,6 +16,7 @@ from MDAnalysis.lib.distances import distance_array
 from scipy import ndimage
 from scipy.spatial import ConvexHull, cKDTree
 
+from ..core import argument_parser as arg_helper
 from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
 from ..core.fourier_fit import fit_coefficients
 from ..core.leaflet import _label_by_z, apply_margin_filter, get_components, track_components
@@ -171,22 +172,6 @@ class Rotation_and_Center_tracker:
             self.current_vector[0] * self.base_rot_vector[0]
             + self.current_vector[1] * self.base_rot_vector[1],
         )
-
-
-def _read_ndx(filename: str) -> dict[str, list[int]]:
-    # TODO: confirm whether MDAnalysis has a built-in reader for this format
-    # now, and replace this with it if so.
-    groups: dict[str, list[int]] = {}
-    with open(filename) as f:
-        group_name = None
-        for line in f:
-            line = line[:line.find(";")].strip()
-            if line.startswith('['):
-                group_name = line[1:-1].strip()
-                groups[group_name] = []
-            elif group_name is not None:
-                groups[group_name].extend(map(int, line.split()))
-    return groups
 
 
 def _rotate_q(q: np.ndarray, angle: float) -> np.ndarray:
@@ -642,25 +627,16 @@ def _one_frame(
 def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
     """Fit every selected frame's Fourier surfaces in parallel and save raw_sft output to args.out."""
     Until = args.Until
-    ndx = args.index
 
     if Until is None:
         Until = len(u.trajectory)
     else:
         Until = int(Until)
-    if ndx is None:
+
+    ndx_groups, dynamic_selection = arg_helper.resolve_index_source(args)
+    if ndx_groups is None and dynamic_selection is None:
         sys.exit("An index selection or file has to be supplied. Exiting.")
-    try:
-        ndx_groups = _read_ndx(ndx)
-        dynamic_select = False
-        dynamic_selection = None
-    except FileNotFoundError:
-        logger.info(
-            "No ndx file found at the given --index path; treating it as a dynamic MDAnalysis selection instead."
-        )
-        dynamic_select = True
-        dynamic_selection = ndx
-        ndx_groups = None
+    dynamic_select = ndx_groups is None
 
     frames = list(range(args.From, Until, args.Step))
 

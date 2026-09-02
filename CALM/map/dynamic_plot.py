@@ -284,9 +284,9 @@ def draw_dynamic(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def dynamic_plot(argv: list[str]) -> None:
-    """CLI entry: render a rolling-window-averaged curvature/thickness video
-    from a 'CALM analyze full' output directory."""
+def _build_dynamic_plot_parser() -> argparse.ArgumentParser:
+    """The 'CALM map dynamic_plot' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(description="Render a rolling-window-averaged curvature/thickness video")
     parser.add_argument(
         '-i', '--numpys_directory', type=str, required=True,
@@ -321,6 +321,13 @@ def dynamic_plot(argv: list[str]) -> None:
              "the scale for the whole video (default: 0, the plain min/max)",
     )
     add_manual(parser, "map_dynamic_plot")
+    return parser
+
+
+def dynamic_plot(argv: list[str]) -> None:
+    """CLI entry: render a rolling-window-averaged curvature/thickness video
+    from a 'CALM analyze full' output directory."""
+    parser = _build_dynamic_plot_parser()
 
     ns = parser.parse_args(argv)
     minmax = [ns.minimum, ns.maximum] if ns.minimum is not None and ns.maximum is not None else None

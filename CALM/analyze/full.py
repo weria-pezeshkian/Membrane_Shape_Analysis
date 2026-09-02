@@ -26,25 +26,19 @@ METHODS = (
 )
 
 
-def full(args: list[str]) -> None:
-    """CLI entry: run the full geometric analysis pipeline (thickness,
-    curvature, ...) that 'CALM map' can plot.
-
-    Either builds the SFT from a trajectory itself (same as 'CALM analyze
-    sft'), or - if --sft is given - loads a previously built one and skips
-    straight to analysis, in which case --trajectory/--structure aren't
-    needed.
-    """
+def _build_full_parser() -> argparse.ArgumentParser:
+    """The 'CALM analyze full' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(
         description="Run the full geometric analysis pipeline (thickness, curvature).",
     )
     required = parser.add_argument_group(
         "Required arguments",
-        "Give either --sft, or all three of -f/--trajectory, -s/--structure, and -n/--index.",
+        "Give either --sft, or all three of -f/--trajectory, -s/--structure, and one of -n/--index or --index-file.",
     )
     required.add_argument(
         "--sft", default=None, type=str,
-        help="reuse a previously built fit instead of --trajectory/--structure/--index (see --man)",
+        help="reuse a previously built fit instead of --trajectory/--structure/--index[-file] (see --man)",
     )
     arg_helper.add_build_arguments(parser, require_inputs=False, required_group=required)
     parser.add_argument(
@@ -55,6 +49,19 @@ def full(args: list[str]) -> None:
         help="analysis method(s) to run (default: all)",
     )
     add_manual(parser, "analyze_full")
+    return parser
+
+
+def full(args: list[str]) -> None:
+    """CLI entry: run the full geometric analysis pipeline (thickness,
+    curvature, ...) that 'CALM map' can plot.
+
+    Either builds the SFT from a trajectory itself (same as 'CALM analyze
+    sft'), or - if --sft is given - loads a previously built one and skips
+    straight to analysis, in which case --trajectory/--structure aren't
+    needed.
+    """
+    parser = _build_full_parser()
 
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
@@ -65,11 +72,17 @@ def full(args: list[str]) -> None:
     # be validated before the replay file's own values are merged in.
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
     arg_helper.validate_rotation_args(parser, ns)
+    arg_helper.validate_index_arguments(parser, ns, required=False)
 
     using_precomputed_sft = ns.sft is not None
 
-    if not using_precomputed_sft and (ns.trajectory is None or ns.structure is None or ns.index is None):
-        parser.error("--trajectory/-f, --structure/-s, and --index/-n are all required unless --sft is supplied.")
+    if not using_precomputed_sft and (
+        ns.trajectory is None or ns.structure is None or (ns.index is None and ns.index_file is None)
+    ):
+        parser.error(
+            "--trajectory/-f, --structure/-s, and one of --index/-n or --index-file are all required "
+            "unless --sft is supplied."
+        )
 
     os.makedirs(ns.out, exist_ok=True)
 

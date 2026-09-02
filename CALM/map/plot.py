@@ -615,8 +615,9 @@ def draw(
         plt.close(fig)
 
 
-def plot(args: list[str]) -> None:
-    """CLI entry: plot mean curvature or thickness from a 'CALM analyze full' output directory."""
+def _build_plot_parser() -> argparse.ArgumentParser:
+    """The 'CALM map plot' parser alone, with no side effects - shared by the CLI entry point below
+    and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(description="Plot mean curvature or thickness")
     parser.add_argument('-i', '--numpys_directory', type=str, help="'CALM analyze full' output directory")
     parser.add_argument(
@@ -632,6 +633,12 @@ def plot(args: list[str]) -> None:
         help="add a distribution strip beside each colorbar",
     )
     add_manual(parser, "map_plot")
+    return parser
+
+
+def plot(args: list[str]) -> None:
+    """CLI entry: plot mean curvature or thickness from a 'CALM analyze full' output directory."""
+    parser = _build_plot_parser()
 
     ns = parser.parse_args(args)
     minmax = [ns.minimum, ns.maximum] if ns.minimum is not None and ns.maximum is not None else None

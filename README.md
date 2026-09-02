@@ -38,6 +38,23 @@ CALM -h
 CALM {calibrate,analyze,link,map} -h
 ```
 
+### GUI
+
+```console
+CALM-gui
+```
+
+A thin, cross-platform (Tkinter) interface over the exact same commands
+above - every tab's form is generated directly from that command's own
+CLI flags, so it never drifts out of sync with the CLI itself. It builds
+and runs the real `CALM` command as a subprocess (the Output box mirrors
+its terminal output live), never re-implements any argument logic. Each
+tab also has a Manual button (opens that command's manual, rendered, in
+your browser) and a Load replay button (repopulates the form from a
+previously-written `*_calm_replay.log`). Needs Tkinter, which ships with
+the official Windows/macOS Python installers; on Linux it's usually a
+separate system package (e.g. `python3-tk` on Debian/Ubuntu).
+
 Every command has a full manual: rendered on the command line via
 `--man`, or readable directly as Markdown. Start from
 [`CALM/manuals/calm.md`](CALM/manuals/calm.md) for the full module
@@ -76,6 +93,8 @@ overview, or jump straight to a command below.
     curvature radially averaged outward from the box center.
   - [`map lipids_plot`](CALM/manuals/map_lipids_plot.md) - render
     `analyze lipids` output: per-species, per-leaflet occupancy maps.
+  - [`map diffusion_plot`](CALM/manuals/map_diffusion_plot.md) - render
+    `analyze diffusion` output: per-species, per-leaflet MSD(tau) curves.
 
 ## Tests
 

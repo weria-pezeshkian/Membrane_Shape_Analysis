@@ -218,6 +218,40 @@ def test_headgroup_centers_finds_pendant_head_and_ring_not_diluted_by_tails() ->
     assert np.allclose(hub_xy[0][0], expected_xy)
 
 
+def test_headgroup_centers_compound_fragments_splits_by_bonds_not_residue_label() -> None:
+    # Two copies of the NC3-PO4-GL1-GL2(+2 tails) molecule from
+    # test_headgroup_centers_finds_pendant_head_and_ring_not_diluted_by_tails,
+    # offset in x, bonded only within each copy - but _bonded_universe puts
+    # every atom under the same single residue. compound="residues" (the
+    # default) would see one 16-atom group; compound="fragments" must still
+    # recover each molecule's own headgroup independently, from its bonds.
+    f_upper, f_lower = _flat_leaflet_surfaces(200.0, 100.0, 70.0, 30.0)
+    one_molecule = np.array([
+        [40.0, 50.0, 70.0],  # NC3
+        [41.0, 50.0, 69.0],  # PO4
+        [40.0, 51.0, 68.0],  # GL1
+        [41.0, 51.0, 68.0],  # GL2
+        [40.0, 51.0, 60.0],  # tail A bead 1
+        [40.0, 51.0, 50.0],  # tail A bead 2
+        [41.0, 51.0, 60.0],  # tail B bead 1
+        [41.0, 51.0, 50.0],  # tail B bead 2
+    ])
+    positions = np.vstack([one_molecule, one_molecule + [100.0, 0.0, 0.0]])
+    one_molecule_bonds = [(0, 1), (1, 2), (1, 3), (2, 3), (2, 4), (4, 5), (3, 6), (6, 7)]
+    bonds = one_molecule_bonds + [(a + 8, b + 8) for a, b in one_molecule_bonds]
+    atoms = _bonded_universe(positions, bonds)
+
+    xy, z, hub_xy = _headgroup_centers(atoms, f_upper, f_lower, compound="fragments")
+
+    headgroup_idx = [0, 1, 2, 3]
+    expected_xy_0 = one_molecule[headgroup_idx, :2].mean(axis=0)
+    expected_xy_1 = (one_molecule + [100.0, 0.0, 0.0])[headgroup_idx, :2].mean(axis=0)
+    assert len(xy) == 2
+    assert np.allclose(sorted(xy[:, 0].tolist()), sorted([expected_xy_0[0], expected_xy_1[0]]))
+    assert np.allclose(z, one_molecule[headgroup_idx, 2].mean())
+    assert [h.shape for h in hub_xy] == [(1, 2), (1, 2)]
+
+
 def test_headgroup_centers_prunes_light_atoms_before_branch_detection() -> None:
     f_upper, f_lower = _flat_leaflet_surfaces(100.0, 100.0, 70.0, 30.0)
     # An all-atom-style fixture: a plain heavy-atom chain C1-C2-C3, each
@@ -335,6 +369,26 @@ def test_named_headgroup_centers_gives_one_point_per_named_atom() -> None:
     assert hub_xy[0].shape == (2, 2)
     assert np.allclose(sorted(hub_xy[0][:, 0].tolist()), [10.0, 20.0])
     assert np.allclose(xy[0], [15.0, 20.0])  # xy_avg is still the mean across both
+
+
+def test_named_headgroup_centers_compound_fragments_splits_by_bonds_not_residue_label() -> None:
+    # Two POPC molecules (PO4 + tail atom each), bonded only within each
+    # molecule, but both given the same single resindex - compound="residues"
+    # (the default) would average both PO4s together as one residue;
+    # compound="fragments" must keep them as two separate tracked points.
+    u = _named_universe(
+        ["POPC"],
+        ["PO4", "C1A", "PO4", "C1A"],
+        np.array([[10.0, 20.0, 70.0], [10.0, 20.0, 40.0], [30.0, 40.0, 70.0], [30.0, 40.0, 40.0]]),
+        resindex=[0, 0, 0, 0],
+    )
+    u.add_bonds([(0, 1), (2, 3)])
+
+    xy, z, hub_xy = _named_headgroup_centers(u.select_atoms("resname POPC"), ["PO4"], compound="fragments")
+
+    assert np.allclose(sorted(xy[:, 0].tolist()), [10.0, 30.0])
+    assert np.allclose(z, [70.0, 70.0])
+    assert [h.shape for h in hub_xy] == [(1, 2), (1, 2)]
 
 
 def test_validate_headgroup_override_exits_when_named_atom_matches_nothing() -> None:

@@ -74,3 +74,4 @@ include = ["CALM*"]
 
 [project.scripts]
 CALM = "CALM.run_modules:main"
+CALM-gui = "CALM.gui.app:main"

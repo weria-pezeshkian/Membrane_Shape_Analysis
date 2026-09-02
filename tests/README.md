@@ -83,6 +83,13 @@ pytest
   TCL scripts: arrow endpoints, `--which`/`--layer` filtering, `--Remove-TMD`
   hole exclusion, and `--scale`.
 - `test_write_ndx.py` - `utilize/write_ndx.py`'s CLI/file-I/O wrapper.
+- `test_gui.py` - `CALM/gui/`'s non-Tkinter logic: `introspect.py` deriving
+  `FieldSpec`s from each of the 13 commands' real argparse parsers,
+  `path_specs.py`'s per-command Browse-button table (including the
+  `-n`/`--index-file` split), and `runner.py`'s `build_argv` (empty-field
+  omission, `BooleanOptionalAction`'s explicit either/or, multichoice/multi
+  expansion). The actual Tkinter widgets (`widgets.py`/`app.py`) have no
+  coverage - this environment has no `tkinter` installed at all.
 
 ## Conventions
 

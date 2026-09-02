@@ -5,12 +5,13 @@ import sys
 from importlib.metadata import version
 
 from ..core.manual import add_manual
+from .diffusion_plot import diffusion_plot
 from .dynamic_plot import dynamic_plot
 from .lipids_plot import lipids_plot
 from .plot import plot
 from .radial_plot import radial_plot
 
-MODULES = ["plot", "dynamic_plot", "radial_plot", "lipids_plot"]
+MODULES = ["plot", "dynamic_plot", "radial_plot", "lipids_plot", "diffusion_plot"]
 
 
 def run_module(module_name: str, args: list[str]) -> None:
@@ -24,6 +25,8 @@ def run_module(module_name: str, args: list[str]) -> None:
         radial_plot(args)
     elif module_name == "lipids_plot":
         lipids_plot(args)
+    elif module_name == "diffusion_plot":
+        diffusion_plot(args)
     else:
         print(f"Unknown module: {module_name}")
 

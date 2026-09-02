@@ -335,14 +335,9 @@ def build_dynamic_vectors_tcl(
         f.write("\n".join(lines) + "\n")
 
 
-def vmd_vectors(args: list[str]) -> None:
-    """CLI entry: write VMD TCL scripts drawing principal-direction arrows in real space.
-
-    Writes `principal_vectors_static.tcl` (source against
-    `average_structure.gro`) and `principal_vectors_dynamic.tcl` (source
-    against `trajectory.xtc`, redraws automatically as the displayed frame
-    changes) - both from `CALM link vmd_xtc`'s output directory.
-    """
+def _build_vmd_vectors_parser() -> argparse.ArgumentParser:
+    """The 'CALM link vmd_vectors' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(
         description="Write VMD TCL scripts drawing principal-direction arrows in real space"
     )
@@ -371,6 +366,18 @@ def vmd_vectors(args: list[str]) -> None:
         help="write an animated tcl to draw principal vectors for all frames (default: false)"
     )
     add_manual(parser, "link_vmd_vectors")
+    return parser
+
+
+def vmd_vectors(args: list[str]) -> None:
+    """CLI entry: write VMD TCL scripts drawing principal-direction arrows in real space.
+
+    Writes `principal_vectors_static.tcl` (source against
+    `average_structure.gro`) and `principal_vectors_dynamic.tcl` (source
+    against `trajectory.xtc`, redraws automatically as the displayed frame
+    changes) - both from `CALM link vmd_xtc`'s output directory.
+    """
+    parser = _build_vmd_vectors_parser()
     ns = parser.parse_args(args)
 
     os.makedirs(ns.output, exist_ok=True)

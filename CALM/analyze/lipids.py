@@ -25,7 +25,6 @@ from ..core.fourier_build import (
     _dynamic_leaflet_groups,
     _fourier_by_layer,
     _init_worker,
-    _read_ndx,
     _remove_tmd_hole_mask,
     _worker_state,
 )
@@ -476,25 +475,16 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
         _require_bonds(u)
 
     Until = args.Until
-    ndx = args.index
 
     if Until is None:
         Until = len(u.trajectory)
     else:
         Until = int(Until)
-    if ndx is None:
+
+    ndx_groups, dynamic_selection = arg_helper.resolve_index_source(args)
+    if ndx_groups is None and dynamic_selection is None:
         sys.exit("An index selection or file has to be supplied. Exiting.")
-    try:
-        ndx_groups = _read_ndx(ndx)
-        dynamic_select = False
-        dynamic_selection = None
-    except FileNotFoundError:
-        logger.info(
-            "No ndx file found at the given --index path; treating it as a dynamic MDAnalysis selection instead."
-        )
-        dynamic_select = True
-        dynamic_selection = ndx
-        ndx_groups = None
+    dynamic_select = ndx_groups is None
 
     frames = list(range(args.From, Until, args.Step))
     Path(args.out, "lipid_species.txt").write_text("\n".join(species) + "\n")
@@ -551,22 +541,9 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
     _write_curvature_preference_csv(args.out, species, frames, Until)
 
 
-def lipids(args: list[str]) -> None:
-    """CLI entry: per-species lipid composition and area-per-lipid from a trajectory.
-
-    Always re-fits the leaflet surfaces from a live trajectory (no --sft
-    reuse) - lipid identity (resname) is only available from real atoms,
-    which a previously-built SFT (Amn/qmn coefficients alone) doesn't
-    carry. --rotate rotationally aligns the saved per-frame composition
-    output (see _one_lipid_frame) across the trajectory, the same way it
-    aligns 'sft'/'full's curvature/thickness output - useful for spotting
-    real spatial composition patterns (e.g. lipid sorting around a
-    particular face of a protein) that would otherwise wash out under
-    trajectory averaging as the protein itself rotates. It does not
-    affect area_per_lipid.csv, which stays computed on each frame's own
-    raw, unrotated grid throughout. --center still applies (needed by
-    --Remove-TMD and by --rotate itself).
-    """
+def _build_lipids_parser() -> argparse.ArgumentParser:
+    """The 'CALM analyze lipids' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(
         description="Per-species lipid composition and area-per-lipid from a trajectory.",
     )
@@ -587,17 +564,38 @@ def lipids(args: list[str]) -> None:
         parser, required_group=required, optional_group=optional
     )
     add_manual(parser, "analyze_lipids")
+    return parser
+
+
+def lipids(args: list[str]) -> None:
+    """CLI entry: per-species lipid composition and area-per-lipid from a trajectory.
+
+    Always re-fits the leaflet surfaces from a live trajectory (no --sft
+    reuse) - lipid identity (resname) is only available from real atoms,
+    which a previously-built SFT (Amn/qmn coefficients alone) doesn't
+    carry. --rotate rotationally aligns the saved per-frame composition
+    output (see _one_lipid_frame) across the trajectory, the same way it
+    aligns 'sft'/'full's curvature/thickness output - useful for spotting
+    real spatial composition patterns (e.g. lipid sorting around a
+    particular face of a protein) that would otherwise wash out under
+    trajectory averaging as the protein itself rotates. It does not
+    affect area_per_lipid.csv, which stays computed on each frame's own
+    raw, unrotated grid throughout. --center still applies (needed by
+    --Remove-TMD and by --rotate itself).
+    """
+    parser = _build_lipids_parser()
 
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--replay")
     pre_ns, remaining = pre.parse_known_args(args)
 
     # Validation runs on the fully-resolved args (replay file's tokens, if
-    # any, merged with the direct CLI) - required= on -f/-s/-n means a
-    # replay-only invocation (no -f/-s/-n given directly) must not be
+    # any, merged with the direct CLI) - required= on -f/-s means a
+    # replay-only invocation (no -f/-s given directly) must not be
     # validated before the replay file's own values are merged in.
     ns = arg_helper.apply_replay(parser, pre_ns, remaining)
     arg_helper.validate_rotation_args(parser, ns)
+    arg_helper.validate_index_arguments(parser, ns, required=True)
 
     os.makedirs(ns.out, exist_ok=True)
 

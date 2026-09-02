@@ -538,7 +538,7 @@ def test_calc_fourier_runs_end_to_end_with_a_dynamic_selection(tmp_path: Path) -
     out_dir.mkdir()
 
     args = SimpleNamespace(
-        Until=None, index="name P", From=0, Step=1, Workers=1,
+        Until=None, index="name P", index_file=None, From=0, Step=1, Workers=1,
         structure=str(gro_path), trajectory=str(gro_path),
         center=None, rotation_direction=None, rotate=False,
         out=str(out_dir), lambda_x=None, lambda_y=None, gridsize=10,

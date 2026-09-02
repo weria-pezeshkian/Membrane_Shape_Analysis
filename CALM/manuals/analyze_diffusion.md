@@ -18,14 +18,17 @@ CALM analyze diffusion -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" --l
 - `-s`, `--structure` - path to the structure file. Must carry bond
   information (e.g. a GROMACS `.tpr`) - a bare `.gro`/`.pdb` with no bonds
   is rejected immediately. Bonds are needed unconditionally here, for two
-  independent reasons: the automatic headgroup detection walks each
-  residue's own bond graph, and the PBC-aware position extraction needs
-  bonds to keep a tracked residue's own atoms from splitting across a
-  periodic boundary within one frame.
+  independent reasons: every tracked point is one bonded fragment (not one
+  residue - see below), and the PBC-aware position extraction needs bonds
+  to keep a tracked fragment's own atoms from splitting across a periodic
+  boundary within one frame.
 - `-o`, `--out` - output directory for the saved arrays.
-- `-n`, `--index` - leaflet selection used to fit the surfaces (same as
-  `CALM analyze sft`): either a GROMACS-style `.ndx` file with `Upper`/
-  `Lower` groups, or an MDAnalysis dynamic selection string.
+- Leaflet selection used to fit the surfaces (same as `CALM analyze sft`),
+  one of - if both are given, `--index-file` takes precedence and
+  `-n`/`--index` is ignored, with a warning:
+  - `-n`, `--index` - an MDAnalysis dynamic selection string.
+  - `--index-file` - a GROMACS-style `.ndx` file with `Upper`/`Lower`
+    groups.
 - At least one of `--lipids`/`--select` (below).
 
 ## What gets tracked
@@ -35,13 +38,21 @@ CALM analyze diffusion -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" --l
   (automatic bond-graph headgroup detection) or
   `RESNAME:NAME1,NAME2,...` to give that species' own headgroup atom
   name(s) explicitly instead - the same syntax and the same detection
-  method `CALM analyze lipids` uses.
+  method `CALM analyze lipids` uses, but grouped by bonded fragment
+  rather than by residue (see below).
 - `--select` - an MDAnalysis selection string to track, tracked one point
-  per residue in the match (each residue's own center of geometry).
+  per bonded fragment in the match (each fragment's own center of
+  geometry).
 - `--select-whole` - with `--select`, track the entire match as a single
   combined point (its own center of geometry).
 - `--select-label` - label for `--select`'s rows in the output
   (default: `select`).
+
+Every tracked point is one bonded fragment (a connected component of the
+bond graph), not one residue - a topology's residue boundaries aren't
+guaranteed to match a molecule's actual bonded extent, while a fragment
+always does. For an ordinary lipid selection the two coincide (one residue
+is one bonded molecule), so this only matters when they don't.
 
 ## Leaflet, hole status, and segments
 
@@ -63,6 +74,22 @@ dropped.
 
 - `--min-segment-fraction` - segments shorter than this fraction of the
   analyzed range are excluded from the fit (default: `0.1`).
+- `--force-middle` - track against the middle surface (the upper/lower
+  average) instead of a real leaflet assignment. Every point is `1`
+  (embedded, always projected onto the middle surface) or `0`
+  (implausibly far from the middle surface entirely, same far-multiple
+  rule as ordinary leaflet assignment) - never `-1`, so a leaflet flip can
+  never happen and segments only ever break on a hole-status change or
+  going unassigned. Meant for something that straddles both leaflets by
+  construction, e.g. a transmembrane protein: its own position sits near
+  the mid-plane, so a real upper/lower assignment would flip between them
+  on thermal noise alone and fragment its trajectory into short, spurious
+  segments. Output rows for a `--force-middle` run are labeled `middle`
+  instead of `upper`/`lower`, and the pooled `"both"` row is skipped
+  entirely - every segment's own leaflet is already `middle`, so `both`
+  would just duplicate it rather than being a genuine second pool.
+  `--Remove-TMD` hole status still comes from the real upper leaflet's
+  mask in this mode (there is no separate middle-surface hole detection).
 
 `--Remove-TMD` must always be given its own explicit selection here (e.g.
 `--Remove-TMD 'name BB SC1'`) - this command has no `--center` to fall
@@ -78,7 +105,7 @@ Positions come from two passes joined by frame:
   here), the same way `CALM analyze lipids` fits them.
 - Each tracked point's own real position is extracted from a second,
   sequential pass that chains two MDAnalysis transformations:
-  `unwrap` keeps a tracked residue's own atoms from splitting across a
+  `unwrap` keeps a tracked fragment's own atoms from splitting across a
   periodic boundary within one frame (which would otherwise corrupt its
   center-of-geometry average), and `NoJump` keeps that point's position
   continuous from one analyzed frame to the next, absorbing any periodic
@@ -130,7 +157,7 @@ measured).
 ## Output
 
 - `tracked_points.npy` - the fixed tracked-point roster, written once:
-  one row per physical tracked point, `index, label, resindex, kind`.
+  one row per physical tracked point, `index, label, fragindex, kind`.
 - `{frame}_dimensions.npy` - that frame's own `(Lx, Ly, Lz)`.
 - `{frame}_diffusion_meta.npy` - shape `(n_tracked, 2)`:
   `[leaflet, in_hole]` per tracked point, from the live per-frame fit.
@@ -140,13 +167,24 @@ measured).
 - `{frame}_diffusion_positions.npy` - shape `(n_tracked, 3)`: each tracked
   point's own whole, continuous raw position for that frame.
 - `{frame}_hole_mask.npy` - written only if `--Remove-TMD` was given.
-- `diffusion.npy` - one row per `(leaflet, species)`, including the
-  pooled `"both"` row: `leaflet, species, D_cm2_s, D_stderr_cm2_s,
-  n_segments, n_points_pooled, tau_min_ps, tau_max_ps, fit_r2,
-  fit_loglog_slope, n_segments_discarded_short`.
+- `diffusion.npy` - one row per `(leaflet, species)` pooled by
+  species/label, including the pooled `"both"` row: `leaflet, species,
+  D_cm2_s, D_stderr_cm2_s, n_segments, n_points_pooled, tau_min_ps,
+  tau_max_ps, fit_r2, fit_loglog_slope, n_segments_discarded_short`.
+- `diffusion.csv` - the same rows as `diffusion.npy`, human-readable.
 - `msd_curves.npy` - one row per `(leaflet, species, tau)`:
   `leaflet, species, tau_ps, msd_A2, n_samples` - for inspecting or
   plotting the diffusive-regime fit directly.
-- `segments.npy` - one row per candidate segment, kept or excluded:
-  `label, leaflet, resindex, start_frame, end_frame, length_frames,
+- `diffusion_per_instance.npy`, `diffusion_per_instance.csv`,
+  `msd_curves_per_instance.npy` - the same three files, but pooled per
+  individual tracked point instead of per species/label: `species` reads
+  `"<label>#<fragindex>"` (e.g. every one of ten proteins matched by the
+  same `--select` gets its own row, `select#0` through `select#9`,
+  instead of all ten being combined into one `select` row). Computed from
+  the same segments as the pooled files, at negligible extra cost - both
+  groupings are always written, so choosing between them (e.g. in `CALM
+  map diffusion_plot --per-instance`) needs no re-run.
+- `segments.npy` - one row per candidate segment, kept or excluded, at
+  the finest (per-point) granularity regardless of pooling: `label,
+  leaflet, fragindex, start_frame, end_frame, length_frames,
   length_fraction, kept, discard_reason`.

@@ -10,8 +10,9 @@ from .calibrate import calibrate
 logger = logging.getLogger(__name__)
 
 
-def Calibrate(args: list[str]) -> None:
-    """CLI entry: calibrate membrane material parameters from a built SFT. Has no submodules."""
+def _build_calibrate_parser() -> argparse.ArgumentParser:
+    """The 'CALM calibrate' parser alone, with no side effects - shared by the CLI entry point below
+    and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(
         description="Calibrate membrane material parameters from a built SFT",
         prog="CALM calibrate",
@@ -26,6 +27,12 @@ def Calibrate(args: list[str]) -> None:
     )
     parser.add_argument('-o', '--out', type=str, required=True, help="output file path")
     add_manual(parser, "calibrate")
+    return parser
+
+
+def Calibrate(args: list[str]) -> None:
+    """CLI entry: calibrate membrane material parameters from a built SFT. Has no submodules."""
+    parser = _build_calibrate_parser()
 
     ns = parser.parse_args(args)
     logging.basicConfig(level=logging.INFO)

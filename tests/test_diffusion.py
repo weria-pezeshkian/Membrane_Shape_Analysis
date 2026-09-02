@@ -174,10 +174,11 @@ def _two_residue_universe():
     u = mda.Universe.empty(n_atoms=4, n_residues=2, atom_resindex=[0, 0, 1, 1], trajectory=True)
     u.add_TopologyAttr("name", ["A", "B", "A", "B"])
     u.atoms.positions = positions
+    u.add_bonds([(0, 1), (2, 3)])
     return u
 
 
-def test_selection_centers_returns_per_residue_center_of_geometry() -> None:
+def test_selection_centers_returns_per_fragment_center_of_geometry() -> None:
     u = _two_residue_universe()
     xy, z = _selection_centers(u.atoms)
 

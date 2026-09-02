@@ -216,8 +216,9 @@ def draw(
             plt.close(fig)
 
 
-def lipids_plot(argv: list[str]) -> None:
-    """CLI entry: render every species' own per-leaflet occupancy map from 'CALM analyze lipids' output."""
+def _build_lipids_plot_parser() -> argparse.ArgumentParser:
+    """The 'CALM map lipids_plot' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
     parser = argparse.ArgumentParser(description="Render CALM analyze lipids output (composition/density maps)")
     parser.add_argument(
         '-i', '--numpys_directory', type=str, required=True,
@@ -228,6 +229,12 @@ def lipids_plot(argv: list[str]) -> None:
         help="output image path (default: lipids.png)",
     )
     add_manual(parser, "map_lipids_plot")
+    return parser
+
+
+def lipids_plot(argv: list[str]) -> None:
+    """CLI entry: render every species' own per-leaflet occupancy map from 'CALM analyze lipids' output."""
+    parser = _build_lipids_plot_parser()
 
     ns = parser.parse_args(argv)
     draw(Dir=ns.numpys_directory, filename=ns.outfile)

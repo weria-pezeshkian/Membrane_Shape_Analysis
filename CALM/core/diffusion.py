@@ -73,10 +73,10 @@ def _project_onto_surface(
 
 
 def _selection_centers(atomgroup: mda.core.groups.AtomGroup) -> tuple[np.ndarray, np.ndarray]:
-    """(xy, z) per residue in `atomgroup`: each residue's own center of geometry over its selected atoms."""
+    """(xy, z) per fragment in `atomgroup`: each fragment's own center of geometry over its selected atoms."""
     if len(atomgroup) == 0:
         return np.empty((0, 2)), np.empty((0,))
-    centers = atomgroup.center_of_geometry(compound="residues")
+    centers = atomgroup.center_of_geometry(compound="fragments")
     return centers[:, :2], centers[:, 2]
 
 

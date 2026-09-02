@@ -35,9 +35,12 @@ CALM analyze lipids -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" --lipi
   any species using automatic headgroup detection - a bare `.gro` has
   none; a GROMACS `.tpr` does.
 - `-o`, `--out` - output directory for the saved arrays.
-- `-n`, `--index` - leaflet selection used to fit the surfaces (same as
-  `CALM analyze sft`): either a GROMACS-style `.ndx` file with `Upper`/
-  `Lower` groups, or an MDAnalysis dynamic selection string.
+- Leaflet selection used to fit the surfaces (same as `CALM analyze sft`),
+  one of - if both are given, `--index-file` takes precedence and
+  `-n`/`--index` is ignored, with a warning:
+  - `-n`, `--index` - an MDAnalysis dynamic selection string.
+  - `--index-file` - a GROMACS-style `.ndx` file with `Upper`/`Lower`
+    groups.
 
 ## How composition is assigned
 

@@ -19,5 +19,7 @@ CALM map <command> [args...]
   directory.
 - `lipids_plot` - render `CALM analyze lipids` output: every species' own
   continuous occupancy-frequency map, per leaflet.
+- `diffusion_plot` - render `CALM analyze diffusion` output: every tracked
+  species/leaflet's own MSD(tau) curve.
 
 Run `CALM map <command> --man` for a command's full manual.
