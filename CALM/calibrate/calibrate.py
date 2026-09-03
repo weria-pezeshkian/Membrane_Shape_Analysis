@@ -1,11 +1,12 @@
+#TODo: #make sense of the output values & check units... for now, tested on CholeraToxin, rep1, frames 0-5000 of prod.xtc, they do NOT make sense
 from __future__ import annotations
 
 from ..core.fourier_sft import SFT
-from scipy.special import jv #move elsewhere potentially, but these 3 are needed in the calibrate function
+from scipy.special import jv
 from scipy.optimize import least_squares
 import numpy as np
 
-def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_path: str) -> None:
+def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_path: str,surface: str = "top") -> None:
     """Compute calibrated membrane material parameters from `sft` and write them to `out_path`.
     radius=choose radius of area under protein; 
     frame_start/end: chose over which frames to average q_i-integrals; 
@@ -19,17 +20,21 @@ def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_pat
     fit built from it.
     NOTE: smallest wavelength for fourier fit cutoff should be close to mem. thickness, not smaller!
     """
+    assert sft.regularized in (False, None), "Calibration requires an unregularized SFT."
     
     #A_mn, q_mn for all frames ->flatten to A_i, q_i_x, q_i_y; #A_mn_original=sft.A_mn; #q_mn_original=sft.q_mn
+    #sft.A_mn.shape = (5006, 3, 7, 7) sft.q_mn.shape = (5006, 2, 7, 7); 2=q_x, q_y; 3=Amn_top, middle, bottom
+
+    surface_idx = {"top": 0,"middle": 1,"bottom": 2}[surface] #to choose which surface to use for calibration analysis (which part of Amn to use)
     frames = sft.A_mn.shape[0]
-    A_i = sft.A_mn.reshape(frames, -1)
+    A_i = sft.A_mn[:, surface_idx, :, :].reshape(frames, -1)
     q_i_all = sft.q_mn.reshape(frames, 2, -1)
     q_i=q_i_all[frame_start:frame_end]
     n_frames = q_i.shape[0] #number of user chosen frames for integral calculations (see 2.)
 
     #testing
-    #print("q_i_shaoe=",q_i.shape)
-    #print("A_i_shaoe=",A_i.shape, "A_mn_shape=",sft.A_mn.shape)
+    #print("q_i_shape=",q_i.shape)
+    #print("A_i_shape=",A_i.shape, "A_mn_shape=",sft.A_mn.shape)
     #exit()
 
     #CHECK that the A_mn, q_mn come from a trajectory that was centered!
@@ -46,7 +51,8 @@ def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_pat
     # Magnitude |q_i| for every frame and Fourier mode.
     q_abs_i = np.linalg.norm(q_i, axis=1)
     Nmodes = q_abs_i.shape[1] #shape[0]=n_frames
-    L_x, L_y=sft.dimensions[frame_start:frame_end, 0], sft.dimensions[frame_start:frame_end, 1] #@Fabian: correct use of dimensions?
+    L_x, L_y=sft.dimensions[frame_start:frame_end, 0], sft.dimensions[frame_start:frame_end, 1]
+
 
     # Integral 1: VECTOR;Integral_P (F(q_i*r dA)=Integral_P([cos(q_i·r) + sin(q_i·r)] dA)=2*pi*radius*J_1(|q|R)/|q|; limit |q|->0=pi*R^2
     
@@ -69,7 +75,7 @@ def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_pat
     #M=kappa*H_M + delta_kappa*H_P - 2*delta_kappa_g* K_P
     H_M = np.zeros((n_frames, Nmodes, Nmodes)) #diagonal matrix; L_x*L_y*|q_i|^2 * |q_j|^2 *delta_ij
     idx = np.arange(Nmodes)
-    H_M[:, idx, idx] = L_x*L_y*q_abs_i**4
+    H_M[:, idx, idx] =  L_x[:, None]*L_y[:, None]*q_abs_i**4 #reshaping of Lxy needed for correct multiframe*multimode multiplication
     H_M_avg=np.mean(H_M,axis=0)
 
     H_P=q_abs_i[:, :, None]**2* q_abs_i[:, None, :]**2* integrals_2 #matrix |q_i|^2 * |q_j|^2* 2*pi*radius*J_1(|q_i-q_j|R)/|q_i-q_j|
@@ -77,7 +83,9 @@ def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_pat
 
     K_factor = (qx[:, :, None]**2 * qy[:, None, :]**2- qx[:, :, None] * qx[:, None, :] * qy[:, :, None] * qy[:, None, :])
     K_P = K_factor * integrals_2 #matrix (q_i_x^2*q_j_y^2 − q_i_x*q_j_x*q_i_y*q_j_y) *2*pi*radius*J_1(|q_i-q_j|R)/|q_i-q_j|
+    #print("shape K_factor:", K_factor.shape, ",integrals_2:",integrals_2.shape, ",K_P:",K_P.shape)
     K_P_avg=np.mean(K_P,axis=0)
+    #print("K_P_avg shape:",K_P_avg.shape)
 
 
 
@@ -88,7 +96,10 @@ def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_pat
         M = ( kappa * H_M_avg+ delta_kappa * H_P_avg - 2.0 * delta_kappa_g * K_P_avg)
         return (M @ sigma_A - np.eye(Nmodes)).ravel()
    
-    result = least_squares(residuals_1,x0=(20.0, 0.0, 0.0)) #default of 20kT for kappa here, CHECK whether this is correct units
+    result = least_squares(residuals_1,x0=(20.0, 0.0, 0.0),bounds=( #default of 20kT for kappa here, CHECK whether this is correct units
+         (0.0, -50.0, -50.0),   # lower bounds
+        (50.0, 50.0, 50.0)    # upper bounds
+    )) 
     if not result.success:
         raise RuntimeError(result.message)
    
@@ -118,4 +129,15 @@ def calibrate(sft: SFT, radius: float, frame_start: int, frame_end: int, out_pat
         out_path += ".npy"
     np.save(out_path, parameters, allow_pickle=True)
 
-    raise NotImplementedError("CALM calibrate's physics still need testing.")
+    # Save as text file too
+    txt_path = out_path[:-4] + ".txt"
+    with open(txt_path, "w") as f:
+        f.write(f"kappa = {kappa} [kT]\n")
+        f.write(f"delta_kappa = {delta_kappa} [kT]\n")
+        f.write(f"delta_kappa_g = {delta_kappa_g} [kT]\n")
+        f.write(f"C_0 = {c_zero} [1/A]\n")
+
+    #And print
+    print(f"kappa = {kappa} [kT],delta_kappa = {delta_kappa} [kT],delta_kappa_g = {delta_kappa_g} [kT], C_0 = {c_zero} [1/A]")
+
+    print(f"Done(preliminary version!), check your results under {txt_path}")

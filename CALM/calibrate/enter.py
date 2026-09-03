@@ -25,8 +25,23 @@ def _build_calibrate_parser() -> argparse.ArgumentParser:
         '--radius', type=float, required=True,
         help="calibration radius (meaning defined by the physics implementation)",
     )
+    ##Add the other new arguments:  frame_start: int, frame_end: int,
+    parser.add_argument(
+        '--startframe', type=int, required=True,
+        help="frame to start at, together w. endframe it determines number of user chosen frames for integral calculations ",
+    )
+    parser.add_argument(
+        '--endframe', type=int, required=True,
+        help="frame to end at, together w. startframe it determines number of user chosen frames for integral calculations ",
+    )
+
     parser.add_argument('-o', '--out', type=str, required=True, help="output file path")
     add_manual(parser, "calibrate")
+    
+    parser.add_argument(
+    "--surface", type=str,choices=["top", "middle", "bottom"],default="top",
+    help="Surface to use for calibration: top, middle, or bottom (default: top)."
+    )
     return parser
 
 
@@ -39,7 +54,7 @@ def Calibrate(args: list[str]) -> None:
 
     try:
         sft_obj = SFT.from_directory(ns.sft)
-        calibrate(sft_obj, ns.radius, ns.out)
+        calibrate(sft_obj, ns.radius,ns.startframe,ns.endframe, ns.out,ns.surface)
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
