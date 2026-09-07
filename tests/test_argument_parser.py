@@ -84,6 +84,28 @@ def test_apply_replay_proceeds_silently_when_checksums_match(tmp_path: Path, mon
     assert result.trajectory == str(traj)
 
 
+def test_clear_output_directory_removes_npy_files_at_top_level_and_in_raw_sft(tmp_path: Path) -> None:
+    (tmp_path / "Amn.npy").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_bytes(b"keep me")
+    raw_sft = tmp_path / "raw_sft"
+    raw_sft.mkdir()
+    (raw_sft / "0000_A_mn.npy").write_bytes(b"x")
+    (raw_sft / "0000_hole_mask.npy").write_bytes(b"x")
+
+    arg_helper.clear_output_directory(str(tmp_path))
+
+    assert not (tmp_path / "Amn.npy").exists()
+    assert (tmp_path / "notes.txt").exists()  # non-.npy files are left alone
+    assert not (raw_sft / "0000_A_mn.npy").exists()
+    assert not (raw_sft / "0000_hole_mask.npy").exists()
+
+
+def test_clear_output_directory_does_not_error_when_raw_sft_is_absent(tmp_path: Path) -> None:
+    (tmp_path / "Amn.npy").write_bytes(b"x")
+    arg_helper.clear_output_directory(str(tmp_path))  # no raw_sft/ subdirectory at all
+    assert not (tmp_path / "Amn.npy").exists()
+
+
 def test_remove_tmd_parses_bare_as_true_and_with_value_as_the_string(tmp_path: Path) -> None:
     parser = argparse.ArgumentParser()
     arg_helper.add_build_arguments(parser, require_inputs=False)

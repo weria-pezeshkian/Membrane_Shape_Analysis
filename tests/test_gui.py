@@ -66,6 +66,28 @@ def test_field_specs_classifies_multi_without_choices() -> None:
     assert lipids_specs["lipids"].choices is None
 
 
+def test_field_specs_classifies_remove_tmd_as_optional_flag_value() -> None:
+    # --Remove-TMD is nargs='?' with const=True and default=False - a plain
+    # "text" classification would str(False) into the Entry's own initial
+    # text, so an untouched field would submit the literal string "False"
+    # as the flag's value (a real bug this kind exists to prevent).
+    sft_specs = {s.dest: s for s in field_specs(MODULES["Analyze"][0].build_parser())}
+    assert sft_specs["remove_tmd"].kind == "optional_flag_value"
+    assert sft_specs["remove_tmd"].default is False
+
+
+def test_field_specs_classifies_replica_as_append() -> None:
+    # --replica (map/replica_average.py) is action="append" - one value per
+    # occurrence (--replica a --replica b), unlike "multi" (--lipids a b) -
+    # must not fall through to "multi" or "text".
+    radial_specs = {s.dest: s for s in field_specs(MODULES["Map"][2].build_parser())}
+    assert radial_specs["replicas"].kind == "append"
+    assert radial_specs["replicas"].default == []
+
+    diffusion_plot_specs = {s.dest: s for s in field_specs(MODULES["Map"][4].build_parser())}
+    assert diffusion_plot_specs["replicas"].kind == "append"
+
+
 def test_field_specs_excludes_help_and_man_actions() -> None:
     specs = field_specs(MODULES["Calibrate"].build_parser())
     dests = {s.dest for s in specs}
@@ -145,6 +167,17 @@ def test_path_spec_distinguishes_out_as_directory_vs_file_by_command() -> None:
     assert path_spec_for("write_ndx", "out").extensions == [".ndx"]
 
 
+def test_path_spec_absent_for_replica_despite_being_directory_valued() -> None:
+    # --replica ("append" kind) is deliberately absent from the table, like
+    # --lipids ("multi" kind): a Browse button replaces the whole field's
+    # text on pick (widgets.py's _browse), which is fine for a single-value
+    # field but would erase an already-picked replica instead of adding to
+    # it for a multi-value one - no "multi"/"append" field has a path_spec
+    # for that reason, so this one falls through to the plain text entry.
+    assert path_spec_for("radial_plot", "replicas") is None
+    assert path_spec_for("diffusion_plot", "replicas") is None
+
+
 def test_path_spec_none_for_every_field_with_no_table_entry() -> None:
     for command in _all_commands():
         for spec in field_specs(command.build_parser()):
@@ -199,6 +232,44 @@ def test_build_argv_multichoice_expands_every_selected_value() -> None:
     assert "--method" in argv
     i = argv.index("--method")
     assert argv[i + 1:i + 3] == ["mean", "thickness"]
+
+
+def test_build_argv_append_emits_the_flag_once_per_value() -> None:
+    radial = MODULES["Map"][2]
+    specs = field_specs(radial.build_parser())
+    argv = build_argv(radial.argv_prefix, specs, {
+        "numpys_directory": "dir0", "replicas": ["dirA", "dirB"],
+    })
+    # One occurrence of the flag per value, not one occurrence trailed by
+    # both values (that would be "multi"'s shape, wrong for action="append").
+    assert argv.count("--replica") == 2
+    i = argv.index("--replica")
+    assert argv[i + 1] == "dirA"
+    j = argv.index("--replica", i + 1)
+    assert argv[j + 1] == "dirB"
+
+
+def test_build_argv_append_omitted_when_empty() -> None:
+    radial = MODULES["Map"][2]
+    specs = field_specs(radial.build_parser())
+    argv = build_argv(radial.argv_prefix, specs, {"numpys_directory": "dir0", "replicas": []})
+    assert "--replica" not in argv
+
+
+def test_build_argv_optional_flag_value_three_states() -> None:
+    sft = MODULES["Analyze"][0]
+    specs = field_specs(sft.build_parser())
+    base = {"trajectory": "t.xtc", "structure": "s.tpr", "index": "name PO4", "out": "outdir"}
+
+    argv_omitted = build_argv(sft.argv_prefix, specs, {**base, "remove_tmd": False})
+    assert "--Remove-TMD" not in argv_omitted
+
+    argv_bare = build_argv(sft.argv_prefix, specs, {**base, "remove_tmd": True})
+    assert "--Remove-TMD" in argv_bare and "True" not in argv_bare  # bare flag, not "--Remove-TMD True"
+
+    argv_value = build_argv(sft.argv_prefix, specs, {**base, "remove_tmd": "name BB SC1"})
+    i = argv_value.index("--Remove-TMD")
+    assert argv_value[i + 1] == "name BB SC1"
 
 
 def test_build_argv_multi_omitted_when_empty() -> None:

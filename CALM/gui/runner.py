@@ -13,7 +13,14 @@ def build_argv(argv_prefix: list[str], specs: list[FieldSpec], values: dict[str,
     """CALM's own argv, from one command's field specs and the GUI's current widget values.
 
     `values` is keyed by dest: a bool for "bool"/"bool_optional" fields, a
-    list[str] for "multichoice"/"multi" fields, a str for everything else
+    list[str] for "multichoice"/"multi"/"append" fields (the latter two
+    both come from the same space-separated text entry - see widgets.py -
+    and differ only in how their argv is built: "multi" emits one
+    occurrence of the flag followed by every value, "append" emits the
+    flag once per value, matching `action="append"`'s own one-value-per-
+    occurrence CLI shape), `False`/`True`/a non-empty str for
+    "optional_flag_value" fields (e.g. --Remove-TMD - see
+    widgets.py's own get_optional_flag_value), a str for everything else
     (including numeric fields - the real CLI's own `type=` callable does
     the actual conversion/validation when the subprocess runs, not the
     GUI). An empty/unset optional field (empty string, empty list, or
@@ -35,6 +42,26 @@ def build_argv(argv_prefix: list[str], specs: list[FieldSpec], values: dict[str,
                 assert isinstance(value, (list, tuple))
                 argv.append(spec.flag)
                 argv.extend(str(v) for v in value)
+        elif spec.kind == "append":
+            # One occurrence of the flag per value (--replica a --replica b),
+            # not one occurrence followed by every value (that's "multi") -
+            # action="append" only ever consumes one value per occurrence.
+            if value:
+                assert isinstance(value, (list, tuple))
+                for v in value:
+                    argv.append(spec.flag)
+                    argv.append(str(v))
+        elif spec.kind == "optional_flag_value":
+            # Three states from FieldWidget's own get_value (see widgets.py):
+            # False (checkbox unticked) -> omitted; True (ticked, no value
+            # typed) -> the bare flag; a non-empty str (ticked, value typed)
+            # -> the flag with that value. Never emits e.g. "--Remove-TMD
+            # False" the way the generic str(value) branch below would.
+            if value is True:
+                argv.append(spec.flag)
+            elif isinstance(value, str) and value != "":
+                argv.append(spec.flag)
+                argv.append(value)
         else:
             if value is not None and str(value) != "":
                 argv.append(spec.flag)

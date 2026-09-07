@@ -70,8 +70,16 @@ pytest
 - `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video:
   per-frame subprocess isolation, ffmpeg/imageio-ffmpeg discovery and
   streaming GIF assembly, and the Pillow (`--in-memory`) fallback.
-- `test_radial_plot.py` - `map/radial_plot.py`'s radial binning and
-  upper/lower-only rendering.
+- `test_radial_plot.py` - `map/radial_plot.py`'s radial binning,
+  upper/lower-only rendering, and `--replica` averaging (aligned onto the
+  smallest-r_max replica's own grid, shaded band, single-directory calls
+  unaffected).
+- `test_diffusion_plot.py` - `map/diffusion_plot.py`'s single-directory
+  MSD(tau) rendering and `--replica` averaging (per-`(species, leaflet)`
+  mean-D-across-replicas reporting, skipping a replica missing a species).
+- `test_replica_average.py` - `map/replica_average.py`'s repeatable
+  `--replica` flag, `all_replica_dirs`'s ordering, and
+  `align_and_average`'s interpolation/NaN-exclusion/statistics.
 - `test_lipids_plot.py` - `map/lipids_plot.py`'s per-species,
   per-leaflet occupancy-frequency rendering: hole-mask NaN-poisoning
   across frames, the combined-overview-plus-per-species output files, and

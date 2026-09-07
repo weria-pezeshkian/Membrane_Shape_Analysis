@@ -9,6 +9,7 @@ from ..core.fourier_sft import SFT
 from ..core.manual import add_manual
 from ..core.rotation import fixed_circle_radius, rotation_was_used
 from .plot import _frame_filtered_glob, _load_and_mask
+from .replica_average import add_replica_argument, align_and_average, all_replica_dirs
 
 plt.rcParams["font.family"] = "serif"
 
@@ -110,34 +111,15 @@ def _radial_series(
     return edges[:-1], profile
 
 
-def draw(
-    Dir: str,
-    filename: str = "radial.png",
-    minmax: list[float] | None = None,
-    quantity: str = "mean",
-) -> None:
-    """Render upper/lower mean curvature or fitted height, radially averaged outward from the box center.
+def _radial_profiles_for_directory(
+    Dir: str, quantity: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str, float]:
+    """(upper_x, upper_profile, lower_x, lower_profile, ylabel, r_max) for one directory.
 
-    `quantity` is `"mean"` (mean curvature, default) or `"height"` (fitted
-    surface height, expressed relative to the mid-surface's own height at
-    that same point - the membrane's absolute position in the box is
-    arbitrary, but its distance from its own mid-surface is physical).
-    Middle is loaded at its raw value everywhere: for `"mean"` it's never
-    read at all (only upper/lower are plotted); for `"height"` it's a
-    subtraction reference whose value at a point holds regardless of
-    either leaflet's own hole there, keeping upper's and lower's own
-    relative-height values independent of each other's holes. Only upper
-    and lower are plotted either way, each drawn exactly as computed.
-
-    Each leaflet's own curve starts at its own `_hole_radius` (the largest
-    all-NaN circle centered on the box center, e.g. where --Remove-TMD
-    masked a protein) and runs to `r_max` (the fixed circle radius under
-    --rotate, or the box's own inscribed-circle radius), quantile-binned
-    (`_radial_series`) so each point on the curve reflects a comparable
-    number of grid points. The x-axis starts at 0. `_no_value_wedge`
-    shades the region between the y-axis and the line through the two
-    curves' own starting points, spanning the full y-range, labeled
-    "No value" in the legend.
+    The single-replica computation `draw` needs once per directory - for
+    a plain single-directory call this is the whole computation; for
+    several (replica averaging), it runs once per replica before their
+    curves are aligned and averaged.
     """
     if not Dir.endswith("/"):
         Dir += "/"
@@ -182,6 +164,59 @@ def draw(
 
     upper_x, upper_profile = _radial_series(upper_values, r, r_max, bin_width)
     lower_x, lower_profile = _radial_series(lower_values, r, r_max, bin_width)
+    return upper_x, upper_profile, lower_x, lower_profile, ylabel, r_max
+
+
+def draw(
+    Dir: str | list[str],
+    filename: str = "radial.png",
+    minmax: list[float] | None = None,
+    quantity: str = "mean",
+) -> None:
+    """Render upper/lower mean curvature or fitted height, radially averaged outward from the box center.
+
+    `quantity` is `"mean"` (mean curvature, default) or `"height"` (fitted
+    surface height, expressed relative to the mid-surface's own height at
+    that same point - the membrane's absolute position in the box is
+    arbitrary, but its distance from its own mid-surface is physical).
+    Middle is loaded at its raw value everywhere: for `"mean"` it's never
+    read at all (only upper/lower are plotted); for `"height"` it's a
+    subtraction reference whose value at a point holds regardless of
+    either leaflet's own hole there, keeping upper's and lower's own
+    relative-height values independent of each other's holes. Only upper
+    and lower are plotted either way, each drawn exactly as computed.
+
+    Each leaflet's own curve starts at its own `_hole_radius` (the largest
+    all-NaN circle centered on the box center, e.g. where --Remove-TMD
+    masked a protein) and runs to `r_max` (the fixed circle radius under
+    --rotate, or the box's own inscribed-circle radius), quantile-binned
+    (`_radial_series`) so each point on the curve reflects a comparable
+    number of grid points. The x-axis starts at 0. `_no_value_wedge`
+    shades the region between the y-axis and the line through the two
+    curves' own starting points, spanning the full y-range, labeled
+    "No value" in the legend.
+
+    `Dir` is a single directory (unchanged from before replica averaging
+    existed) or a list of them - with more than one, each is treated as an
+    independent replica of the same system: `_radial_profiles_for_directory`
+    runs once per replica, then each leaflet's own curves are interpolated
+    onto a common radius grid and averaged (`replica_average.align_and_average`),
+    with a shaded +/- 1 std band showing how much the replicas actually
+    disagree, not sampling noise. `r_max` becomes the smallest of every
+    replica's own r_max, since the plotted range can't exceed what every
+    replica actually covers.
+    """
+    dirs = [Dir] if isinstance(Dir, str) else list(Dir)
+    per_dir = [_radial_profiles_for_directory(d, quantity) for d in dirs]
+    ylabel = per_dir[0][4]
+    r_max = min(p[5] for p in per_dir)
+
+    upper_band = lower_band = None
+    if len(dirs) == 1:
+        upper_x, upper_profile, lower_x, lower_profile = per_dir[0][:4]
+    else:
+        upper_x, upper_profile, upper_band, _ = align_and_average([(p[0], p[1]) for p in per_dir])
+        lower_x, lower_profile, lower_band, _ = align_and_average([(p[2], p[3]) for p in per_dir])
 
     linewidth = 3
     fontsize = 22
@@ -190,6 +225,16 @@ def draw(
     ax.axhline(0, color="black", linewidth=linewidth, linestyle="--", alpha=0.8)
     ax.plot(upper_x, upper_profile, label="Upper", color="tab:red", linewidth=linewidth)
     ax.plot(lower_x, lower_profile, label="Lower", color="tab:blue", linewidth=linewidth)
+    if upper_band is not None:
+        ax.fill_between(
+            upper_x, upper_profile - upper_band, upper_profile + upper_band,
+            color="tab:red", alpha=0.2, linewidth=0,
+        )
+    if lower_band is not None:
+        ax.fill_between(
+            lower_x, lower_profile - lower_band, lower_profile + lower_band,
+            color="tab:blue", alpha=0.2, linewidth=0,
+        )
     ax.set_xlabel("Radial distance from center (Angstrom)", fontsize=fontsize)
     ax.set_ylabel(ylabel, fontsize=fontsize)
     ax.tick_params(labelsize=fontsize * 0.8, width=linewidth, length=2 * linewidth)
@@ -235,18 +280,20 @@ def _build_radial_plot_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument('--minimum', type=float, default=None, help="fix the y-axis lower bound")
     parser.add_argument('--maximum', type=float, default=None, help="fix the y-axis upper bound")
+    add_replica_argument(parser)
     add_manual(parser, "map_radial_plot")
     return parser
 
 
 def radial_plot(argv: list[str]) -> None:
-    """CLI entry: render a radial mean-curvature or height profile (upper/lower) from a 'CALM analyze full' output directory."""
+    """CLI entry: render a radial mean-curvature or height profile (upper/lower) from a 'CALM
+    analyze full' output directory, or the average of several (see --replica)."""
     parser = _build_radial_plot_parser()
 
     ns = parser.parse_args(argv)
     minmax = [ns.minimum, ns.maximum] if ns.minimum is not None and ns.maximum is not None else None
 
-    draw(Dir=ns.numpys_directory, filename=ns.outfile, minmax=minmax, quantity=ns.quantity)
+    draw(Dir=all_replica_dirs(ns), filename=ns.outfile, minmax=minmax, quantity=ns.quantity)
 
 
 if __name__ == "__main__":

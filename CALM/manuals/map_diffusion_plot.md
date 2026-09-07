@@ -26,6 +26,11 @@ CALM map diffusion_plot -i diffusion_out_dir -o diffusion.png
   diffusion`, alongside the pooled files) instead of `diffusion.npy`/
   `msd_curves.npy` - no re-run of `CALM analyze diffusion` needed to
   switch between the two views.
+- `--replica` (repeatable) - another `numpys_directory` to average
+  together with `-i`, as an independent replica of the same system. Given
+  at least once, every `(species, leaflet)` curve becomes the mean across
+  whichever replicas have that curve, with a shaded +/- 1 std band. `-i`
+  alone (the default) is unchanged. See "Averaging over replicas" below.
 
 ## What's plotted
 
@@ -55,6 +60,19 @@ curve is exactly what `CALM analyze diffusion` already computed.
   lag time grows is subdiffusive; one that tracks it closely is diffusing
   normally over that range. Not drawn on `--scale linear`, where a
   straight reference line wouldn't mean the same thing.
+
+## Averaging over replicas
+
+With one or more `--replica`, for every `(species, leaflet)` key present
+in any replica, that curve is gathered from every replica that has it
+(one missing it entirely, e.g. a species absent from that replica, is
+silently skipped for that key alone) and linearly interpolated onto the
+shortest-range replica's own tau grid before averaging - nothing is
+extrapolated past a shorter-lived replica's own range. The legend's `D`
+becomes the mean of that key's own fitted `D_cm2_s` across the replicas
+that had it, +/- the population std (not the standard error) of those
+same values - not any single replica's own fit `stderr` - plus
+`(n=... replicas)`, how many actually contributed to that particular curve.
 
 ## Notes
 

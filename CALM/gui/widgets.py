@@ -98,6 +98,43 @@ def build_field_row(
         _Tooltip(widget, spec.help)
         return FieldWidget(var.get, lambda v: var.set(bool(v)))
 
+    if spec.kind == "optional_flag_value":
+        # Three states, not a plain checkbox or a plain text entry: omitted
+        # (False), given bare (True), or given with a value (a selection
+        # string) - a Checkbutton for "given at all" plus an adjacent Entry
+        # for the optional value, enabled only while the box is checked.
+        given_var = tk.BooleanVar(value=spec.default is True or isinstance(spec.default, str))
+        value_var = tk.StringVar(value=spec.default if isinstance(spec.default, str) else "")
+
+        entry = ttk.Entry(parent, textvariable=value_var)
+
+        def update_entry_state(_var: object = None, _idx: object = None, _mode: object = None) -> None:
+            entry.configure(state="normal" if given_var.get() else "disabled")
+
+        given_var.trace_add("write", update_entry_state)
+        checkbox = ttk.Checkbutton(parent, variable=given_var)
+        checkbox.grid(row=row, column=1, sticky="w", pady=2)
+        entry.grid(row=row, column=2, sticky="we", padx=(6, 0), pady=2)
+        update_entry_state()
+        _Tooltip(checkbox, spec.help)
+        _Tooltip(entry, spec.help)
+
+        def get_optional_flag_value() -> object:
+            if not given_var.get():
+                return False
+            text = value_var.get()
+            return text if text else True
+
+        def set_optional_flag_value(value: object) -> None:
+            if isinstance(value, str) and value:
+                given_var.set(True)
+                value_var.set(value)
+            else:
+                given_var.set(value is True)
+                value_var.set("")
+
+        return FieldWidget(get_optional_flag_value, set_optional_flag_value)
+
     if spec.kind == "choice":
         default = str(spec.default) if spec.default is not None else (spec.choices or [""])[0]
         text_var = tk.StringVar(value=default)
@@ -137,8 +174,10 @@ def build_field_row(
         _Tooltip(widget, spec.help)
         return FieldWidget(lambda: [c for c, v in choice_vars.items() if v.get()], set_multichoice)
 
-    # "multi" and "text" both start as a plain Entry; "multi" only differs
-    # in how its value is read back below (space-separated -> a list).
+    # "multi", "append", and "text" all start as a plain Entry; "multi"/
+    # "append" only differ in how their value is read back below
+    # (space-separated -> a list) - the two are visually identical here,
+    # and only diverge in how build_argv turns that list back into argv.
     if isinstance(spec.default, (list, tuple)):
         default_text = " ".join(str(v) for v in spec.default)
     elif spec.default is None:
@@ -164,6 +203,6 @@ def build_field_row(
         else:
             text_var.set(str(value))
 
-    if spec.kind == "multi":
+    if spec.kind in ("multi", "append"):
         return FieldWidget(lambda: text_var.get().split(), set_text)
     return FieldWidget(text_var.get, set_text)

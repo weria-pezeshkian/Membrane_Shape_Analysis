@@ -170,6 +170,75 @@ def _draw_with_captured_axes(tmp_path: Path, **draw_kwargs) -> plt.Axes:
     return real_ax
 
 
+def _draw_replicas_with_captured_axes(dirs: list[Path], out_path: Path, **draw_kwargs) -> plt.Axes:
+    real_fig, real_ax = plt.subplots()
+    with patch("CALM.map.radial_plot.plt.subplots", return_value=(real_fig, real_ax)):
+        draw([str(d) for d in dirs], filename=str(out_path), **draw_kwargs)
+    return real_ax
+
+
+def _write_mean_curvature_replica(d: Path, Lx: float, Ly: float, gridsize: int, upper_scale: float) -> None:
+    """A replica directory whose own upper curvature is `upper_scale * r`, lower fixed at `0.02 * r`."""
+    _write_dimensions_sft(d, Lx, Ly)
+    x = np.linspace(0, Lx, gridsize, endpoint=False)
+    y = np.linspace(0, Ly, gridsize, endpoint=False)
+    X, Y = np.meshgrid(x, y)
+    r = np.hypot(X - Lx / 2, Y - Ly / 2)
+    upper = upper_scale * r
+    lower = 0.02 * r
+    middle = 0.03 * r
+    np.save(d / "0_mean_curvature.npy", np.stack([upper, lower, middle]))
+
+
+def test_draw_accepts_a_single_element_list_identically_to_a_plain_string(tmp_path: Path) -> None:
+    _write_mean_curvature_replica(tmp_path, 100.0, 100.0, gridsize=20, upper_scale=0.01)
+    ax_str = _draw_with_captured_axes(tmp_path)
+    try:
+        ax_list = _draw_replicas_with_captured_axes([tmp_path], tmp_path / "out2.png")
+        try:
+            upper_str = next(line for line in ax_str.lines if line.get_label() == "Upper")
+            upper_list = next(line for line in ax_list.lines if line.get_label() == "Upper")
+            assert np.allclose(upper_str.get_ydata(), upper_list.get_ydata())
+            assert not ax_list.collections  # a single directory (even as a list) has no band
+        finally:
+            plt.close(ax_list.figure)
+    finally:
+        plt.close(ax_str.figure)
+
+
+def test_draw_replica_average_bands_the_mean_between_the_replicas_own_curves(tmp_path: Path) -> None:
+    rep1, rep2 = tmp_path / "rep1", tmp_path / "rep2"
+    rep1.mkdir()
+    rep2.mkdir()
+    _write_mean_curvature_replica(rep1, 100.0, 100.0, gridsize=20, upper_scale=0.01)
+    _write_mean_curvature_replica(rep2, 100.0, 100.0, gridsize=20, upper_scale=0.03)
+
+    ax = _draw_replicas_with_captured_axes([rep1, rep2], tmp_path / "out.png")
+    try:
+        upper_line = next(line for line in ax.lines if line.get_label() == "Upper")
+        # The averaged curve's own values sit strictly between the two
+        # replicas' own upper_scale=0.01 and upper_scale=0.03 curves.
+        assert np.all(upper_line.get_ydata() > 0.0)
+        # Two bands: one for upper, one for lower.
+        assert len(ax.collections) == 2
+    finally:
+        plt.close(ax.figure)
+
+
+def test_draw_replica_average_r_max_is_the_smaller_of_the_replicas(tmp_path: Path) -> None:
+    rep1, rep2 = tmp_path / "rep1", tmp_path / "rep2"
+    rep1.mkdir()
+    rep2.mkdir()
+    _write_mean_curvature_replica(rep1, 100.0, 100.0, gridsize=20, upper_scale=0.01)  # r_max=50
+    _write_mean_curvature_replica(rep2, 60.0, 60.0, gridsize=20, upper_scale=0.01)  # r_max=30, smaller
+
+    ax = _draw_replicas_with_captured_axes([rep1, rep2], tmp_path / "out.png")
+    try:
+        assert ax.get_xlim()[1] == pytest.approx(30.0)
+    finally:
+        plt.close(ax.figure)
+
+
 def test_draw_plots_only_upper_and_lower_with_no_sign_change(tmp_path: Path) -> None:
     gridsize = 20
     Lx = Ly = 100.0

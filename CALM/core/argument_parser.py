@@ -33,6 +33,30 @@ def default_replay_name(out_dir: str | None) -> str:
         return str(Path(out_dir) / name)
     return name
 
+def clear_output_directory(out_dir: str) -> None:
+    """Remove every existing .npy file from `out_dir` and its `raw_sft/` subdirectory, for -c/--clear.
+
+    `out_dir`'s own top level holds the consolidated output (Amn.npy,
+    qmn.npy, dimensions.npy, holemask.npy, ...); `raw_sft/` holds the
+    per-frame files `calc_fourier` builds them from (see
+    core/fourier_build.py's `_one_frame`). Both need clearing together: a
+    per-frame file left behind in `raw_sft/` from an earlier run with
+    different settings (e.g. --Remove-TMD on for only a few frames before
+    being interrupted) silently persists into a later, differently-scoped
+    rebuild that reuses the same `out_dir` without --clear touching it -
+    `SFT.build` (core/fourier_sft.py) has no way to tell such a stray file
+    apart from a genuine one, and loads it anyway.
+    """
+    for directory in (Path(out_dir), Path(out_dir) / "raw_sft"):
+        if not directory.is_dir():
+            continue
+        for file_path in directory.glob("*.npy"):
+            try:
+                file_path.unlink()
+            except OSError as e:
+                print(f"Error deleting {file_path}: {e}")
+
+
 def none_or_int(x: str) -> int | None:
     # Enables faithful round-trip for --Until None
     return None if x.lower() == "none" else int(x)

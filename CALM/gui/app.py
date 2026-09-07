@@ -115,6 +115,7 @@ class CommandTab:
             section = CollapsibleSection(form, title)
             section.pack(fill="x")
             section.body.columnconfigure(1, weight=1)
+            section.body.columnconfigure(2, weight=1)  # stretches optional_flag_value's own value Entry
             for row, spec in enumerate(specs):
                 path_spec = path_spec_for(command.label, spec.dest)
                 self._widgets[spec.dest] = build_field_row(section.body, row, spec, path_spec, cwd_getter)

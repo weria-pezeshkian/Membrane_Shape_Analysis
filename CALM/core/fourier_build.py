@@ -217,17 +217,50 @@ def _grid_to_atom_distances(
     return distances.reshape(X.shape)
 
 
-def _close_enclosed_gaps(hole: np.ndarray, iterations: int = 1) -> np.ndarray:
-    """Extend `hole` with a periodic-boundary-aware morphological closing (dilate then erode).
+def _close_enclosed_gaps(hole: np.ndarray) -> np.ndarray:
+    """Fill every non-hole gap in `hole` that is enclosed but for at most a single-cell-wide leak,
+    periodic-boundary-aware.
 
-    Tiles `hole` 3x3 to resolve periodic connectivity, then applies
-    `scipy.ndimage.binary_closing` with `iterations` steps, merging hole
-    cells across non-hole gaps up to about that many cells wide.
+    Tiles `hole` 3x3 to resolve periodic connectivity (a gap that wraps
+    across the box edge is still correctly seen as connected to the open
+    membrane on the far side), then two steps:
+
+    1. Seal single-cell-wide leaks in the boundary with one fixed iteration
+       of `scipy.ndimage.binary_closing`, using a full 3x3 (8-connected)
+       structuring element rather than scipy's default 4-connected cross -
+       just enough to bridge the kind of one-cell notch real per-grid-point
+       noise in the underlying distance field can produce (e.g. a single
+       lipid atom sitting right at a hole's edge), independent of
+       hole/protein size. The 4-connected default was tried and confirmed
+       (empirically) NOT to seal a single missing cell in an otherwise
+       solid wall unless the gap happens to face directly toward hole on
+       two opposite sides already - a leak punched sideways through a
+       1-cell-thick wall (the realistic case) needs the diagonal
+       neighbors 8-connectivity adds to actually bridge.
+    2. `scipy.ndimage.binary_fill_holes` on the SEALED mask then fills
+       whatever is topologically enclosed there, with no size limit - a
+       genuinely enclosed gap is filled regardless of how large it is.
+
+    A plain `binary_fill_holes` on the raw (unsealed) mask, with no
+    tolerance at all, is fragile to exactly the single-cell leak step (1)
+    seals: a real hole boundary, being a per-grid-point threshold on a
+    continuous distance field, commonly has that kind of one-cell notch,
+    and without sealing it first, a region that should read as enclosed
+    registers as "connected to the open membrane" and never gets filled -
+    the original un-closed-island bug, back through a different door. The
+    seal is small and fixed rather than derived from `far_threshold`, so it
+    can only bridge two separate hole regions that are already within
+    about 2 grid cells of each other - a resolution-scale tolerance, not
+    the unbounded (10+ cell) bridging the old far_threshold-derived
+    iteration count could do, which is what let unrelated holes merge into
+    one oversized blob.
     """
     H, W = hole.shape
     tiled = np.tile(hole, (3, 3))
-    closed = ndimage.binary_closing(tiled, iterations=iterations)
-    return closed[H:2 * H, W:2 * W]
+    seal_structure = ndimage.generate_binary_structure(2, 2)
+    sealed = ndimage.binary_closing(tiled, structure=seal_structure, iterations=1)
+    filled = ndimage.binary_fill_holes(sealed)
+    return filled[H:2 * H, W:2 * W]
 
 
 def _tmd_protein_atoms(
@@ -496,16 +529,8 @@ def _remove_tmd_hole_mask(
     hole_lower = (dist_lower > threshold) & (near_protein_lower | (dist_lower > far_threshold))
     n_before_upper = int(hole_upper.sum())
     n_before_lower = int(hole_lower.sum())
-    # `iterations` is in grid cells; `far_threshold` is the physical scale
-    # already established as "far enough from any lipid to count as hole
-    # regardless of protein proximity" - a non-hole island narrower than
-    # that, in physical units, is closed. `threshold` itself is typically
-    # too close to one grid cell's own size to bridge realistic islands
-    # (see TODO.md).
-    cell_size = min(Lx, Ly) / X.shape[0]
-    close_iterations = max(1, int(round(far_threshold / cell_size)))
-    hole_upper = _close_enclosed_gaps(hole_upper, iterations=close_iterations)
-    hole_lower = _close_enclosed_gaps(hole_lower, iterations=close_iterations)
+    hole_upper = _close_enclosed_gaps(hole_upper)
+    hole_lower = _close_enclosed_gaps(hole_lower)
     hole_mask = np.stack((hole_upper, hole_lower), axis=0)
 
     # Breaks each leaflet's flagged points down by which rule flagged them,

@@ -35,6 +35,17 @@ class FieldSpec:
       multi-select (several of the fixed choices at once, e.g. --method).
     - "multi" - `nargs` in ("+", "*"), no `choices` (e.g. --lipids): a
       text entry, space-separated, same syntax as the CLI itself.
+    - "append" - an `action="append"` flag (currently only --replica): a
+      text entry, space-separated like "multi" - but unlike "multi" (one
+      occurrence, several trailing values), this repeats the flag itself
+      once per value (`--replica a --replica b`, not `--replica a b`).
+    - "optional_flag_value" - `nargs="?"` with `const=True` (currently only
+      `--Remove-TMD`): a three-state flag - omitted entirely (`False`),
+      given bare (`True`), or given with a value (a selection string) - a
+      Checkbutton (given at all) plus an adjacent text entry (the optional
+      value), not a plain text entry: unlike every other flag, `str(default)`
+      here is the Python string "False", which is never a value CALM should
+      actually receive as this flag's argument.
     - "text" - everything else (str/int/float/a custom `type=` callable):
       a plain text entry. The GUI never needs to know what a custom type=
       callable does - the value is passed through as a string and
@@ -85,10 +96,23 @@ def _field_spec(action: argparse.Action, group_title: str | None) -> FieldSpec:
         kind = "bool_optional"
     elif isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
         kind = "bool"
+    elif isinstance(action, argparse._AppendAction):
+        # --replica (map/replica_average.py): repeatable, one value per
+        # occurrence (--replica a --replica b), unlike "multi"/"multichoice"
+        # (one occurrence, several values: --lipids a b) - build_argv must
+        # emit the flag once per value, not once with every value trailing.
+        kind = "append"
     elif action.choices is not None and action.nargs in ("+", "*"):
         kind = "multichoice"
     elif action.choices is not None:
         kind = "choice"
+    elif action.nargs == "?" and action.const is True:
+        # The --Remove-TMD pattern: bare flag => True, given a value => that
+        # value, omitted => the default (False) - core/argument_parser.py's
+        # write_replay_file already special-cases this exact same check for
+        # replay files, for the same reason (str(default) here is "False",
+        # never a real value CALM should receive as this flag's argument).
+        kind = "optional_flag_value"
     elif action.nargs in ("+", "*"):
         kind = "multi"
     else:

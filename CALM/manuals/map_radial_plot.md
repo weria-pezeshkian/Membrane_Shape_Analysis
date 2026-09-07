@@ -18,6 +18,25 @@ CALM map radial_plot -i full_out_dir -o radial.png
   (fitted surface height).
 - `--minimum`, `--maximum` - fix the y-axis lower/upper bound. Both must
   be given together; otherwise the axis auto-scales to the data.
+- `--replica` (repeatable) - another `numpys_directory` to average
+  together with `-i`, as an independent replica of the same system. Given
+  at least once, each leaflet's curve becomes the mean across `-i` and
+  every `--replica`, with a shaded +/- 1 std band showing how much the
+  replicas actually disagree (not sampling noise). `-i` alone (the
+  default) is unchanged. See "Averaging over replicas" below.
+
+## Averaging over replicas
+
+With one or more `--replica`, each replica's own radial profile is
+computed exactly as for a single directory (independent `--Remove-TMD`
+hole radius, box size, and quantile binning per replica), then every
+replica's curve is linearly interpolated onto the shortest-range replica's
+own radius grid before averaging - nothing is extrapolated past a shorter
+replica's own range (e.g. a bigger protein leaving a bigger hole in one
+replica than another). The plotted `r_max` is the smallest of every
+replica's own `r_max`, since the plotted range can't exceed what every
+replica actually covers. The shaded band is the population std (not the
+standard error) across replicas at each point.
 
 ## Notes
 

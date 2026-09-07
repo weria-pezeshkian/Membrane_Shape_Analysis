@@ -82,7 +82,8 @@ def _assign_nearest_leaflet(
 def _lipid_voronoi_fractions(
     species_xy: list[np.ndarray], X: np.ndarray, Y: np.ndarray, fourier: Fourier_Series_Function, Lx: float, Ly: float,
 ) -> np.ndarray:
-    """Lipid composition per grid point for one leaflet: shape (n_species, *X.shape), 1 for the nearest species and 0 for the rest.
+    """Lipid composition per grid point for one leaflet: shape (n_species, *X.shape), 1 for the nearest
+    species and 0 for the rest.
 
     Each row of `species_xy[i]` is one lipid's own (x, y). Both lipids and
     grid points are projected onto `fourier`'s own fitted height at their
@@ -608,13 +609,7 @@ def lipids(args: list[str]) -> None:
     )
 
     if ns.clear:
-        for filename in os.listdir(ns.out):
-            if filename.endswith(".npy"):
-                file_path = os.path.join(ns.out, filename)
-                try:
-                    os.remove(file_path)
-                except OSError as e:
-                    print(f"Error deleting {file_path}: {e}")
+        arg_helper.clear_output_directory(ns.out)
 
     try:
         start = time.perf_counter()

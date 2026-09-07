@@ -53,9 +53,7 @@ def test_close_enclosed_gaps_fills_an_interior_island() -> None:
 
 def test_close_enclosed_gaps_fills_an_island_touching_the_array_edge() -> None:
     # The island touches (0,0); its periodic neighbor across the wraparound
-    # is also hole, so it is enclosed all the way around. Sized to close
-    # fully at the conservative default of 1 iteration (a single cell or
-    # small gap; a wider one may only close partially at this setting).
+    # is also hole, so it is enclosed all the way around.
     hole = np.ones((10, 10), dtype=bool)
     hole[0:2, 0:2] = False
 
@@ -63,14 +61,73 @@ def test_close_enclosed_gaps_fills_an_island_touching_the_array_edge() -> None:
     assert result[0:2, 0:2].all()
 
 
-def test_close_enclosed_gaps_wider_gap_needs_more_iterations() -> None:
-    # A 3x3 gap only partially closes at the conservative default of 1
-    # iteration, but fully closes once given enough iterations to bridge it.
-    hole = np.ones((10, 10), dtype=bool)
-    hole[0:3, 0:3] = False
+def test_close_enclosed_gaps_fills_a_wide_enclosed_island_fully() -> None:
+    # A topological fill, not a fixed-radius one: a gap much wider than a
+    # couple of grid cells (here 5x5, fully enclosed) still closes
+    # completely in one call, with no iterations/size parameter needed at
+    # all - unlike the old fixed-radius morphological closing this
+    # replaced, where fully closing a gap this wide needed a large enough
+    # iteration count, and that same count would over-merge separate holes
+    # elsewhere (see the no-merge test below - this is the actual bug fix).
+    hole = np.ones((14, 14), dtype=bool)
+    hole[4:9, 4:9] = False  # 5x5 non-hole island, fully surrounded
 
-    assert not _close_enclosed_gaps(hole, iterations=1)[0:3, 0:3].all()
-    assert _close_enclosed_gaps(hole, iterations=3)[0:3, 0:3].all()
+    result = _close_enclosed_gaps(hole)
+    assert result[4:9, 4:9].all()
+
+
+def test_close_enclosed_gaps_never_merges_two_separate_holes_a_few_cells_apart() -> None:
+    # Two small hole blobs, open (non-hole) membrane connected all the way
+    # around both of them - not enclosing anything between them, so the gap
+    # between them must never be filled once it's wider than the single
+    # fixed-size (1-iteration) leak-sealing step can bridge (about 2 grid
+    # cells - see test_close_enclosed_gaps_seals_a_single_cell_leak below
+    # for that intentional, bounded exception). The old far_threshold-
+    # derived closing radius (10+ cells for a realistic grid) would bridge
+    # blobs this far apart too, over-growing the hole into one blob that
+    # doesn't correspond to any real enclosed region - the exact failure
+    # mode reported as "the hole is way too large for the protein."
+    hole = np.zeros((14, 14), dtype=bool)
+    hole[2:5, 2:5] = True
+    hole[8:11, 2:5] = True  # 3 empty rows (5-7) separate the two blobs
+
+    result = _close_enclosed_gaps(hole)
+    assert not result[5:8, 2:5].any()  # the gap between them stays open
+    assert result[2:5, 2:5].all() and result[8:11, 2:5].all()  # the blobs themselves are untouched
+
+
+def test_close_enclosed_gaps_seals_a_single_cell_leak() -> None:
+    # An otherwise fully-enclosing ring of hole with a single-cell gap in
+    # its wall still gets its interior filled: without the leak-sealing
+    # step, that one gap cell gives the interior a path to the open
+    # membrane, so a plain (unsealed) topological fill would leave it
+    # empty - reproducing the original un-closed-island bug through a
+    # different door. This is real per-grid-point noise territory (e.g. a
+    # single lipid atom sitting right at a hole's edge), not a hypothetical.
+    hole = np.zeros((14, 14), dtype=bool)
+    hole[3:10, 3:10] = True
+    hole[4:9, 4:9] = False  # interior, to be filled
+    hole[6, 3] = False  # single-cell leak in the ring's left wall
+
+    result = _close_enclosed_gaps(hole)
+    assert result[4:9, 4:9].all()
+
+
+def test_close_enclosed_gaps_bridges_two_holes_exactly_one_cell_apart() -> None:
+    # The documented, intentional bound on the leak-sealing step: two hole
+    # blobs separated by a single empty row DO merge - the same 1-iteration
+    # seal that bridges a single-cell leak in a wall (see the test above)
+    # can't tell that apart from two blobs that happen to be exactly that
+    # close together. This is the deliberate, resolution-scale (~1 grid
+    # cell) trade-off documented in _close_enclosed_gaps's own docstring,
+    # not a bug - contrast with the 3-row-gap test above, which stays
+    # separate.
+    hole = np.zeros((14, 14), dtype=bool)
+    hole[2:5, 2:5] = True
+    hole[6:9, 2:5] = True  # a single empty row (5) separates the two blobs
+
+    result = _close_enclosed_gaps(hole)
+    assert result[5, 2:5].all()
 
 
 def test_close_enclosed_gaps_leaves_a_periodically_open_strip_alone() -> None:
@@ -198,12 +255,10 @@ def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: 
     assert not hole_mask[1][far_from_gap].any()
 
 
-def test_one_frame_closes_gaps_wider_than_a_single_grid_cell(tmp_path: Path) -> None:
-    # _close_enclosed_gaps's own bare default (iterations=1) only closes
-    # gaps up to about 1-2 grid cells wide - _one_frame must scale it up
-    # from far_threshold, not fall back to that default, so enclosed
-    # islands wider than that (as real protein-shaped holes can be) still
-    # get closed. See TODO.md for why far_threshold, not threshold itself.
+def test_one_frame_closes_gaps_with_no_iterations_parameter(tmp_path: Path) -> None:
+    # _close_enclosed_gaps closes enclosed gaps of any width topologically
+    # now (see its own tests), with no iterations/size parameter to derive
+    # or pass - _one_frame's remove_tmd block must call it bare.
     Lx = Ly = Lz = 300.0
     rng = np.random.default_rng(1)
     spacing = 8.0
@@ -245,8 +300,7 @@ def test_one_frame_closes_gaps_wider_than_a_single_grid_cell(tmp_path: Path) -> 
         fb._worker_state.clear()
 
     assert mock_close.call_count == 2  # upper, lower
-    iterations_used = [call.kwargs["iterations"] for call in mock_close.call_args_list]
-    assert all(it > 1 for it in iterations_used)  # never the bare, too-small default
+    assert all(call.kwargs == {} and len(call.args) == 1 for call in mock_close.call_args_list)
 
 
 def test_one_frame_uses_its_own_tmd_selection_with_no_center_at_all(tmp_path: Path) -> None:

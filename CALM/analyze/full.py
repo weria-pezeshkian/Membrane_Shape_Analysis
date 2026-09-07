@@ -95,13 +95,7 @@ def full(args: list[str]) -> None:
     )
 
     if ns.clear:
-        for filename in os.listdir(ns.out):
-            if filename.endswith('.npy'):
-                file_path = os.path.join(ns.out, filename)
-                try:
-                    os.remove(file_path)
-                except OSError as e:
-                    print(f"Error deleting {file_path}: {e}")
+        arg_helper.clear_output_directory(ns.out)
 
     try:
         start = time.perf_counter()

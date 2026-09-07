@@ -122,8 +122,8 @@ full record of what happened.
 ## Other
 
 - `-W`, `--Workers` (default 1) - number of parallel workers.
-- `-c`, `--clear` - remove existing `.npy` files in `--out` before running.
-  No warning, no backup.
+- `-c`, `--clear` - remove existing `.npy` files in `--out` before running,
+  including its `raw_sft/` subdirectory. No warning, no backup.
 - `--loud` - also print info-level log messages to the console as the run
   progresses. Warnings and errors always print; by default, info-level
   messages (e.g. per-frame `--Remove-TMD` breakdowns) go to the replay log

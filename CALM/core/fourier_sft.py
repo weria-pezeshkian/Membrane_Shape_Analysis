@@ -9,6 +9,42 @@ import numpy as np
 from .fourier_build import calc_fourier
 
 
+def _format_frame_list(frames: list[int], limit: int = 10) -> str:
+    shown = ", ".join(str(f) for f in frames[:limit])
+    return shown if len(frames) <= limit else f"{shown}, ... ({len(frames) - limit} more)"
+
+
+def _check_hole_mask_matches_frames(
+    frame_indices: np.ndarray, hole_frame_indices: np.ndarray, out_dir: str
+) -> None:
+    """Raise if raw_sft/*_hole_mask.npy doesn't cover exactly the same frames as *_A_mn.npy.
+
+    A mismatch means raw_sft/ holds hole_mask files left over from an
+    earlier, differently-scoped build (e.g. --Remove-TMD used for only
+    part of a run before it was interrupted, or a run over a different
+    frame range) that a later rebuild reusing the same --out didn't clean
+    out - -c/--clear now clears raw_sft/ too (see
+    core/argument_parser.py's clear_output_directory), but a directory
+    built before that fix, or populated by hand, can still hit this.
+    Loading it anyway would silently pair hole_mask entries with the wrong
+    frames, or run out of them entirely - see utilize/vmd_xtc.py's own
+    IndexError when this went undetected.
+    """
+    if np.array_equal(frame_indices, hole_frame_indices):
+        return
+    missing = sorted(set(frame_indices.tolist()) - set(hole_frame_indices.tolist()))
+    stray = sorted(set(hole_frame_indices.tolist()) - set(frame_indices.tolist()))
+    raise ValueError(
+        f"raw_sft/*_hole_mask.npy in '{out_dir}' covers {len(hole_frame_indices)} frame(s), but "
+        f"*_A_mn.npy covers {len(frame_indices)} - they must match exactly.\n"
+        + (f"Frames missing a hole_mask file: {_format_frame_list(missing)}.\n" if missing else "")
+        + (f"Stray hole_mask file(s) with no matching frame: {_format_frame_list(stray)}.\n" if stray else "")
+        + "This usually means raw_sft/ has leftover *_hole_mask.npy files from an earlier, "
+        "differently-scoped build. Rerun with --clear (now also clears raw_sft/), or delete "
+        "raw_sft/ and rebuild from scratch."
+    )
+
+
 class SFT:
     """The per-frame Fourier coefficient stack: A_mn, q_mn, box dimensions, and optional hole mask."""
 
@@ -55,7 +91,8 @@ class SFT:
         self.q_mn, _ = self.read_raw(args.out, "q_mn")
         self.dimensions, _ = self.read_raw(args.out, "dimensions")
         if any((Path(args.out) / "raw_sft").glob("*_hole_mask.npy")):
-            self.hole_mask, _ = self.read_raw(args.out, "hole_mask")
+            self.hole_mask, hole_frame_indices = self.read_raw(args.out, "hole_mask")
+            _check_hole_mask_matches_frames(self.frame_indices, hole_frame_indices, args.out)
         self.regularized = bool(args.regularize)
 
     def write(self, out_dir: str) -> None:
@@ -110,7 +147,26 @@ class SFT:
 
         holemask_path = dir_path / "holemask.npy"
         if holemask_path.exists():
-            sft.hole_mask = np.load(holemask_path)
+            hole_mask = np.load(holemask_path)
+            # holemask.npy stores only the hole-mask values, not which frame
+            # each row belongs to (write() assumes they're already 1:1
+            # aligned with dimensions.npy's own frame order) - a row-count
+            # mismatch means it's stale, e.g. left over from an older,
+            # differently-scoped build of this same directory (--clear now
+            # clears raw_sft/ too, see clear_output_directory, but a
+            # directory built before that fix can still hit this). Loading
+            # it anyway would silently pair hole_mask rows with the wrong
+            # frames, or run out of them entirely - see utilize/vmd_xtc.py's
+            # own IndexError when this went undetected.
+            if hole_mask.shape[0] != sft.frame_indices.shape[0]:
+                raise ValueError(
+                    f"'{holemask_path}' has {hole_mask.shape[0]} frame(s), but "
+                    f"'{required['dimensions.npy']}' has {sft.frame_indices.shape[0]} - they must "
+                    "match. This usually means holemask.npy is stale, left over from an earlier, "
+                    "differently-scoped build of this directory. Rebuild from scratch (--clear now "
+                    "also clears raw_sft/, where this is generated from)."
+                )
+            sft.hole_mask = hole_mask
 
         regularized_path = dir_path / "regularized.npy"
         if regularized_path.exists():
