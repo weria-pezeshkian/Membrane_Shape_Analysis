@@ -86,6 +86,75 @@ def f(
     return zq - interp(yq, xq, grid=False)[()]
 
 
+def surface_normal(surface: Any, x: float, y: float) -> np.ndarray:
+    """Unit normal of `surface` (e.g. a Fourier_Series_Function) at (x, y), from its own analytic
+    gradient: (-Zx, -Zy, 1), normalized - the same sign convention analyze.py's thickness
+    calculation already uses for the middle surface, evaluated here directly from `surface`'s own
+    Zx/Zy rather than a discrete grid gradient, and for any surface (upper or lower), not just the
+    middle."""
+    zx = float(surface.Zx(np.asarray(x), np.asarray(y)))
+    zy = float(surface.Zy(np.asarray(x), np.asarray(y)))
+    n = np.array([-zx, -zy, 1.0])
+    return n / np.linalg.norm(n)
+
+
+def _surface_root(
+    t: float, surface: Any,
+    mx: float, my: float, mz: float,
+    nx: float, ny: float, nz: float,
+    Lx: float, Ly: float,
+) -> float:
+    """Root function for brentq: signed distance along a normal ray between a query point and
+    `surface`'s own analytic height - the same idea as `f` above, but evaluating `surface.Z`
+    directly (e.g. a Fourier_Series_Function) rather than through a RectBivariateSpline, so no
+    separate discretize-then-interpolate step is needed."""
+    xq = np.mod(mx + t * nx, Lx)
+    yq = np.mod(my + t * ny, Ly)
+    zq = mz + t * nz
+    return float(zq - surface.Z(np.asarray(xq), np.asarray(yq)))
+
+
+def nearest_surface_intersection(
+    surface: Any,
+    mx: float, my: float, mz: float,
+    nx: float, ny: float, nz: float,
+    Lx: float, Ly: float,
+    t_max_base: float,
+) -> float | None:
+    """Signed distance t along the normal ray (mx,my,mz)+t*(nx,ny,nz) to `surface`'s own height -
+    whichever of the two directions (t>0, t<0) crosses closer to the query point - widening the
+    search bracket up to 3 times (matching `_thickness_root`'s own widening) if neither direction
+    brackets a root at the current width.
+
+    Unlike `_thickness_root` (which always starts on the middle surface, so it already knows
+    upper lies in the t>0 direction and lower in t<0), the query point here can be an arbitrary
+    point - e.g. a protein atom that might sit on either side of `surface`, at any distance from
+    it - so both directions are tried and the smaller-magnitude root wins.
+
+    Unlike `_thickness_root`, a root found only via widening is NOT rejected for being far from
+    the query point: how far the query point is from `surface` is meaningless on its own here
+    (the caller decides what, if anything, that distance should be used for) - this only ever
+    reports whether a crossing exists at all, and where. `t_max_base` only sets the starting
+    search width; widening exists purely to help `brentq` bracket a genuine root, not to bound
+    how far away an accepted one may be.
+
+    Returns None only if every widened bracket, in both directions, still fails to bracket any
+    root at all.
+    """
+    t_max = t_max_base
+    for _ in range(4):
+        candidates = []
+        for lo, hi in ((0.0, t_max), (-t_max, 0.0)):
+            try:
+                candidates.append(brentq(_surface_root, lo, hi, args=(surface, mx, my, mz, nx, ny, nz, Lx, Ly)))
+            except ValueError:
+                continue
+        if candidates:
+            return min(candidates, key=abs)
+        t_max *= 2
+    return None
+
+
 def _thickness_root(
     interp: RectBivariateSpline,
     mx: float, my: float, mz: float,

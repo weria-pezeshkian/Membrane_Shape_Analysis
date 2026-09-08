@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
 
-from CALM.core.curvature import _thickness_root, shape_operator_curvatures
+from CALM.core.curvature import _thickness_root, nearest_surface_intersection, shape_operator_curvatures, surface_normal
 from CALM.core.fourier_core import Fourier_Series_Function
 
 
@@ -113,3 +113,58 @@ def test_thickness_root_lower_branch_searches_negative_t() -> None:
 
     assert root is not None
     assert np.isclose(root, -5.0)  # 20 + (-5)*1 = 15
+
+
+def _flat_fourier(Lx: float, Ly: float, z: float) -> Fourier_Series_Function:
+    f = Fourier_Series_Function(Lx, Ly, 0, 0)  # Nx=Ny=0 -> Anm is just the DC (constant) term
+    f.setAnm(np.array([[z]]))
+    return f
+
+
+def test_surface_normal_is_unit_length() -> None:
+    f = make_surface()
+    n = surface_normal(f, 30.0, 40.0)
+    assert np.isclose(np.linalg.norm(n), 1.0)
+
+
+def test_surface_normal_matches_the_gradient_formula() -> None:
+    f = make_surface()
+    x, y = 30.0, 40.0
+    n = surface_normal(f, x, y)
+    zx = float(f.Zx(np.asarray(x), np.asarray(y)))
+    zy = float(f.Zy(np.asarray(x), np.asarray(y)))
+    expected = np.array([-zx, -zy, 1.0])
+    expected /= np.linalg.norm(expected)
+    assert np.allclose(n, expected)
+
+
+def test_surface_normal_flat_surface_points_straight_up() -> None:
+    f = _flat_fourier(100.0, 80.0, z=25.0)
+    assert np.allclose(surface_normal(f, 30.0, 40.0), [0.0, 0.0, 1.0])
+
+
+def test_nearest_surface_intersection_finds_a_root_above_the_query_point() -> None:
+    Lx = Ly = 100.0
+    f = _flat_fourier(Lx, Ly, z=25.0)
+    t = nearest_surface_intersection(f, 50.0, 50.0, 20.0, 0.0, 0.0, 1.0, Lx, Ly, t_max_base=10.0)
+    assert t is not None
+    assert np.isclose(t, 5.0)  # 20 + 5*1 = 25
+
+
+def test_nearest_surface_intersection_finds_a_root_below_the_query_point() -> None:
+    # Unlike _thickness_root (which needs an `upper` flag to know which
+    # direction to search), this tries both directions itself - the same
+    # (0.0, 0.0, 1.0) normal finds a root whether the surface is above or
+    # below the query point.
+    Lx = Ly = 100.0
+    f = _flat_fourier(Lx, Ly, z=15.0)
+    t = nearest_surface_intersection(f, 50.0, 50.0, 20.0, 0.0, 0.0, 1.0, Lx, Ly, t_max_base=10.0)
+    assert t is not None
+    assert np.isclose(t, -5.0)  # 20 + (-5)*1 = 15
+
+
+def test_nearest_surface_intersection_returns_none_when_unreachable() -> None:
+    Lx = Ly = 100.0
+    f = _flat_fourier(Lx, Ly, z=5000.0)
+    t = nearest_surface_intersection(f, 50.0, 50.0, 20.0, 0.0, 0.0, 1.0, Lx, Ly, t_max_base=5.0)
+    assert t is None

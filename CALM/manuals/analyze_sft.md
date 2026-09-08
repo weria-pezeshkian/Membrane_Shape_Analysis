@@ -81,9 +81,20 @@ CALM analyze sft -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" [options]
   A grid point is flagged as a hole in a leaflet when it's farther from
   that leaflet's own atoms than a shared threshold, and either:
   1. it's within that same threshold of a protein atom (from the selection
-     above) currently embedded in the membrane (z between the fitted Upper
-     and Lower surfaces at that atom's own x, y); or
+     above) assigned to that same leaflet; or
   2. it's farther than 5x the threshold from that leaflet's own atoms.
+
+  A protein atom is assigned to exactly one leaflet - whichever its own
+  real position is actually closer to, measured by projecting it onto
+  each leaflet's own fitted surface along that leaflet's own local normal
+  (never both leaflets, never an average of the two). It's then only kept
+  as a hole contributor for that one leaflet if the grid cell it maps
+  onto isn't already well-supported by real lipid there (at least 3 of
+  the cell's own 4 corners within threshold of real lipid counts as
+  supported - one outlier corner is treated as noise, not a real gap).
+  How far the atom itself is from the surface plays no further part in
+  the decision: the hole is a property of the surface itself, not of any
+  one atom's own distance from it.
 
   The threshold is shared by both leaflets: a multiple of lipid spacing
   (the larger of the two leaflets' own typical spacing), capped by the

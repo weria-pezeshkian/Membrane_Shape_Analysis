@@ -17,6 +17,7 @@ from scipy import ndimage
 from scipy.spatial import ConvexHull, cKDTree
 
 from ..core import argument_parser as arg_helper
+from ..core.curvature import nearest_surface_intersection, surface_normal
 from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
 from ..core.fourier_fit import fit_coefficients
 from ..core.leaflet import _label_by_z, apply_margin_filter, get_components, track_components
@@ -79,6 +80,9 @@ class Rotation_and_Center_tracker:
         sel = self.u.select_atoms(self.sel1)
 
         box_center = self.u.dimensions[:3] / 2.0
+        if hasattr(sel.atoms,"bonds"):
+            if len(u.atoms.bonds)>0:
+                u.atoms.unwrap(compound="fragments")
         sel_center = sel.center_of_geometry(wrap=True)
 
         shift = box_center - sel_center
@@ -263,27 +267,98 @@ def _close_enclosed_gaps(hole: np.ndarray) -> np.ndarray:
     return filled[H:2 * H, W:2 * W]
 
 
-def _tmd_protein_atoms(
+def _assign_tmd_atoms_to_leaflets(
     center_selection: str,
     universe: mda.Universe,
     fourier_upper: Fourier_Series_Function,
     fourier_lower: Fourier_Series_Function,
-) -> np.ndarray:
-    """XYZ positions of `center_selection` atoms currently embedded in the membrane.
+    dist_upper: np.ndarray,
+    dist_lower: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Lx: float,
+    Ly: float,
+    threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """(upper_xyz, lower_xyz): `center_selection`'s own atoms, split by which leaflet each is
+    actually closer to - never both, never an average of the two - and kept only if it maps onto
+    a genuinely unsupported region of that same leaflet.
 
-    An atom counts only if its own z falls between the upper and lower
-    leaflet surfaces evaluated at that atom's own (x, y) - curvature-aware,
-    and with no size/margin tolerance so it stays force-field-independent.
-    This discards soluble/extramembrane domains of the same selection
-    without needing a separate "just the TMD part" selection string.
+    Deliberately NOT "is this atom's z between the fitted upper and lower
+    surfaces at its own (x, y)" (the previous approach here): that fit is a
+    smooth, low-order, whole-box surface, defined everywhere including
+    where there's no real lipid data to constrain it - inside a large
+    hole, it just continues the bulk membrane's own typical z-span rather
+    than reflecting that there's no real membrane there at all, so nearly
+    any atom near that typical span (not just genuine transmembrane atoms)
+    would pass. This never asks the fit whether an atom "looks embedded" -
+    it asks whether the atom's own real position maps, geometrically, onto
+    a part of a real leaflet's surface that itself has no real lipid
+    support (`dist_upper`/`dist_lower`, already computed from real
+    positions - ground truth, not a fit value).
+
+    For each atom: `nearest_surface_intersection` against upper (using
+    upper's own analytic normal at the atom's own (x, y), from `surface_normal`)
+    and independently against lower (using lower's own normal) - each
+    curvature-correct on its own terms, never a shared/averaged normal.
+    Whichever gives the smaller-magnitude signed distance is the leaflet
+    this atom actually belongs to - if only one intersection succeeds,
+    that one wins; if neither does (both brackets failed even widened),
+    the atom is dropped, nothing meaningful to assign.
+
+    How far the atom itself is from that leaflet plays no further part in
+    the decision - the hole is a property of the 2D surface (does real
+    lipid support exist at this (x, y)), and the atom is only ever used as
+    a probe for that; a deep-in-the-bilayer transmembrane atom and a loop
+    resting near the interface, at the same (x, y), point at the same
+    question about the same patch of surface. So the winning intersection
+    point's own grid cell is checked directly against that same leaflet's
+    own `dist_upper`/`dist_lower`: if at least 3 of its 4 corners are
+    already within `threshold` of real lipid (one outlier corner is
+    treated as noise, not a real gap), this atom maps onto a region that's
+    genuinely supported regardless of the atom's own presence, so it's
+    discarded; otherwise it's kept as a real contributor to that leaflet's
+    hole.
     """
     atoms = universe.select_atoms(center_selection)
-    xy = atoms.positions[:, :2]
-    z = atoms.positions[:, 2]
-    z_upper = fourier_upper.Z(xy[:, 0], xy[:, 1])
-    z_lower = fourier_lower.Z(xy[:, 0], xy[:, 1])
-    in_tmd = (z >= np.minimum(z_upper, z_lower)) & (z <= np.maximum(z_upper, z_lower))
-    return atoms.positions[in_tmd]
+    gridsize = X.shape[0]
+    dx, dy = Lx / gridsize, Ly / gridsize
+    t_max_base = float(np.nanmax(np.abs(fourier_upper.Z(X, Y) - fourier_lower.Z(X, Y)))) * 2
+
+    upper_xyz: list[np.ndarray] = []
+    lower_xyz: list[np.ndarray] = []
+    for pos in atoms.positions:
+        ax, ay, az = float(pos[0]), float(pos[1]), float(pos[2])
+        n_upper = surface_normal(fourier_upper, ax, ay)
+        n_lower = surface_normal(fourier_lower, ax, ay)
+        l_upper = nearest_surface_intersection(
+            fourier_upper, ax, ay, az, n_upper[0], n_upper[1], n_upper[2], Lx, Ly, t_max_base,
+        )
+        l_lower = nearest_surface_intersection(
+            fourier_lower, ax, ay, az, n_lower[0], n_lower[1], n_lower[2], Lx, Ly, t_max_base,
+        )
+
+        if l_upper is None and l_lower is None:
+            continue
+        if l_lower is None or (l_upper is not None and abs(l_upper) <= abs(l_lower)):
+            leaflet, signed_distance, n, dist_field = "upper", l_upper, n_upper, dist_upper
+        else:
+            leaflet, signed_distance, n, dist_field = "lower", l_lower, n_lower, dist_lower
+
+        xq = (ax + signed_distance * n[0]) % Lx
+        yq = (ay + signed_distance * n[1]) % Ly
+        i0, j0 = int(xq / dx) % gridsize, int(yq / dy) % gridsize
+        i1, j1 = (i0 + 1) % gridsize, (j0 + 1) % gridsize
+        corners = (dist_field[j0, i0], dist_field[j0, i1], dist_field[j1, i0], dist_field[j1, i1])
+        if sum(c <= threshold for c in corners) >= 3:
+            continue  # already genuinely supported there, regardless of this atom
+
+        (upper_xyz if leaflet == "upper" else lower_xyz).append(pos)
+
+    return (
+        np.array(upper_xyz) if upper_xyz else np.empty((0, 3)),
+        np.array(lower_xyz) if lower_xyz else np.empty((0, 3)),
+    )
 
 
 def _fourier_by_layer(
@@ -488,12 +563,15 @@ def _remove_tmd_hole_mask(
 
     A grid point counts as a hole when it is unsupported by lipids (the
     distance test) and either within `threshold` of a protein atom
-    currently embedded in the membrane (_tmd_protein_atoms), or farther
-    from any lipid than `far_threshold`. Each leaflet's own protein
-    distance is measured against that leaflet's own fitted surface. The
-    protein selection is `remove_tmd`'s own value when --Remove-TMD was
-    given one, and --center's selection (`rotation_and_center.sel1`) when
-    --Remove-TMD was given bare (`remove_tmd is True`).
+    actually assigned to that same leaflet (`_assign_tmd_atoms_to_leaflets`
+    - each atom belongs to exactly one leaflet, never both, decided by
+    which leaflet's own fitted surface it's geometrically closer to), or
+    farther from any lipid than `far_threshold`. Each leaflet's own
+    protein distance is measured against that leaflet's own fitted
+    surface. The protein selection is `remove_tmd`'s own value when
+    --Remove-TMD was given one, and --center's selection
+    (`rotation_and_center.sel1`) when --Remove-TMD was given bare
+    (`remove_tmd is True`).
     """
     nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
 
@@ -511,15 +589,18 @@ def _remove_tmd_hole_mask(
         tmd_selection = rotation_and_center.sel1
     else:
         tmd_selection = remove_tmd
-    tmd_xyz = _tmd_protein_atoms(tmd_selection, universe, fourier1, fourier2)
-    tmd_x, tmd_y = tmd_xyz[:, 0], tmd_xyz[:, 1]
+    tmd_xyz_upper, tmd_xyz_lower = _assign_tmd_atoms_to_leaflets(
+        tmd_selection, universe, fourier1, fourier2, dist_upper, dist_lower, X, Y, Lx, Ly, threshold,
+    )
     # A protein atom's own z is its real transmembrane depth, not a height
     # on either leaflet's surface, so distance to each leaflet is measured
     # from the atom's (x, y) projected onto that leaflet's own fitted
     # height - both points then live on the same surface, matching how
     # dist_upper/dist_lower measure grid-to-lipid distance.
-    tmd_on_upper = np.column_stack([tmd_x, tmd_y, fourier1.Z(tmd_x, tmd_y)])
-    tmd_on_lower = np.column_stack([tmd_x, tmd_y, fourier2.Z(tmd_x, tmd_y)])
+    tmd_x_upper, tmd_y_upper = tmd_xyz_upper[:, 0], tmd_xyz_upper[:, 1]
+    tmd_x_lower, tmd_y_lower = tmd_xyz_lower[:, 0], tmd_xyz_lower[:, 1]
+    tmd_on_upper = np.column_stack([tmd_x_upper, tmd_y_upper, fourier1.Z(tmd_x_upper, tmd_y_upper)])
+    tmd_on_lower = np.column_stack([tmd_x_lower, tmd_y_lower, fourier2.Z(tmd_x_lower, tmd_y_lower)])
     dist_to_protein_upper = _grid_to_atom_distances(tmd_on_upper, X, Y, fourier1, Lx, Ly)
     dist_to_protein_lower = _grid_to_atom_distances(tmd_on_lower, X, Y, fourier2, Lx, Ly)
 

@@ -2,6 +2,9 @@
 - _tmd_threshold: the Nyquist (half-wavelength) threshold formula
 - _grid_to_atom_distances: 3D chord distance, periodic in xy, to nearest atom
 - _close_enclosed_gaps: periodic-boundary-aware enclosed-region closing
+- _assign_tmd_atoms_to_leaflets: real-data-grounded leaflet assignment and
+  hole-relevance filtering (see core/curvature.py's nearest_surface_intersection/
+  surface_normal for the underlying per-leaflet normal-projection primitives)
 - _one_frame's dynamic_select path
 - _one_frame's remove_tmd selection resolution: bare (True) falls back to
   --center's selection, a string uses that selection directly with no
@@ -22,9 +25,9 @@ import numpy as np
 
 from CALM.core import fourier_build as fb
 from CALM.core.fourier_build import (
+    _assign_tmd_atoms_to_leaflets,
     _close_enclosed_gaps,
     _grid_to_atom_distances,
-    _tmd_protein_atoms,
     _tmd_threshold,
 )
 from CALM.core.fourier_core import Fourier_Series_Function
@@ -149,35 +152,151 @@ def _flat_surface(Lx: float, Ly: float, z: float) -> Fourier_Series_Function:
     return f
 
 
-def test_tmd_protein_atoms_keeps_only_atoms_between_the_two_surfaces() -> None:
-    Lx = Ly = 100.0
-    upper = _flat_surface(Lx, Ly, 70.0)
-    lower = _flat_surface(Lx, Ly, 30.0)
+def _flat_grid(Lx: float, Ly: float, gridsize: int) -> tuple[np.ndarray, np.ndarray]:
+    x = np.linspace(0, Lx, gridsize, endpoint=False)
+    y = np.linspace(0, Ly, gridsize, endpoint=False)
+    return np.meshgrid(x, y)
 
-    u = mda.Universe.empty(n_atoms=3, trajectory=True)
-    u.add_TopologyAttr("name", ["BB", "BB", "BB"])
+
+def test_assign_tmd_atoms_discards_an_atom_mapping_onto_a_fully_supported_cell() -> None:
+    # Real lipid support (dist_upper/dist_lower) is what decides relevance
+    # here, never the fit's own z-window (the previous approach's failure
+    # mode) - an atom whose winning intersection lands where every corner
+    # is already well-supported doesn't matter to the hole, however close
+    # to the fitted surface its own z happens to be.
+    Lx = Ly = 100.0
+    gridsize = 10
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper, lower = _flat_surface(Lx, Ly, 70.0), _flat_surface(Lx, Ly, 30.0)
+    dist_upper = np.zeros((gridsize, gridsize))  # fully supported everywhere
+    dist_lower = np.zeros((gridsize, gridsize))
+
+    u = mda.Universe.empty(n_atoms=1, trajectory=True)
+    u.add_TopologyAttr("name", ["BB"])
+    u.atoms.positions = [[55.0, 55.0, 68.0]]  # near upper (70), far from lower (30)
+
+    upper_xyz, lower_xyz = _assign_tmd_atoms_to_leaflets(
+        "name BB", u, upper, lower, dist_upper, dist_lower, X, Y, Lx, Ly, threshold=1.0,
+    )
+    assert upper_xyz.shape == (0, 3)
+    assert lower_xyz.shape == (0, 3)
+
+
+def test_assign_tmd_atoms_keeps_an_atom_mapping_onto_a_mostly_unsupported_cell() -> None:
+    Lx = Ly = 100.0
+    gridsize = 10
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper, lower = _flat_surface(Lx, Ly, 70.0), _flat_surface(Lx, Ly, 30.0)
+    dist_upper = np.zeros((gridsize, gridsize))
+    dist_upper[5, 5] = 999.0  # 2 of the 4 corners around (55, 55) unsupported -
+    dist_upper[5, 6] = 999.0  # only 2/4 supported, below the 3-of-4 "good" threshold
+    dist_lower = np.zeros((gridsize, gridsize))
+
+    u = mda.Universe.empty(n_atoms=1, trajectory=True)
+    u.add_TopologyAttr("name", ["BB"])
+    u.atoms.positions = [[55.0, 55.0, 68.0]]
+
+    upper_xyz, lower_xyz = _assign_tmd_atoms_to_leaflets(
+        "name BB", u, upper, lower, dist_upper, dist_lower, X, Y, Lx, Ly, threshold=1.0,
+    )
+    assert upper_xyz.shape == (1, 3)
+    assert np.allclose(upper_xyz[0], [55.0, 55.0, 68.0])
+    assert lower_xyz.shape == (0, 3)
+
+
+def test_assign_tmd_atoms_discards_when_only_one_corner_is_an_unsupported_outlier() -> None:
+    # 3 of 4 corners supported counts as "good" - a single unsupported
+    # corner is treated as noise, not a real gap, so the atom is still
+    # discarded (distance from the atom to the surface plays no part in
+    # this either way - only the grid cell's own real support does).
+    Lx = Ly = 100.0
+    gridsize = 10
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper, lower = _flat_surface(Lx, Ly, 70.0), _flat_surface(Lx, Ly, 30.0)
+    dist_upper = np.zeros((gridsize, gridsize))
+    dist_upper[5, 5] = 999.0  # only 1 of the 4 corners around (55, 55) is unsupported
+    dist_lower = np.zeros((gridsize, gridsize))
+
+    u = mda.Universe.empty(n_atoms=1, trajectory=True)
+    u.add_TopologyAttr("name", ["BB"])
+    u.atoms.positions = [[55.0, 55.0, 68.0]]
+
+    upper_xyz, lower_xyz = _assign_tmd_atoms_to_leaflets(
+        "name BB", u, upper, lower, dist_upper, dist_lower, X, Y, Lx, Ly, threshold=1.0,
+    )
+    assert upper_xyz.shape == (0, 3)
+    assert lower_xyz.shape == (0, 3)
+
+
+def test_assign_tmd_atoms_distance_from_the_surface_does_not_affect_the_outcome() -> None:
+    # The hole is a property of the surface (is this (x, y) really
+    # supported by lipid), not of any one atom's own distance from it - an
+    # atom far above the surface and one right at it, mapping onto the
+    # same unsupported cell, are both kept identically.
+    Lx = Ly = 100.0
+    gridsize = 10
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper, lower = _flat_surface(Lx, Ly, 70.0), _flat_surface(Lx, Ly, 30.0)
+    dist_upper = np.full((gridsize, gridsize), 999.0)
+    dist_lower = np.full((gridsize, gridsize), 999.0)
+
+    u = mda.Universe.empty(n_atoms=2, trajectory=True)
+    u.add_TopologyAttr("name", ["BB", "BB"])
     u.atoms.positions = [
-        [50.0, 50.0, 50.0],  # between the leaflets -> in the TMD
-        [50.0, 50.0, 90.0],  # above the upper leaflet -> soluble domain, excluded
-        [50.0, 50.0, 10.0],  # below the lower leaflet -> soluble domain, excluded
+        [55.0, 55.0, 71.0],  # 1 A above upper's own surface
+        [55.0, 55.0, 200.0],  # far above it, same (x, y)
     ]
 
-    xyz = _tmd_protein_atoms("name BB", u, upper, lower)
-    assert xyz.shape == (1, 3)
-    assert np.allclose(xyz[0], [50.0, 50.0, 50.0])
+    upper_xyz, _lower_xyz = _assign_tmd_atoms_to_leaflets(
+        "name BB", u, upper, lower, dist_upper, dist_lower, X, Y, Lx, Ly, threshold=1.0,
+    )
+    assert upper_xyz.shape == (2, 3)  # both kept, regardless of how far each one is
 
 
-def test_tmd_protein_atoms_empty_selection_returns_empty_array() -> None:
+def test_assign_tmd_atoms_assigns_each_atom_to_its_own_closer_leaflet_only() -> None:
+    # An atom belongs to exactly one leaflet - whichever its own real
+    # position is actually nearer to (via each leaflet's own normal-
+    # projected distance, never both, never the average of the two).
     Lx = Ly = 100.0
-    upper = _flat_surface(Lx, Ly, 70.0)
-    lower = _flat_surface(Lx, Ly, 30.0)
+    gridsize = 10
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper, lower = _flat_surface(Lx, Ly, 70.0), _flat_surface(Lx, Ly, 30.0)
+    dist_upper = np.full((gridsize, gridsize), 999.0)  # unsupported everywhere, isolating
+    dist_lower = np.full((gridsize, gridsize), 999.0)  # the leaflet-assignment step itself
+
+    u = mda.Universe.empty(n_atoms=2, trajectory=True)
+    u.add_TopologyAttr("name", ["BB", "BB"])
+    u.atoms.positions = [
+        [55.0, 55.0, 68.0],  # closer to upper (70)
+        [55.0, 55.0, 32.0],  # closer to lower (30)
+    ]
+
+    upper_xyz, lower_xyz = _assign_tmd_atoms_to_leaflets(
+        "name BB", u, upper, lower, dist_upper, dist_lower, X, Y, Lx, Ly, threshold=1.0,
+    )
+    assert upper_xyz.shape == (1, 3)
+    assert np.allclose(upper_xyz[0], [55.0, 55.0, 68.0])
+    assert lower_xyz.shape == (1, 3)
+    assert np.allclose(lower_xyz[0], [55.0, 55.0, 32.0])
+
+
+def test_assign_tmd_atoms_empty_selection_returns_two_empty_arrays() -> None:
+    Lx = Ly = 100.0
+    gridsize = 10
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper, lower = _flat_surface(Lx, Ly, 70.0), _flat_surface(Lx, Ly, 30.0)
+    dist_upper = np.full((gridsize, gridsize), 999.0)
+    dist_lower = np.full((gridsize, gridsize), 999.0)
 
     u = mda.Universe.empty(n_atoms=1, trajectory=True)
     u.add_TopologyAttr("name", ["P"])
     u.atoms.positions = [[50.0, 50.0, 50.0]]
 
-    xyz = _tmd_protein_atoms("name BB", u, upper, lower)  # no atom named BB
-    assert xyz.shape == (0, 3)
+    upper_xyz, lower_xyz = _assign_tmd_atoms_to_leaflets(
+        "name BB", u, upper, lower, dist_upper, dist_lower, X, Y, Lx, Ly, threshold=1.0,  # no atom named BB
+    )
+    assert upper_xyz.shape == (0, 3)
+    assert lower_xyz.shape == (0, 3)
 
 
 def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: Path) -> None:
@@ -387,10 +506,9 @@ def test_one_frame_does_not_flag_fully_dense_disordered_leaflet_as_holes(tmp_pat
     fb._worker_state["universe"] = u
     fb._worker_state["layer_group"] = u.atoms[: len(pts)]
     fb._worker_state["layer_group_2"] = u.atoms[len(pts):]
-    # No protein atoms at all: with the gate in place, an empty --center
-    # selection means nothing can ever pass the "spatially plausible as
-    # protein-displaced" half of the test, so this also exercises that an
-    # empty _tmd_protein_atoms match doesn't crash.
+    # No protein atoms at all: with no atoms in the universe named "BB",
+    # _assign_tmd_atoms_to_leaflets's own selection comes back empty, so
+    # this also exercises that an empty selection doesn't crash.
     fb._worker_state["rotation_and_center"] = SimpleNamespace(
         sel1="name BB", rotate=False, _center=lambda: None
     )
