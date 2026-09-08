@@ -81,8 +81,8 @@ class Rotation_and_Center_tracker:
 
         box_center = self.u.dimensions[:3] / 2.0
         if hasattr(sel.atoms,"bonds"):
-            if len(u.atoms.bonds)>0:
-                u.atoms.unwrap(compound="fragments")
+            if len(self.u.atoms.bonds)>0:
+                self.u.atoms.unwrap(compound="fragments")
         sel_center = sel.center_of_geometry(wrap=True)
 
         shift = box_center - sel_center
