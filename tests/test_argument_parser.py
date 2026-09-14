@@ -1,0 +1,261 @@
+"""Tests for core/argument_parser.py.
+
+write_replay_file coverage is regression coverage for a bug where adding
+--man broke replay-file writing: write_replay_file iterates every
+registered CLI action and reads its namespace value, but fire-and-exit
+actions (-h/--help, -v/--version, --man) are SUPPRESS-defaulted, so argparse
+never sets a namespace attribute for them unless invoked - getattr(ns,
+action.dest) raised AttributeError. lipids_species_token covers --lipids'
+'RESNAME' / 'RESNAME:NAME1,NAME2,...' token format validation.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import pytest
+
+from CALM.core import argument_parser as arg_helper
+from CALM.core.manual import add_manual
+
+
+def _fail_if_called(*args: object, **kwargs: object) -> str:
+    raise AssertionError("input() should not be called when checksums match")
+
+
+def test_write_replay_file_does_not_crash_on_suppress_defaulted_actions(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    parser.add_argument("-v", "--version", action="version", version="1.0")
+    add_manual(parser, "test")
+
+    ns = parser.parse_args(["-o", str(tmp_path)])
+    arg_helper.write_replay_file(str(tmp_path / "replay.log"), parser, ns)
+
+    assert (tmp_path / "replay.log").exists()
+
+
+def test_write_replay_file_omits_replay_and_out_replay(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", str(tmp_path), "--replay", "some_replay_file.log"])
+
+    replay_path = tmp_path / "replay.log"
+    arg_helper.write_replay_file(str(replay_path), parser, ns)
+
+    content = replay_path.read_text()
+    assert "--replay" not in content
+    assert "--out-replay" not in content
+
+
+def test_write_replay_file_records_input_checksums(tmp_path: Path) -> None:
+    traj = tmp_path / "traj.xtc"
+    struct = tmp_path / "struct.gro"
+    traj.write_bytes(b"trajectory bytes")
+    struct.write_bytes(b"structure bytes")
+
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj), "-s", str(struct)])
+
+    replay_path = tmp_path / "replay.log"
+    arg_helper.write_replay_file(str(replay_path), parser, ns)
+
+    content = replay_path.read_text()
+    assert f"# Trajectory sha256: {arg_helper._sha256_of_file(str(traj))}" in content
+    assert f"# Structure sha256: {arg_helper._sha256_of_file(str(struct))}" in content
+
+
+def test_apply_replay_proceeds_silently_when_checksums_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"trajectory bytes")
+
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj)])
+    replay_path = tmp_path / "replay.log"
+    arg_helper.write_replay_file(str(replay_path), parser, ns)
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    pre_ns = argparse.Namespace(replay=str(replay_path))
+    result = arg_helper.apply_replay(parser, pre_ns, ["-o", str(tmp_path), "-f", str(traj)])
+    assert result.trajectory == str(traj)
+
+
+def test_clear_output_directory_removes_npy_files_at_top_level_and_in_raw_sft(tmp_path: Path) -> None:
+    (tmp_path / "Amn.npy").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_bytes(b"keep me")
+    raw_sft = tmp_path / "raw_sft"
+    raw_sft.mkdir()
+    (raw_sft / "0000_A_mn.npy").write_bytes(b"x")
+    (raw_sft / "0000_hole_mask.npy").write_bytes(b"x")
+
+    arg_helper.clear_output_directory(str(tmp_path))
+
+    assert not (tmp_path / "Amn.npy").exists()
+    assert (tmp_path / "notes.txt").exists()  # non-.npy files are left alone
+    assert not (raw_sft / "0000_A_mn.npy").exists()
+    assert not (raw_sft / "0000_hole_mask.npy").exists()
+
+
+def test_clear_output_directory_does_not_error_when_raw_sft_is_absent(tmp_path: Path) -> None:
+    (tmp_path / "Amn.npy").write_bytes(b"x")
+    arg_helper.clear_output_directory(str(tmp_path))  # no raw_sft/ subdirectory at all
+    assert not (tmp_path / "Amn.npy").exists()
+
+
+def test_remove_tmd_parses_bare_as_true_and_with_value_as_the_string(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+
+    assert parser.parse_args(["-o", str(tmp_path)]).remove_tmd is False
+    assert parser.parse_args(["-o", str(tmp_path), "--Remove-TMD"]).remove_tmd is True
+    ns = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD", "name BB SC1"])
+    assert ns.remove_tmd == "name BB SC1"
+
+
+def test_validate_rotation_args_requires_center_only_for_bare_remove_tmd(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+
+    bare = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD"])
+    with pytest.raises(SystemExit):
+        arg_helper.validate_rotation_args(parser, bare)
+
+    with_selection = parser.parse_args(["-o", str(tmp_path), "--Remove-TMD", "name BB SC1"])
+    arg_helper.validate_rotation_args(parser, with_selection)  # does not raise
+
+
+def test_write_replay_file_round_trips_all_three_remove_tmd_states(tmp_path: Path) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+
+    cases = [
+        (["-o", str(tmp_path)], False),
+        (["-o", str(tmp_path), "-C", "name BB", "--Remove-TMD"], True),
+        (["-o", str(tmp_path), "--Remove-TMD", "name BB SC1"], "name BB SC1"),
+    ]
+    for argv, expected in cases:
+        ns = parser.parse_args(argv)
+        replay_path = tmp_path / "replay.log"
+        arg_helper.write_replay_file(str(replay_path), parser, ns)
+        replayed = parser.parse_args(arg_helper.load_replay_args(str(replay_path)))
+        assert replayed.remove_tmd == expected
+
+
+def test_apply_replay_aborts_when_checksum_mismatched_and_not_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"original bytes")
+
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj)])
+    replay_path = tmp_path / "replay.log"
+    arg_helper.write_replay_file(str(replay_path), parser, ns)
+
+    traj.write_bytes(b"changed bytes - different trajectory content now")
+    monkeypatch.setattr("builtins.input", lambda *_: "n")
+
+    pre_ns = argparse.Namespace(replay=str(replay_path))
+    with pytest.raises(SystemExit):
+        arg_helper.apply_replay(parser, pre_ns, ["-o", str(tmp_path), "-f", str(traj)])
+
+
+def test_apply_replay_proceeds_when_checksum_mismatched_and_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"original bytes")
+
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", str(tmp_path), "-f", str(traj)])
+    replay_path = tmp_path / "replay.log"
+    arg_helper.write_replay_file(str(replay_path), parser, ns)
+
+    traj.write_bytes(b"changed bytes - different trajectory content now")
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+
+    pre_ns = argparse.Namespace(replay=str(replay_path))
+    result = arg_helper.apply_replay(parser, pre_ns, ["-o", str(tmp_path), "-f", str(traj)])
+    assert result.trajectory == str(traj)
+
+
+@pytest.mark.parametrize("token", ["POPC", "POPC:PO4", "TCL1:PO41,PO42"])
+def test_lipids_species_token_accepts_valid_formats(token: str) -> None:
+    assert arg_helper.lipids_species_token(token) == token  # returned unchanged, for replay round-tripping
+
+
+@pytest.mark.parametrize("token", ["", ":PO4", "POPC:", "POPC:PO4,", "POPC:PO4,,PO42"])
+def test_lipids_species_token_rejects_malformed_tokens(token: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        arg_helper.lipids_species_token(token)
+
+
+def test_add_build_arguments_includes_rotation_and_center_by_default() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out"])
+    assert hasattr(ns, "center")
+    assert hasattr(ns, "rotate")
+    assert hasattr(ns, "rotation_direction")
+
+
+def test_add_build_arguments_can_omit_rotation_and_center() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False, include_rotation=False, include_center=False)
+    ns = parser.parse_args(["-o", "out"])
+    assert not hasattr(ns, "center")
+    assert not hasattr(ns, "rotate")
+    assert not hasattr(ns, "rotation_direction")
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-o", "out", "--center", "protein"])
+
+
+def test_validate_index_arguments_errors_when_required_and_neither_given() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out"])
+    with pytest.raises(SystemExit):
+        arg_helper.validate_index_arguments(parser, ns, required=True)
+
+
+def test_validate_index_arguments_allows_neither_when_not_required() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out"])
+    arg_helper.validate_index_arguments(parser, ns, required=False)  # does not raise
+
+
+def test_validate_index_arguments_warns_when_both_given(caplog: pytest.LogCaptureFixture) -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out", "-n", "name PO4", "--index-file", "some.ndx"])
+    with caplog.at_level("WARNING", logger="CALM.core.argument_parser"):
+        arg_helper.validate_index_arguments(parser, ns, required=True)
+    assert "using --index-file" in caplog.text
+
+
+def test_resolve_index_source_returns_dynamic_selection_from_index() -> None:
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out", "-n", "name PO4"])
+    ndx_groups, dynamic_selection = arg_helper.resolve_index_source(ns)
+    assert ndx_groups is None
+    assert dynamic_selection == "name PO4"
+
+
+def test_resolve_index_source_prefers_index_file_over_index(tmp_path: Path) -> None:
+    ndx_path = tmp_path / "index.ndx"
+    ndx_path.write_text("[ Upper ]\n1 2\n[ Lower ]\n3 4\n")
+
+    parser = argparse.ArgumentParser()
+    arg_helper.add_build_arguments(parser, require_inputs=False)
+    ns = parser.parse_args(["-o", "out", "-n", "name PO4", "--index-file", str(ndx_path)])
+    ndx_groups, dynamic_selection = arg_helper.resolve_index_source(ns)
+    assert ndx_groups == {"Upper": [1, 2], "Lower": [3, 4]}
+    assert dynamic_selection is None

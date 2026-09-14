@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import time
+from pathlib import Path
+
+import MDAnalysis as mda
+
+from ..analyze.analyze import analysis
+from ..analyze.sft import build_sft
+from ..core import argument_parser as arg_helper
+from ..core.fourier_sft import SFT
+from ..core.manual import add_manual
+
+logger = logging.getLogger(__name__)
+
+METHODS = (
+    "thickness",
+    "Z_fitted",
+    "mean",
+    "gaussian",
+    "principal",
+    "principal_directions",
+)
+
+
+def _build_full_parser() -> argparse.ArgumentParser:
+    """The 'CALM analyze full' parser alone, with no side effects - shared by the CLI entry point
+    below and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
+    parser = argparse.ArgumentParser(
+        description="Run the full geometric analysis pipeline (thickness, curvature).",
+    )
+    required = parser.add_argument_group(
+        "Required arguments",
+        "Give either --sft, or all three of -f/--trajectory, -s/--structure, and one of -n/--index or --index-file.",
+    )
+    required.add_argument(
+        "--sft", default=None, type=str,
+        help="reuse a previously built fit instead of --trajectory/--structure/--index[-file] (see --man)",
+    )
+    arg_helper.add_build_arguments(parser, require_inputs=False, required_group=required)
+    parser.add_argument(
+        "--method",
+        nargs="+",
+        choices=METHODS,
+        default=None,
+        help="analysis method(s) to run (default: all)",
+    )
+    add_manual(parser, "analyze_full")
+    return parser
+
+
+def full(args: list[str]) -> None:
+    """CLI entry: run the full geometric analysis pipeline (thickness,
+    curvature, ...) that 'CALM map' can plot.
+
+    Either builds the SFT from a trajectory itself (same as 'CALM analyze
+    sft'), or - if --sft is given - loads a previously built one and skips
+    straight to analysis, in which case --trajectory/--structure aren't
+    needed.
+    """
+    parser = _build_full_parser()
+
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--replay")
+    pre_ns, remaining = pre.parse_known_args(args)
+
+    # Validation runs on the fully-resolved args (replay file's tokens, if
+    # any, merged with the direct CLI) - a replay-only invocation must not
+    # be validated before the replay file's own values are merged in.
+    ns = arg_helper.apply_replay(parser, pre_ns, remaining)
+    arg_helper.validate_rotation_args(parser, ns)
+    arg_helper.validate_index_arguments(parser, ns, required=False)
+
+    using_precomputed_sft = ns.sft is not None
+
+    if not using_precomputed_sft and (
+        ns.trajectory is None or ns.structure is None or (ns.index is None and ns.index_file is None)
+    ):
+        parser.error(
+            "--trajectory/-f, --structure/-s, and one of --index/-n or --index-file are all required "
+            "unless --sft is supplied."
+        )
+
+    os.makedirs(ns.out, exist_ok=True)
+
+    replay_path = ns.out_replay or arg_helper.default_replay_name(ns.out)
+    arg_helper.write_replay_file(replay_path, parser, ns)
+    arg_helper.attach_replay_log_handler(replay_path, logger_name="MDAnalysis")
+    arg_helper.attach_replay_log_handler(
+        replay_path, logger_name="CALM",
+        console_level=logging.INFO if ns.loud else logging.WARNING,
+    )
+
+    if ns.clear:
+        arg_helper.clear_output_directory(ns.out)
+
+    try:
+        start = time.perf_counter()
+
+        universe = None
+        if ns.trajectory is not None and ns.structure is not None:
+            universe = mda.Universe(Path(ns.structure), Path(ns.trajectory))
+
+        if using_precomputed_sft:
+            sft_obj = SFT.from_directory(ns.sft)
+            # Copied into --out too (not just kept in --sft) so this run's
+            # own output directory is self-contained - 'CALM map plot' and
+            # friends read Amn/qmn/dimensions.npy from --out directly, the
+            # same way they do for a freshly-built fit.
+            sft_obj.write(ns.out)
+        else:
+            sft_obj = build_sft(ns, universe)
+
+        active_methods = METHODS if ns.method is None else tuple(ns.method)
+        analysis(universe, sft_obj, active_methods, ns)
+
+        print(f"Execution with {ns.Workers} Workers took {round(time.perf_counter()-start,2)} seconds.")
+
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise
+
+
+if __name__ == "__main__":
+    pass

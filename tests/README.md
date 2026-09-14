@@ -1,0 +1,110 @@
+# Tests
+
+```console
+pip3 install .[dev]
+pytest
+```
+
+## Coverage
+
+- `test_fourier_core.py` - `Fourier_Series_Function` (representation,
+  derivatives) and `get_fourier_modes`.
+- `test_fourier_fit.py` - `fit_coefficients`: coefficient recovery,
+  regularization, and its underdetermined/low-redundancy/oversampling
+  diagnostics.
+- `test_fourier_build.py` - the `--Remove-TMD` hole-detection pipeline
+  (`_tmd_threshold`, `_hole_mask_for_layer`, `_close_enclosed_gaps`,
+  `_one_frame`) and the dynamic-leaflet-tracking path.
+- `test_fourier_sft.py` - `SFT.write`/`SFT.from_directory` (the `--sft`
+  load path).
+- `test_leaflet.py` - the leaflet-detection/tracking algorithm
+  (`core/leaflet.py`).
+- `test_packing.py` - `median_multiple_threshold`.
+- `test_curvature.py` - `shape_operator_curvatures`, and `f`/`_thickness_root`
+  (the ray-surface-intersection brentq search behind bilayer thickness),
+  including rejecting a root only found via a widened bracket.
+- `test_analyze_rotation.py` - the rotation path in `analyze/analyze.py`.
+- `test_argument_parser.py` - `write_replay_file` and replay-checksum
+  verification, `--Remove-TMD` parsing/validation, and the
+  `--lipids RESNAME[:NAME1,NAME2,...]` token validator
+  (`lipids_species_token`).
+- `test_calibrate.py` - the `calibrate` CLI scaffold.
+- `test_headgroup.py` - forcefield-agnostic, bond-graph-based headgroup
+  detection (`core/headgroup.py`): ring contraction, hub/branch
+  classification, multi-hub grouping for dual-headgroup lipids like
+  cardiolipin, the `--lipids RESNAME:NAME1,NAME2,...` override parsing and
+  validation.
+- `test_analyze_lipids.py` - per-species lipid-composition assignment
+  (`_assign_nearest_leaflet`, `_lipid_voronoi_fractions`,
+  `_true_surface_area`, `_one_lipid_frame`), `--rotate`'s effect on
+  `_one_lipid_frame` (identical `area_per_lipid`/counts, a genuinely
+  rotated `lipid_fractions.npy`), the trajectory-averaged
+  `area_per_lipid.csv` (`_write_area_per_lipid_csv`), per-lipid preferred
+  curvature (`_curvature_at_points`, `_one_lipid_frame`'s
+  `curvature_preference` output - including the sign convention on both
+  leaflets for a known synthetic outward bulge), and the trajectory-averaged
+  `curvature_preference.csv` (`_write_curvature_preference_csv`: nm^-1
+  conversion, NaN-frame skipping, count-weighted `"both"` row).
+- `test_manual.py` - `core/manual.py`'s `strip_inline_markdown`: a
+  backtick code span's own content survives later emphasis stripping even
+  with 2+ underscores in it, real italic/bold/link markup still strips.
+- `test_diffusion.py` - the numerical core behind `CALM analyze diffusion`
+  (`core/diffusion.py`): surface projection recovering a known point from
+  both sides of a curved surface, segment-breaking at a leaflet flip/hole
+  change/unassigned frame, multi-tau MSD pooling across segments, and
+  `_fit_diffusion_coefficient` recovering a known D from a synthetic
+  random walk (and flagging synthetic ballistic motion via its
+  log-log slope).
+- `test_analyze_diffusion.py` - the `CALM analyze diffusion` pipeline
+  (`analyze/diffusion.py`): the tracked-point roster
+  (`_track_blocks`/`_resolve_tracked_points`), `_one_diffusion_frame`'s
+  leaflet/hole assignment and saved surface, the PBC-aware
+  whole-and-continuous position extraction
+  (`_extract_whole_continuous_positions`, covering both a within-frame
+  bond-unwrap split and a cross-frame periodic wrap), CLI validation
+  (bare `--Remove-TMD`, missing `--lipids`/`--select`, a bond-free
+  structure), and a full `calc_diffusion` end-to-end run recovering a
+  known diffusion coefficient from a synthetic random walk.
+- `test_map_plot.py` - `map/plot.py`'s loading, hole-masking, nematic
+  direction averaging, sign alignment, and rendering.
+- `test_dynamic_plot.py` - `map/dynamic_plot.py`'s rolling-window video:
+  per-frame subprocess isolation, ffmpeg/imageio-ffmpeg discovery and
+  streaming GIF assembly, and the Pillow (`--in-memory`) fallback.
+- `test_radial_plot.py` - `map/radial_plot.py`'s radial binning,
+  upper/lower-only rendering, and `--replica` averaging (aligned onto the
+  smallest-r_max replica's own grid, shaded band, single-directory calls
+  unaffected).
+- `test_diffusion_plot.py` - `map/diffusion_plot.py`'s single-directory
+  MSD(tau) rendering and `--replica` averaging (per-`(species, leaflet)`
+  mean-D-across-replicas reporting, skipping a replica missing a species).
+- `test_replica_average.py` - `map/replica_average.py`'s repeatable
+  `--replica` flag, `all_replica_dirs`'s ordering, and
+  `align_and_average`'s interpolation/NaN-exclusion/statistics.
+- `test_lipids_plot.py` - `map/lipids_plot.py`'s per-species,
+  per-leaflet occupancy-frequency rendering: hole-mask NaN-poisoning
+  across frames, the combined-overview-plus-per-species output files, and
+  fixed-circle clipping when `--rotate` was used.
+- `test_vmd_xtc.py` - `get_vmd_visualisation`'s NaN-grid-point handling,
+  `vmd_xtc`'s rotation-TCL auto-detection, and `_trajectory_hole_union`'s
+  per-trajectory hole combining.
+- `test_vmd_vectors.py` - `vmd_vectors`'s static/dynamic principal-direction
+  TCL scripts: arrow endpoints, `--which`/`--layer` filtering, `--Remove-TMD`
+  hole exclusion, and `--scale`.
+- `test_write_ndx.py` - `utilize/write_ndx.py`'s CLI/file-I/O wrapper.
+- `test_gui.py` - `CALM/gui/`'s non-Tkinter logic: `introspect.py` deriving
+  `FieldSpec`s from each of the 13 commands' real argparse parsers,
+  `path_specs.py`'s per-command Browse-button table (including the
+  `-n`/`--index-file` split), and `runner.py`'s `build_argv` (empty-field
+  omission, `BooleanOptionalAction`'s explicit either/or, multichoice/multi
+  expansion). The actual Tkinter widgets (`widgets.py`/`app.py`) have no
+  coverage - this environment has no `tkinter` installed at all.
+
+## Conventions
+
+- Synthetic `MDAnalysis.Universe` objects (built in-memory via
+  `Universe.empty`), not real trajectory files - self-contained, no
+  external data required.
+- `tmp_path` for anything written to disk.
+- Numerical thresholds (e.g. `--Remove-TMD`'s far-fallback multiplier) are
+  validated empirically here, not assumed - see the sweeps in
+  `test_fourier_build.py` for the pattern.
