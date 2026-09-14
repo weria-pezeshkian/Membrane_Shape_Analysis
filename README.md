@@ -25,7 +25,7 @@ pip3 install git+https://github.com/weria-pezeshkian/Membrane_Shape_Analysis
 ```console
 git clone https://github.com/weria-pezeshkian/Membrane_Shape_Analysis
 cd Membrane_Shape_Analysis
-python3 -m venv venv && source venv/bin/activate  # not required, but convenient
+python3 -m venv venv && source venv/bin/activate  # keeps the install isolated
 pip3 install .
 ```
 
@@ -44,21 +44,20 @@ CALM {calibrate,analyze,link,map} -h
 CALM-gui
 ```
 
-A thin, cross-platform (Tkinter) interface over the exact same commands
-above - every tab's form is generated directly from that command's own
-CLI flags, so it never drifts out of sync with the CLI itself. It builds
-and runs the real `CALM` command as a subprocess (the Output box mirrors
-its terminal output live), never re-implements any argument logic. Each
-tab also has a Manual button (opens that command's manual, rendered, in
-your browser) and a Load replay button (repopulates the form from a
+A cross-platform (Tkinter) interface over the same commands above - every
+tab's form is generated from that command's own CLI flags. It builds and
+runs the `CALM` command as a subprocess (the Output box mirrors its
+terminal output live), reusing the CLI's own argument logic. Each tab
+also has a Manual button (opens that command's manual, rendered, in your
+browser) and a Load replay button (repopulates the form from a
 previously-written `*_calm_replay.log`). Needs Tkinter, which ships with
 the official Windows/macOS Python installers; on Linux it's usually a
 separate system package (e.g. `python3-tk` on Debian/Ubuntu).
 
-Every command has a full manual: rendered on the command line via
-`--man`, or readable directly as Markdown. Start from
-[`CALM/manuals/calm.md`](CALM/manuals/calm.md) for the full module
-overview, or jump straight to a command below.
+Every command has a manual: rendered on the command line via `--man`, or
+readable as Markdown. Start from
+[`CALM/manuals/calm.md`](CALM/manuals/calm.md) for the module overview,
+or jump to a command below.
 
 - [`calibrate`](CALM/manuals/calibrate.md) - calibrate membrane material
   parameters (kappa, sigma) from a built Fourier coefficient stack.
@@ -119,9 +118,8 @@ pre-commit install
 ```
 
 Run it with your virtual environment active - the mypy hook runs against
-your own installed environment (not an isolated one), since it needs
-CALM's real dependencies (MDAnalysis, numpy, scipy, ...) available to type
-against.
+your own installed environment, since it needs CALM's dependencies
+(MDAnalysis, numpy, scipy, ...) available to type against.
 
 ## License
 
