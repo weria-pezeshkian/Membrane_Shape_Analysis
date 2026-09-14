@@ -157,8 +157,9 @@ class App:
         root.title(_TITLE)
         root.geometry("960x880")
         theme.apply_theme(root)
+        font_family = theme.ui_font_family(root)
 
-        ttk.Label(root, text=_TITLE, font=("Segoe UI", 16, "bold")).pack(pady=(10, 4))
+        ttk.Label(root, text=_TITLE, font=(font_family, 16, "bold")).pack(pady=(10, 4))
 
         cwd_frame = ttk.Frame(root)
         cwd_frame.pack(fill="x", padx=10, pady=4)
@@ -177,7 +178,7 @@ class App:
         # module is chosen yet" visually obvious instead of implying one is.
         landing = ttk.Frame(self.outer_bar.content)
         landing.grid(row=0, column=0, sticky="nsew")
-        ttk.Label(landing, text="CALM", font=("Segoe UI", 48, "bold")).pack(expand=True)
+        ttk.Label(landing, text="CALM", font=(font_family, 48, "bold")).pack(expand=True)
 
         # Maps each outer tab's own module name to how to find its
         # currently-active CommandTab - see _active_tab. "Calibrate" has

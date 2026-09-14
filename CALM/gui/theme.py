@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 
 # A light, near-white palette, in place of ttk's own default gray.
@@ -10,6 +11,12 @@ TEXT = "#1a1a1a"
 ACCENT = "#2563eb"  # the active tab, focused borders
 ACCENT_SOFT = "#e8f0fe"  # hover/pressed/selected fill
 BORDER = "#d9d9dc"
+
+
+def ui_font_family(root: tk.Misc) -> str:
+    """The platform's own default UI font family, read from Tk's own "TkDefaultFont" named font.
+    Needs a live Tk root, so call after `tk.Tk()`."""
+    return tkfont.nametofont("TkDefaultFont").actual("family")
 
 
 def apply_theme(root: tk.Tk) -> None:
@@ -26,8 +33,9 @@ def apply_theme(root: tk.Tk) -> None:
     except tk.TclError:
         pass
 
+    family = ui_font_family(root)
     root.configure(background=BACKGROUND)
-    style.configure(".", background=BACKGROUND, foreground=TEXT, font=("Segoe UI", 10))
+    style.configure(".", background=BACKGROUND, foreground=TEXT, font=(family, 10))
     style.configure("TFrame", background=BACKGROUND)
     style.configure("TLabel", background=BACKGROUND, foreground=TEXT)
     style.configure("TCheckbutton", background=BACKGROUND, foreground=TEXT)
@@ -68,6 +76,6 @@ def apply_theme(root: tk.Tk) -> None:
     # border of its own since it's a fold/unfold toggle, not a real button.
     style.configure(
         "Section.TButton", background=BACKGROUND, foreground=TEXT, borderwidth=0,
-        relief="flat", anchor="w", padding=(4, 6), font=("Segoe UI", 10, "bold"),
+        relief="flat", anchor="w", padding=(4, 6), font=(family, 10, "bold"),
     )
     style.map("Section.TButton", background=[("active", ACCENT_SOFT)])
