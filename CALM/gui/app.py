@@ -6,7 +6,7 @@ import tkinter as tk
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from ..core.argument_parser import load_replay_args
 from ..core.manual import load_manual_markdown, render_markdown_as_html
@@ -233,6 +233,7 @@ class App:
         self.stop_button.pack(side="left", padx=4)
 
         self.runner = CommandRunner()
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _browse_cwd(self) -> None:
         chosen = filedialog.askdirectory(initialdir=self.cwd_var.get() or None)
@@ -272,6 +273,17 @@ class App:
 
     def _stop(self) -> None:
         self.runner.stop()
+
+    def _on_close(self) -> None:
+        """Closing the window never kills a running process by itself - it's deliberately
+        detached (see CommandRunner.start's start_new_session) so it survives the GUI closing,
+        not just Stop being clicked elsewhere. If one is actually running when the window closes,
+        ask first - either answer closes the window, only "Yes" also stops the process (and its
+        own worker pool, exactly like clicking Stop would)."""
+        if self.runner.is_running():
+            if messagebox.askyesno("Close CALM", "Kill running CALM calculations?"):
+                self.runner.stop()
+        self.root.destroy()
 
     def _poll_output(self) -> None:
         finished = False

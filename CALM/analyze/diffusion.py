@@ -502,7 +502,7 @@ def _fit_diffusion_pools(
             leaflet_key, label, D * _A2_PS_TO_CM2_S, D_stderr * _A2_PS_TO_CM2_S,
             len(segs_xy), sum(len(s) for s in segs_xy), tau_min, tau_max, r2, loglog_slope, n_discarded,
         ))
-        for tau_value, msd_value, n_value in zip(tau, msd, n_samples):
+        for tau_value, msd_value, n_value in zip(tau, msd, n_samples, strict=True):
             msd_rows.append((leaflet_key, label, float(tau_value), float(msd_value), int(n_value)))
 
     return diffusion_rows, msd_rows

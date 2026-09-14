@@ -12,7 +12,7 @@ that fit, and exports output for
 
 ### Prerequisites
 
-Python >= 3.9.
+Python >= 3.12.
 
 ### Install CALM
 

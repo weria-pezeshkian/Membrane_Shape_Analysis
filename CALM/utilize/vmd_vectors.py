@@ -265,7 +265,7 @@ def build_dynamic_vectors_tcl(
         thetas = recover_all_rotation_angles(sft_with_holes)
 
     frame_lines = []
-    for dir_file, z_file in zip(dir_files, z_files):
+    for dir_file, z_file in zip(dir_files, z_files, strict=True):
         dirs = np.load(dir_file)
         z = np.load(z_file) * 10
 

@@ -73,7 +73,7 @@ def _still_connected(group: set[int], positions: np.ndarray, box: np.ndarray, cu
     d = distance_array(positions[idx], positions[idx], box=box)
     np.fill_diagonal(d, np.inf)
     min_other = d.min(axis=1)
-    return {i for i, keep in zip(idx, min_other <= cutoff) if keep}
+    return {i for i, keep in zip(idx, min_other <= cutoff, strict=True) if keep}
 
 
 def _min_dist_to(group: set[int], cand_pos: np.ndarray, positions: np.ndarray, box: np.ndarray) -> np.ndarray:
@@ -115,7 +115,7 @@ def track_components(
         close_upper = _min_dist_to(upper, cand_pos, positions, box) <= cutoff
         close_lower = _min_dist_to(lower, cand_pos, positions, box) <= cutoff
 
-        for i, cu, cl in zip(unassigned, close_upper, close_lower):
+        for i, cu, cl in zip(unassigned, close_upper, close_lower, strict=True):
             if cu and not cl:
                 upper.add(i)
             elif cl and not cu:
@@ -168,8 +168,12 @@ def apply_margin_filter(
         other_for_upper = np.full(len(upper_idx), np.inf)
         other_for_lower = np.full(len(lower_idx), np.inf)
 
-    keep_upper = {i for i, own, other in zip(upper_idx, own_upper, other_for_upper) if other >= margin * own}
-    keep_lower = {i for i, own, other in zip(lower_idx, own_lower, other_for_lower) if other >= margin * own}
+    keep_upper = {
+        i for i, own, other in zip(upper_idx, own_upper, other_for_upper, strict=True) if other >= margin * own
+    }
+    keep_lower = {
+        i for i, own, other in zip(lower_idx, own_lower, other_for_lower, strict=True) if other >= margin * own
+    }
 
     return keep_upper, keep_lower
 

@@ -28,7 +28,7 @@ def _write_diffusion_dir(
     msd_rows = []
     for (species, leaflet), (msd, d_value, d_stderr) in curves.items():
         diffusion_rows.append((leaflet, species, d_value, d_stderr, 1, len(msd), 10.0, 40.0, 0.99, 1.0, 0))
-        for tau, value in zip(_TAU, msd):
+        for tau, value in zip(_TAU, msd, strict=True):
             msd_rows.append((leaflet, species, tau, value, 1))
     np.save(directory / "diffusion.npy", np.array(diffusion_rows, dtype=_DIFFUSION_DTYPE))
     np.save(directory / "msd_curves.npy", np.array(msd_rows, dtype=_MSD_DTYPE))
@@ -114,7 +114,9 @@ def test_draw_replica_average_aligns_onto_the_shortest_replicas_own_tau(tmp_path
     _write_diffusion_dir(rep1, {("POPC", "upper"): (np.array([1.0, 2.0, 3.0, 4.0]), 1.0e-7, 1.0e-8)})
     # rep2's own tau grid runs further (values still linear in tau=10..40, plus one extra beyond).
     diffusion_rows = [("upper", "POPC", 1.0e-7, 1.0e-8, 1, 5, 10.0, 50.0, 0.99, 1.0, 0)]
-    msd_rows = [("upper", "POPC", tau, msd, 1) for tau, msd in zip([10, 20, 30, 40, 50], [1, 2, 3, 4, 5])]
+    msd_rows = [
+        ("upper", "POPC", tau, msd, 1) for tau, msd in zip([10, 20, 30, 40, 50], [1, 2, 3, 4, 5], strict=True)
+    ]
     np.save(rep2 / "diffusion.npy", np.array(diffusion_rows, dtype=_DIFFUSION_DTYPE))
     np.save(rep2 / "msd_curves.npy", np.array(msd_rows, dtype=_MSD_DTYPE))
 
