@@ -536,6 +536,49 @@ def _dynamic_leaflet_groups(
     return universe.atoms[upper_index], universe.atoms[lower_index]
 
 
+def _dynamic_near_protein(
+    tmd_xyz: np.ndarray,
+    fourier: Fourier_Series_Function,
+    lipid_positions: np.ndarray,
+    cap: float,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Lx: float,
+    Ly: float,
+) -> np.ndarray:
+    """Grid points within reach of at least one atom in `tmd_xyz`, each atom's own reach set by its
+    own distance to the nearest real lipid in `lipid_positions` (capped at `cap`), not one shared
+    radius for every atom.
+
+    A single shared radius (`threshold`, the whole frame's own lipid-packing
+    scale) reaches the middle of a channel/pore only as far as that scale
+    itself - fine for a genuinely narrow, single-helix TMD (its own atoms
+    are already within that scale of the surrounding lipid), but a wider
+    feature described by a thin, central line of atoms with no lateral
+    spread needs each atom's own reach to grow to match the size of the
+    real gap it's actually sitting in the middle of. Each atom's own
+    distance to the nearest real lipid is exactly that local gap size,
+    already computed the same way `dist_upper`/`dist_lower` are, just
+    evaluated at the atom's own (x, y) instead of at grid points. `cap`
+    (far_threshold) bounds a stray atom whose own kept position happens to
+    be pathologically far from any real lipid, so it can't reach further
+    than the point at which `far_threshold` would already flag that region
+    as a hole regardless of protein proximity.
+    """
+    if len(tmd_xyz) == 0:
+        return np.zeros(X.shape, dtype=bool)
+    tx, ty = tmd_xyz[:, 0], tmd_xyz[:, 1]
+    on_surface = np.column_stack([tx, ty, fourier.Z(tx, ty)])
+
+    own_radius = np.minimum(
+        _grid_to_atom_distances(lipid_positions, tx[None, :], ty[None, :], fourier, Lx, Ly)[0], cap,
+    )
+    covered = np.zeros(X.shape, dtype=bool)
+    for i in range(len(tx)):
+        covered |= _grid_to_atom_distances(on_surface[i:i + 1], X, Y, fourier, Lx, Ly) <= own_radius[i]
+    return covered
+
+
 def _remove_tmd_hole_mask(
     remove_tmd: bool | str,
     rotation_and_center: "Rotation_and_Center_tracker | None",
@@ -557,21 +600,19 @@ def _remove_tmd_hole_mask(
     One threshold shared by both leaflets. The Nyquist term
     (_tmd_threshold) reflects the fit's chosen resolution; capping it with
     median_multiple_threshold anchors it to how densely lipids are packed,
-    using the larger of the two leaflets' own median-based candidates,
-    which keeps the protein-proximity gate below equally permissive for
-    both leaflets.
+    using the larger of the two leaflets' own median-based candidates.
 
     A grid point counts as a hole when it is unsupported by lipids (the
-    distance test) and either within `threshold` of a protein atom
-    actually assigned to that same leaflet (`_assign_tmd_atoms_to_leaflets`
-    - each atom belongs to exactly one leaflet, never both, decided by
-    which leaflet's own fitted surface it's geometrically closer to), or
-    farther from any lipid than `far_threshold`. Each leaflet's own
-    protein distance is measured against that leaflet's own fitted
-    surface. The protein selection is `remove_tmd`'s own value when
-    --Remove-TMD was given one, and --center's selection
-    (`rotation_and_center.sel1`) when --Remove-TMD was given bare
-    (`remove_tmd is True`).
+    distance test) and either within reach of a protein atom actually
+    assigned to that same leaflet (`_assign_tmd_atoms_to_leaflets` - each
+    atom belongs to exactly one leaflet, never both, decided by which
+    leaflet's own fitted surface it's geometrically closer to), or farther
+    from any lipid than `far_threshold`. "Within reach" is each atom's own
+    distance to the nearest real lipid, capped at `far_threshold`
+    (`_dynamic_near_protein`), not the single shared `threshold` - the
+    protein selection is `remove_tmd`'s own value when --Remove-TMD was
+    given one, and --center's selection (`rotation_and_center.sel1`) when
+    --Remove-TMD was given bare (`remove_tmd is True`).
     """
     nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
 
@@ -592,20 +633,17 @@ def _remove_tmd_hole_mask(
     tmd_xyz_upper, tmd_xyz_lower = _assign_tmd_atoms_to_leaflets(
         tmd_selection, universe, fourier1, fourier2, dist_upper, dist_lower, X, Y, Lx, Ly, threshold,
     )
-    # A protein atom's own z is its real transmembrane depth, not a height
-    # on either leaflet's surface, so distance to each leaflet is measured
-    # from the atom's (x, y) projected onto that leaflet's own fitted
-    # height - both points then live on the same surface, matching how
-    # dist_upper/dist_lower measure grid-to-lipid distance.
-    tmd_x_upper, tmd_y_upper = tmd_xyz_upper[:, 0], tmd_xyz_upper[:, 1]
-    tmd_x_lower, tmd_y_lower = tmd_xyz_lower[:, 0], tmd_xyz_lower[:, 1]
-    tmd_on_upper = np.column_stack([tmd_x_upper, tmd_y_upper, fourier1.Z(tmd_x_upper, tmd_y_upper)])
-    tmd_on_lower = np.column_stack([tmd_x_lower, tmd_y_lower, fourier2.Z(tmd_x_lower, tmd_y_lower)])
-    dist_to_protein_upper = _grid_to_atom_distances(tmd_on_upper, X, Y, fourier1, Lx, Ly)
-    dist_to_protein_lower = _grid_to_atom_distances(tmd_on_lower, X, Y, fourier2, Lx, Ly)
-
-    near_protein_upper = dist_to_protein_upper <= threshold
-    near_protein_lower = dist_to_protein_lower <= threshold
+    # Each kept atom's own reach is its own distance to the nearest real
+    # lipid (see _dynamic_near_protein), not the single shared `threshold` -
+    # a wide channel/pore described by only a thin, central line of atoms
+    # needs that reach to grow to match the size of the real gap it's
+    # actually in the middle of, not just the lipid-packing scale.
+    near_protein_upper = _dynamic_near_protein(
+        tmd_xyz_upper, fourier1, layer_group.positions, far_threshold, X, Y, Lx, Ly,
+    )
+    near_protein_lower = _dynamic_near_protein(
+        tmd_xyz_lower, fourier2, layer_group_2.positions, far_threshold, X, Y, Lx, Ly,
+    )
     hole_upper = (dist_upper > threshold) & (near_protein_upper | (dist_upper > far_threshold))
     hole_lower = (dist_lower > threshold) & (near_protein_lower | (dist_lower > far_threshold))
     n_before_upper = int(hole_upper.sum())

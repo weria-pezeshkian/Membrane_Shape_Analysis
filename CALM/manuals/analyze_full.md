@@ -96,8 +96,8 @@ Only used when building the fit (not with `--sft`).
 
   A grid point is flagged as a hole in a leaflet when it's farther from
   that leaflet's own atoms than a shared threshold, and either:
-  1. it's within that same threshold of a protein atom (from the selection
-     above) assigned to that same leaflet; or
+  1. it's within reach of a protein atom (from the selection above)
+     assigned to that same leaflet; or
   2. it's farther than 5x the threshold from that leaflet's own atoms.
 
   A protein atom is assigned to exactly one leaflet - whichever its own
@@ -108,9 +108,16 @@ Only used when building the fit (not with `--sft`).
   onto isn't already well-supported by real lipid there (at least 3 of
   the cell's own 4 corners within threshold of real lipid counts as
   supported - one outlier corner is treated as noise, not a real gap).
-  How far the atom itself is from the surface plays no further part in
-  the decision: the hole is a property of the surface itself, not of any
-  one atom's own distance from it.
+
+  Each kept atom's own reach is its own distance to the nearest real
+  lipid, capped at 5x the threshold - not the shared threshold itself. A
+  narrow, single-helix TMD's own atoms already sit within the shared
+  threshold of real lipid, so this makes no difference there; a wider
+  channel or pore described by only a thin, central line of atoms needs
+  each atom's own reach to grow to match the size of the real gap it's
+  actually sitting in the middle of - otherwise the hole would only ever
+  cover the immediate neighborhood of that central line, not the gap's
+  own full extent.
 
   The threshold is shared by both leaflets: a multiple of lipid spacing
   (the larger of the two leaflets' own typical spacing), capped by the

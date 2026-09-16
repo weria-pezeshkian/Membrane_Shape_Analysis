@@ -27,6 +27,7 @@ from CALM.core import fourier_build as fb
 from CALM.core.fourier_build import (
     _assign_tmd_atoms_to_leaflets,
     _close_enclosed_gaps,
+    _dynamic_near_protein,
     _grid_to_atom_distances,
     _tmd_threshold,
 )
@@ -297,6 +298,66 @@ def test_assign_tmd_atoms_empty_selection_returns_two_empty_arrays() -> None:
     )
     assert upper_xyz.shape == (0, 3)
     assert lower_xyz.shape == (0, 3)
+
+
+def _lipid_ring(Lx: float, Ly: float, spacing: float, gap_center: tuple[float, float], gap_radius: float) -> np.ndarray:
+    """Real lipid xy positions on a `spacing`-A grid, covering the whole box except a circular gap."""
+    lx = np.arange(spacing / 2, Lx, spacing)
+    ly = np.arange(spacing / 2, Ly, spacing)
+    LX, LY = np.meshgrid(lx, ly)
+    xy = np.column_stack([LX.ravel(), LY.ravel()])
+    return xy[np.hypot(xy[:, 0] - gap_center[0], xy[:, 1] - gap_center[1]) > gap_radius]
+
+
+def test_dynamic_near_protein_reach_scales_with_the_atoms_own_gap_size() -> None:
+    # A single atom dead-center of a real ~20 A-radius gap has its own
+    # distance to the nearest real lipid at roughly that same scale (not a
+    # small fixed value) - a grid point well beyond what any small fixed
+    # radius would reach (15 A from the atom here) must still be covered,
+    # since the atom's own reach is that same ~20 A gap size.
+    Lx = Ly = 100.0
+    gridsize = 20
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper = _flat_surface(Lx, Ly, 70.0)
+
+    lipid_xy = _lipid_ring(Lx, Ly, spacing=5.0, gap_center=(50.0, 50.0), gap_radius=20.0)
+    lipid_positions = np.column_stack([lipid_xy, np.full(len(lipid_xy), 70.0)])
+    tmd_xyz = np.array([[50.0, 50.0, 50.0]])
+
+    covered = _dynamic_near_protein(tmd_xyz, upper, lipid_positions, cap=100.0, X=X, Y=Y, Lx=Lx, Ly=Ly)
+    dx = Lx / gridsize
+    i, j = int(65.0 / dx), int(50.0 / dx)  # 15 A from the atom
+    assert covered[j, i]
+
+
+def test_dynamic_near_protein_caps_reach_at_the_given_cap() -> None:
+    Lx = Ly = 100.0
+    gridsize = 20
+    X, Y = _flat_grid(Lx, Ly, gridsize)
+    upper = _flat_surface(Lx, Ly, 70.0)
+
+    # One real lipid atom, ~45 A away - this atom's own uncapped reach
+    # would be that large, but a small cap must stop it well short.
+    lipid_positions = np.array([[95.0, 50.0, 70.0]])
+    tmd_xyz = np.array([[50.0, 50.0, 50.0]])
+    dx = Lx / gridsize
+    i, j = int(60.0 / dx), int(50.0 / dx)  # 10 A from the atom
+
+    capped = _dynamic_near_protein(tmd_xyz, upper, lipid_positions, cap=5.0, X=X, Y=Y, Lx=Lx, Ly=Ly)
+    assert not capped[j, i]
+
+    uncapped = _dynamic_near_protein(tmd_xyz, upper, lipid_positions, cap=100.0, X=X, Y=Y, Lx=Lx, Ly=Ly)
+    assert uncapped[j, i]
+
+
+def test_dynamic_near_protein_no_atoms_returns_all_false() -> None:
+    Lx = Ly = 100.0
+    X, Y = _flat_grid(Lx, Ly, gridsize=20)
+    upper = _flat_surface(Lx, Ly, 70.0)
+    lipid_positions = np.array([[50.0, 50.0, 70.0]])
+
+    covered = _dynamic_near_protein(np.empty((0, 3)), upper, lipid_positions, cap=10.0, X=X, Y=Y, Lx=Lx, Ly=Ly)
+    assert not covered.any()
 
 
 def test_one_frame_catches_tmd_gap_at_coarse_lambda_via_spacing_floor(tmp_path: Path) -> None:
