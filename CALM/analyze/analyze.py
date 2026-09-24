@@ -222,7 +222,7 @@ def analysis(
                     np.save(f"{args.out}/{frame:0{num_digits}d}_mean_curvature.npy", mean_curvature)
 
                 if "gaussian" in methods:
-                    gaussian_curvature = np.stack([K1, K2, Kmid], axis=0) * 10
+                    gaussian_curvature = np.stack([K1, K2, Kmid], axis=0) * 100
                     if rotated:
                         gaussian_curvature = circle_cutter(gaussian_curvature, dimensions)
                     np.save(f"{args.out}/{frame:0{num_digits}d}_gaussian_curvature.npy", gaussian_curvature)
