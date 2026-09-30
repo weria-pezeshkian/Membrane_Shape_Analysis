@@ -54,6 +54,11 @@ class SFT:
         self.dimensions: np.ndarray | None = None
         self.frame_indices: np.ndarray | None = None
         self.hole_mask: np.ndarray | None = None  # set only if --Remove-TMD was used to build
+        # Cell-indexed triangle info alongside hole_mask - see
+        # core/fourier_build.py's _remove_tmd_hole_mask docstring. Always
+        # written together with hole_mask, so it's set exactly when
+        # hole_mask is.
+        self.hole_corner: np.ndarray | None = None
         self.regularized: bool | None = None  # None if unknown (older SFTs written before this was tracked)
 
     def read_raw(self, read_dir: str, which: str) -> tuple[np.ndarray, np.ndarray]:
@@ -93,6 +98,8 @@ class SFT:
         if any((Path(args.out) / "raw_sft").glob("*_hole_mask.npy")):
             self.hole_mask, hole_frame_indices = self.read_raw(args.out, "hole_mask")
             _check_hole_mask_matches_frames(self.frame_indices, hole_frame_indices, args.out)
+            self.hole_corner, corner_frame_indices = self.read_raw(args.out, "hole_corner")
+            _check_hole_mask_matches_frames(self.frame_indices, corner_frame_indices, args.out)
         self.regularized = bool(args.regularize)
 
     def write(self, out_dir: str) -> None:
@@ -114,6 +121,8 @@ class SFT:
         np.save(out_path / "dimensions.npy", combined_dimensions)
         if self.hole_mask is not None:
             np.save(out_path / "holemask.npy", self.hole_mask)
+        if self.hole_corner is not None:
+            np.save(out_path / "holecorner.npy", self.hole_corner)
         if self.regularized is not None:
             np.save(out_path / "regularized.npy", np.array(self.regularized))
 
@@ -167,6 +176,21 @@ class SFT:
                     "also clears raw_sft/, where this is generated from)."
                 )
             sft.hole_mask = hole_mask
+
+        holecorner_path = dir_path / "holecorner.npy"
+        if holecorner_path.exists():
+            # Same staleness/row-count concern as holemask.npy above -
+            # written together with it, so checked the same way.
+            hole_corner = np.load(holecorner_path)
+            if hole_corner.shape[0] != sft.frame_indices.shape[0]:
+                raise ValueError(
+                    f"'{holecorner_path}' has {hole_corner.shape[0]} frame(s), but "
+                    f"'{required['dimensions.npy']}' has {sft.frame_indices.shape[0]} - they must "
+                    "match. This usually means holecorner.npy is stale, left over from an earlier, "
+                    "differently-scoped build of this directory. Rebuild from scratch (--clear now "
+                    "also clears raw_sft/, where this is generated from)."
+                )
+            sft.hole_corner = hole_corner
 
         regularized_path = dir_path / "regularized.npy"
         if regularized_path.exists():

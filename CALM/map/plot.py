@@ -139,6 +139,84 @@ def _load_and_mask(
     return np.mean(_masked_frame_stack(files, pattern, Dir, sft, layer_sources), axis=0)
 
 
+def _load_value_and_coverage(
+    files: list[str],
+    pattern: str,
+    Dir: str,
+    sft: SFT | None,
+    layer_sources: Sequence[str | None] | None,
+    alpha_tmd: bool,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """(value, frac_missing) for one panel, --alpha-TMD aware.
+
+    `alpha_tmd=False` (default): `value` is `_load_and_mask`'s own plain
+    mean (a NaN in ANY averaged frame makes that point NaN in the
+    result); `frac_missing` is None. Unchanged behavior.
+
+    `alpha_tmd=True`: `value` is the nanmean over just the frames that DID
+    have real data at each point (NaN only where EVERY averaged frame was
+    hole there); `frac_missing` is, per point, the fraction of averaged
+    frames that were hole - fed to `_apply_alpha_overlay` to fade a point
+    toward white in proportion to how much of it is real data, rather
+    than discarding it outright for a single bad frame.
+    """
+    if not alpha_tmd:
+        return _load_and_mask(files, pattern, Dir, sft, layer_sources), None
+
+    stack = _masked_frame_stack(files, pattern, Dir, sft, layer_sources)
+    frac_missing = np.mean(np.isnan(stack), axis=0)
+    value = np.nanmean(stack, axis=0)  # all-NaN slices warn and return NaN - fine, see docstring above
+    return value, frac_missing
+
+
+def _apply_alpha_overlay(ax, frac_missing: np.ndarray, circle_radius: float | None, box_size: np.ndarray) -> None:
+    """--alpha-TMD's own coverage fade: a semi-transparent white layer on top of an already-drawn
+    contourf, one grid cell's own alpha = its own frac_missing (the fraction of averaged frames
+    that were hole there) - 0 leaves that cell's contourf color fully visible, 1 (no real data
+    there in any averaged frame) renders it fully opaque white. Blocky (interpolation='nearest'),
+    matching the actual per-grid-cell resolution frac_missing itself has - smoothing it would
+    misrepresent exactly which cells have how much real data.
+
+    contourf itself has no per-pixel alpha of its own (one alpha for the whole filled-contour
+    set), so this is a separate flat white image layered on top instead of a contourf option -
+    clipped to the same circle as its own panel's contourf (`_clip_to_circle`), so it doesn't
+    paint white outside that circle when --rotate was used.
+
+    `zorder` is explicit and set between contourf's own default (1, patches) and quiver's (2,
+    line collections): imshow itself defaults to 0, BELOW a filled contourf - a pixel with real
+    data in even one averaged frame (frac_missing < 1, so nanmean is a real number, not NaN)
+    gets an opaque contourf fill there that would otherwise silently hide this overlay
+    underneath it entirely; only an exactly-1.0 pixel (contourf draws nothing, a true gap) would
+    happen to still show through. 1.5 sits strictly above contourf's fills (always visible) and
+    strictly below `ax.quiver`'s own vectors (--mode principal, added after this call), so the
+    vectors stay visible on top of the fade without relying on same-zorder draw-order
+    tiebreaking.
+    """
+    overlay = np.ones(frac_missing.shape + (4,))
+    overlay[..., 3] = frac_missing
+    im = ax.imshow(
+        overlay, extent=(0, box_size[0], 0, box_size[1]), origin="lower",
+        interpolation="nearest", aspect="auto", zorder=1.5,
+    )
+    if circle_radius is not None:
+        circle = mpatches.Circle((box_size[0] / 2.0, box_size[1] / 2.0), circle_radius, transform=ax.transData)
+        im.set_clip_path(circle)
+
+
+def _draw_masked_contourf(
+    ax, X: np.ndarray, Y: np.ndarray, value: np.ndarray, frac_missing: np.ndarray | None,
+    circle_radius: float | None, box_size: np.ndarray, **contourf_kwargs,
+):
+    """One panel's contourf, its circle clip, and (if `frac_missing` is given) its --alpha-TMD
+    coverage overlay - the fixed sequence every contourf panel in draw() follows. Returns the
+    ContourSet (for the caller's own colorbar)."""
+    c = ax.contourf(X, Y, value, **contourf_kwargs)
+    _clip_to_circle(c, ax, circle_radius, box_size)
+    if frac_missing is not None:
+        _apply_alpha_overlay(ax, frac_missing, circle_radius, box_size)
+    return c
+
+
 def _average_principal_directions(
     files: list[str],
     pattern: str,
@@ -298,6 +376,7 @@ def draw(
     frame_numbers: Iterable[int] | None = None,
     vector_frame: int | None = None,
     histogram: bool = False,
+    alpha_tmd: bool = False,
 ) -> None:
     """Render mean curvature or thickness.
 
@@ -320,6 +399,15 @@ def draw(
     `_add_colorbar_histogram`) showing how this call's own data distributes
     across the colorbar's fixed range - opt-in on both `map plot` and
     `dynamic_plot`'s own `--histogram` flag, off by default on both.
+
+    `alpha_tmd` changes how a --Remove-TMD hole is averaged and drawn, in
+    every panel this function draws: off (default), a point NaN in even
+    one averaged frame is NaN (blank) in the whole average, unchanged
+    from before this flag existed. On, that point instead shows the mean
+    of whichever frames DID have real data there, faded toward white in
+    proportion to how many frames didn't (`_load_value_and_coverage`,
+    `_apply_alpha_overlay`) - a point with no real data in any averaged
+    frame still renders fully white either way.
     """
     fontsize = 20
     # Extra figure width (inches) a colorbar histogram strip, plus its
@@ -344,9 +432,9 @@ def draw(
         circle_radius = fixed_circle_radius(sft.dimensions)
 
     if mode == "thickness":
-        thickness_mean = _load_and_mask(
+        thickness_mean, thickness_missing = _load_value_and_coverage(
             _frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers),
-            "*_thickness.npy", Dir, sft, layer_sources=None,
+            "*_thickness.npy", Dir, sft, layer_sources=None, alpha_tmd=alpha_tmd,
         )
         gridsize = thickness_mean.shape[-1]
         X, Y = get_XY(box_size, gridsize)
@@ -362,8 +450,10 @@ def draw(
         fig, ax = plt.subplots(figsize=(fig_w, 10))
         fig.subplots_adjust(left=1.2 / fig_w, right=10.2 / fig_w, bottom=0.1, top=0.92)
 
-        contour = ax.contourf(X, Y, thickness_mean, cmap="viridis", levels=thickness_levels)
-        _clip_to_circle(contour, ax, circle_radius, box_size)
+        contour = _draw_masked_contourf(
+            ax, X, Y, thickness_mean, thickness_missing, circle_radius, box_size,
+            cmap="viridis", levels=thickness_levels,
+        )
         ax.set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((10.44 / fig_w, 0.1, 0.36 / fig_w, 0.8))
@@ -402,8 +492,8 @@ def draw(
     else:
         curvature_layer_sources = ["upper", "lower", "union"]
 
-    curvature_mean = _load_and_mask(
-        _frame_filtered_glob(Dir + pattern, frame_numbers), pattern, Dir, sft, curvature_layer_sources
+    curvature_mean, curvature_missing = _load_value_and_coverage(
+        _frame_filtered_glob(Dir + pattern, frame_numbers), pattern, Dir, sft, curvature_layer_sources, alpha_tmd,
     )
 
     gridsize = curvature_mean.shape[-1]
@@ -416,14 +506,20 @@ def draw(
         curvature_data1 = curvature_mean[0]
         curvature_data2 = curvature_mean[1]
         curvature_data3 = curvature_mean[2]
+        missing1 = missing2 = missing3 = None
+        if curvature_missing is not None:
+            missing1, missing2, missing3 = curvature_missing[0], curvature_missing[1], curvature_missing[2]
         quantity = "Mean Curvature"
 
         # Thickness is optional here: "mean" was computed without it if
         # --method didn't include "thickness". Layout adapts below.
         thickness_files = _frame_filtered_glob(Dir + "*_thickness.npy", frame_numbers)
         have_thickness = bool(thickness_files)
+        thickness_missing = None
         if have_thickness:
-            thickness_mean = _load_and_mask(thickness_files, "*_thickness.npy", Dir, sft, layer_sources=None)
+            thickness_mean, thickness_missing = _load_value_and_coverage(
+                thickness_files, "*_thickness.npy", Dir, sft, layer_sources=None, alpha_tmd=alpha_tmd,
+            )
             thickness_min, thickness_max = (
                 thickness_minmax if thickness_minmax is not None else _auto_minmax(thickness_mean)
             )
@@ -432,11 +528,19 @@ def draw(
         curvature_data1 = curvature_mean[0]
         curvature_data2 = curvature_mean[1]
         curvature_data3 = curvature_mean[2]
+        missing1 = missing2 = missing3 = None
+        if curvature_missing is not None:
+            missing1, missing2, missing3 = curvature_missing[0], curvature_missing[1], curvature_missing[2]
         quantity = "Gaussian Curvature"
 
     elif mode == "principal":
         curvature_k1 = [curvature_mean[0], curvature_mean[2], curvature_mean[4]]
         curvature_k2 = [curvature_mean[1], curvature_mean[3], curvature_mean[5]]
+        if curvature_missing is not None:
+            missing_k1 = [curvature_missing[0], curvature_missing[2], curvature_missing[4]]
+            missing_k2 = [curvature_missing[1], curvature_missing[3], curvature_missing[5]]
+        else:
+            missing_k1 = missing_k2 = [None, None, None]
 
         dir_frame_numbers = [vector_frame] if vector_frame is not None else frame_numbers
         dir_files = _frame_filtered_glob(Dir + "*_principal_dirs.npy", dir_frame_numbers)
@@ -475,16 +579,24 @@ def draw(
         fig.subplots_adjust(left=(2.24 + shift) / fig_w, right=(28.48 + shift) / fig_w, bottom=0.03, top=0.97)
 
         thickness_levels = np.linspace(thickness_min, thickness_max, 20)
-        contour0 = axes[0].contourf(X, Y, thickness_mean, cmap="viridis", levels=thickness_levels)
-        _clip_to_circle(contour0, axes[0], circle_radius, box_size)
+        contour0 = _draw_masked_contourf(
+            axes[0], X, Y, thickness_mean, thickness_missing, circle_radius, box_size,
+            cmap="viridis", levels=thickness_levels,
+        )
         axes[0].set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
-        contour1 = axes[1].contourf(X, Y, curvature_data1, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour1, axes[1], circle_radius, box_size)
-        contour2 = axes[2].contourf(X, Y, curvature_data2, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour2, axes[2], circle_radius, box_size)
-        contour3 = axes[3].contourf(X, Y, curvature_data3, cmap="plasma", norm=norm, levels=levels)
-        _clip_to_circle(contour3, axes[3], circle_radius, box_size)
+        contour1 = _draw_masked_contourf(
+            axes[1], X, Y, curvature_data1, missing1, circle_radius, box_size,
+            cmap="plasma", norm=norm, levels=levels,
+        )
+        _draw_masked_contourf(
+            axes[2], X, Y, curvature_data2, missing2, circle_radius, box_size,
+            cmap="plasma", norm=norm, levels=levels,
+        )
+        _draw_masked_contourf(
+            axes[3], X, Y, curvature_data3, missing3, circle_radius, box_size,
+            cmap="plasma", norm=norm, levels=levels,
+        )
 
         axes[1].set_title(f"{layer1} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
         axes[2].set_title(f"{layer2} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
@@ -517,11 +629,14 @@ def draw(
         fig.subplots_adjust(left=0.6 / fig_w, right=26.4 / fig_w, bottom=0.08, top=0.88, wspace=0.05)
 
         curvatures = [curvature_data1, curvature_data3, curvature_data2]  # upper, middle, lower
+        missings = [missing1, missing3, missing2]
         layers = [layer1, layer3, layer2]
 
         for i in range(3):
-            c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, axes[i], circle_radius, box_size)
+            c = _draw_masked_contourf(
+                axes[i], X, Y, curvatures[i], missings[i], circle_radius, box_size,
+                cmap="plasma", norm=norm, levels=levels,
+            )
             axes[i].set_title(f"{layers[i]} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
@@ -542,11 +657,14 @@ def draw(
         fig.subplots_adjust(left=0.6 / fig_w, right=26.4 / fig_w, bottom=0.08, top=0.88, wspace=0.05)
 
         curvatures = [curvature_data1, curvature_data2, curvature_data3]
+        missings = [missing1, missing2, missing3]
         layers = [layer1, layer2, layer3]
 
         for i in range(3):
-            c = axes[i].contourf(X, Y, curvatures[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, axes[i], circle_radius, box_size)
+            c = _draw_masked_contourf(
+                axes[i], X, Y, curvatures[i], missings[i], circle_radius, box_size,
+                cmap="plasma", norm=norm, levels=levels,
+            )
             axes[i].set_title(f"{layers[i]} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
@@ -570,8 +688,10 @@ def draw(
 
         for i in range(3):
             ax = axes[0, i]
-            c = ax.contourf(X, Y, curvature_k1[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, ax, circle_radius, box_size)
+            c = _draw_masked_contourf(
+                ax, X, Y, curvature_k1[i], missing_k1[i], circle_radius, box_size,
+                cmap="plasma", norm=norm, levels=levels,
+            )
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Surface: k1",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
@@ -582,8 +702,10 @@ def draw(
 
         for i in range(3):
             ax = axes[1, i]
-            c = ax.contourf(X, Y, curvature_k2[i], cmap="plasma", norm=norm, levels=levels)
-            _clip_to_circle(c, ax, circle_radius, box_size)
+            c = _draw_masked_contourf(
+                ax, X, Y, curvature_k2[i], missing_k2[i], circle_radius, box_size,
+                cmap="plasma", norm=norm, levels=levels,
+            )
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Surface: k2",
                          fontsize=fontsize, fontweight="bold", pad=title_pad)
             if show_vectors:
@@ -632,6 +754,11 @@ def _build_plot_parser() -> argparse.ArgumentParser:
         '--histogram', action="store_true", default=False,
         help="add a distribution strip beside each colorbar",
     )
+    parser.add_argument(
+        '--alpha-TMD', dest='alpha_tmd', action="store_true", default=False,
+        help="fade a --Remove-TMD hole point toward white by how many averaged frames it was "
+             "actually missing in, instead of blanking it outright on a single bad frame (see --man)",
+    )
     add_manual(parser, "map_plot")
     return parser
 
@@ -645,7 +772,7 @@ def plot(args: list[str]) -> None:
 
     draw(
         Dir=ns.numpys_directory, mode=ns.mode, minmax=minmax, filename=ns.outfile, show_vectors=ns.vectors,
-        histogram=ns.histogram,
+        histogram=ns.histogram, alpha_tmd=ns.alpha_tmd,
     )
 
 

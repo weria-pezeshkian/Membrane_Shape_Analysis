@@ -119,6 +119,40 @@ own real position crosses the fitted surface. The projected trajectory
 stays in the same continuous coordinate frame the PBC-aware extraction
 built, so it is never re-wrapped.
 
+## Curvature-aware displacement (`--project`)
+
+By default, each `(t, t+tau)` displacement between two surface-projected
+points is measured as the along-surface arc length directly above the
+straight (x, y) path between them - the length swept out by integrating
+the local surface metric `ds = sqrt(1 + (dZ/dl)^2) dl` along that line,
+using the fitted surface's own analytic gradient. `--project` instead
+measures the flat planar distance between the two projected points (the
+original method).
+
+Flat planar distance silently underestimates D wherever the membrane is
+locally curved between the two points: a straight chord between two
+points is always shorter than the actual path length along a curved
+surface connecting them, so a protein or lipid sitting still in a locally
+bent patch (e.g. under a large clique) reads as diffusing more slowly
+than one on a flat patch, purely from the projection, not real motion.
+This is described in Fabian, B.; Javanainen, M. *Diffusion Analyses along
+Mean and Gaussian-Curved Membranes with CurD.* J. Phys. Chem. Lett.
+**2024**, *15*, 3214-3222 (Fabian: Dept. of Theoretical Biophysics, Max
+Planck Institute of Biophysics, Frankfurt am Main). CurD itself computes
+true mesh geodesics (Vertex-oriented Triangle Propagation); this
+implementation is independent of CurD's own code (unlicensed, so not
+reused here) and instead integrates directly over CALM's already-fitted
+Fourier surface - the straight-line arc length rather than the true
+shortest path, which agree to leading order for displacements small
+relative to the surface's own local radius of curvature, true of
+ordinary diffusive steps at the tau values used for the fit. See
+`core/diffusion.py`'s own top-of-file note for the full citation and
+implementation details.
+
+Displacement for a given `(t, t+tau)` pair always uses frame `t`'s own
+fitted surface (not `t+tau`'s, and not some averaged surface) - the
+membrane's actual shape right when that particular hop started.
+
 ## Diffusion coefficient
 
 The mean-squared displacement is multi-tau: every valid `(t, t+tau)` pair
@@ -126,10 +160,13 @@ within each kept segment's own length contributes to that tau's pooled
 average, up to `--max-tau-fraction` of that segment's own length - a short
 segment only ever contributes to small tau, a long one to the full range.
 Segments are pooled by species and leaflet (and once more, combined across
-leaflets, as `"both"`).
+leaflets, as `"both"`); a `"both"` pool's displacements still each use
+their own segment's own leaflet surface, not a mixed one.
 
 D is a linear fit of MSD against tau (`MSD = 4*D*tau`, the 2D Einstein
-relation) over a window of the pooled curve's own tau range:
+relation) over a window of the pooled curve's own tau range, unaffected
+by whether MSD itself came from `--project`'s flat distance or the
+default curvature-aware arc length above:
 
 - `--max-tau-fraction` - caps tau at this fraction of each segment's own
   length (default: `0.25`).

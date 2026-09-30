@@ -153,6 +153,7 @@ def _one_lipid_frame(
     regularize: bool = False,
     remove_tmd: bool | str = False,
     tmd_far_multiple: float = 5.0,
+    tmd_proximity_multiple: float = 2.0,
     headgroup_override: dict[str, list[str]] | None = None,
 ) -> _LipidFrameResult:
     """Fit one frame's leaflet surfaces and save its lipid-composition/area-per-lipid output.
@@ -236,10 +237,11 @@ def _one_lipid_frame(
     # depend on anything the loop produces) so valid_upper/valid_lower are
     # available for the curvature baseline below, computed once per frame.
     hole_mask = None
+    hole_corner = None
     if remove_tmd:
-        hole_mask, _ = _remove_tmd_hole_mask(
+        hole_mask, hole_corner, _ = _remove_tmd_hole_mask(
             remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
-            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_far_multiple,
+            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_proximity_multiple,
         )
         valid_upper = ~hole_mask[0]
         valid_lower = ~hole_mask[1]
@@ -348,14 +350,16 @@ def _one_lipid_frame(
         out_fractions_upper = _lipid_voronoi_fractions(species_xy_upper, X_out, Y_out, fourier_upper, Lx, Ly)
         out_fractions_lower = _lipid_voronoi_fractions(species_xy_lower, X_out, Y_out, fourier_lower, Lx, Ly)
         out_hole_mask = None
+        out_hole_corner = None
         if remove_tmd:
-            out_hole_mask, _ = _remove_tmd_hole_mask(
+            out_hole_mask, out_hole_corner, _ = _remove_tmd_hole_mask(
                 remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
-                fourier_upper, fourier_lower, X_out, Y_out, Lx, Ly, Nx_modes, Ny_modes, tmd_far_multiple,
+                fourier_upper, fourier_lower, X_out, Y_out, Lx, Ly, Nx_modes, Ny_modes, tmd_proximity_multiple,
             )
     else:
         out_fractions_upper, out_fractions_lower = fractions_upper, fractions_lower
         out_hole_mask = hole_mask
+        out_hole_corner = hole_corner
 
     counts = np.stack([counts_upper, counts_lower], axis=1)
     out_fractions = np.stack([out_fractions_upper, out_fractions_lower], axis=1)
@@ -371,6 +375,9 @@ def _one_lipid_frame(
         # under raw_sft/) since 'analyze lipids' has no SFT to consolidate
         # into - 'map lipids_plot' reads it directly per frame.
         np.save(out / f"{frame:0{num_digits}d}_hole_mask.npy", out_hole_mask)
+        # Cell-indexed triangle info alongside it - see
+        # core/fourier_build.py's _remove_tmd_hole_mask docstring.
+        np.save(out / f"{frame:0{num_digits}d}_hole_corner.npy", out_hole_corner)
 
     return {"frame": frame, "diagnostics": diagnostics}
 
@@ -521,6 +528,7 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
                     sqrt_n_atoms=args.gridsize,
                     regularize=args.regularize,
                     remove_tmd=args.remove_tmd,
+                    tmd_proximity_multiple=args.tmd_proximity_multiple,
                     headgroup_override=headgroup_override,
                     )
 

@@ -11,6 +11,36 @@ if TYPE_CHECKING:
 
     from .fourier_core import Fourier_Series_Function
 
+# Curved-membrane MSD/diffusion note
+# -----------------------------------------------------------------------
+# The default diffusion coefficient in this module (see
+# `_surface_arc_length` / `_multi_tau_msd_geodesic`, and `--project` in
+# `analyze/diffusion.py`) corrects each displacement for the membrane's
+# own local curvature rather than measuring it as a flat XY-projected
+# distance. The flat-projection bias this fixes is described in:
+#
+#   Fabian, B.; Javanainen, M. Diffusion Analyses along Mean and
+#   Gaussian-Curved Membranes with CurD. J. Phys. Chem. Lett. 2024, 15,
+#   3214-3222. https://doi.org/10.1021/acs.jpclett.4c00338
+#   (Fabian: Dept. of Theoretical Biophysics, Max Planck Institute of
+#   Biophysics, Frankfurt am Main - Gerhard Hummer's department.)
+#
+# CurD itself computes true mesh geodesics via the Vertex-oriented
+# Triangle Propagation (VTP) algorithm (Qin et al.); its own
+# implementation (github.com/balazsfabian/curved-diffusion) carries no
+# license, so none of its code is reused here. What follows instead is
+# an independent implementation against CALM's own already-fitted
+# Fourier surface: the along-surface arc length directly above the
+# straight-line (x, y) path between two points, found by numerically
+# integrating the local surface metric
+# ds = sqrt(1 + (dZ/dl)^2) dl. This is not the true shortest
+# (geodesic) path on the surface, but for displacements small relative
+# to the surface's own local radius of curvature - true of ordinary
+# diffusive steps at the tau values this module fits D from - the two
+# agree to leading order, and this needs no new dependency, no mesh, and
+# no periodic-boundary handling beyond what the already-periodic Fourier
+# surface gives for free.
+
 
 class _SurfaceAsInterp:
     """Adapts a `Fourier_Series_Function` to `f`/`_thickness_root`'s `interp(y, x, grid=False)` calling convention."""
@@ -130,6 +160,105 @@ def _multi_tau_msd(
         for tau_frames in range(1, seg_max_tau + 1):
             disp = seg[tau_frames:] - seg[:-tau_frames]
             sq = np.sum(disp ** 2, axis=1)
+            sums[tau_frames - 1] += sq.sum()
+            counts[tau_frames - 1] += len(sq)
+
+    valid = counts > 0
+    tau_frames_valid = np.arange(1, max_tau_frames + 1)[valid]
+    msd = sums[valid] / counts[valid]
+    n_samples = counts[valid]
+    tau = tau_frames_valid * dt
+    return tau, msd, n_samples
+
+
+# Gauss-Legendre quadrature order for `_surface_arc_length`. The Fourier
+# surfaces this integrates are smooth and low-order (a handful of modes
+# per side), so this converges well past the precision anything else in
+# this pipeline carries.
+_ARC_LENGTH_N_QUAD = 16
+
+
+def _surface_arc_length(
+    fourier: Fourier_Series_Function,
+    x0: np.ndarray, y0: np.ndarray,
+    x1: np.ndarray, y1: np.ndarray,
+) -> np.ndarray:
+    """Along-surface arc length of `fourier`'s own fitted surface above the straight (x, y) path
+    from (x0, y0) to (x1, y1), one value per row. See this module's own top-of-file note for what
+    this approximates and why.
+
+    Parametrizing the line by its own planar arc length l in [0, L]
+    (L = planar distance from (x0, y0) to (x1, y1)):
+
+        dZ/dl = Zx*(dx/L) + Zy*(dy/L)   (directional derivative along the line)
+        arc length = integral_0^L sqrt(1 + (dZ/dl)^2) dl
+
+    evaluated by `_ARC_LENGTH_N_QUAD`-point Gauss-Legendre quadrature.
+    Coincident points (x0, y0) == (x1, y1) correctly integrate to 0 (L
+    itself is the outer factor, so a zero-length pair zeroes the whole
+    row regardless of the integrand there).
+    """
+    nodes, weights = np.polynomial.legendre.leggauss(_ARC_LENGTH_N_QUAD)
+    t = (nodes + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+    w = weights / 2.0
+
+    dx = x1 - x0
+    dy = y1 - y0
+    planar_length = np.sqrt(dx ** 2 + dy ** 2)
+    safe_length = np.where(planar_length > 0, planar_length, 1.0)
+
+    # (n_quad, n_pairs) sample points along each line.
+    xs = x0[None, :] + t[:, None] * dx[None, :]
+    ys = y0[None, :] + t[:, None] * dy[None, :]
+
+    zx = fourier.Zx(xs, ys)
+    zy = fourier.Zy(xs, ys)
+    dzdl = (zx * dx[None, :] + zy * dy[None, :]) / safe_length[None, :]
+
+    return np.sum(w[:, None] * np.sqrt(1.0 + dzdl ** 2), axis=0) * planar_length
+
+
+def _multi_tau_msd_geodesic(
+    segments: list[np.ndarray],
+    segment_surfaces: list[list[Fourier_Series_Function]],
+    dt: float, max_tau_fraction: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Same contract and pooling as `_multi_tau_msd`, but each squared displacement is the
+    along-surface arc length (`_surface_arc_length`), not the flat planar distance, evaluated on
+    the *starting* frame's own fitted surface for that particular (t, t+tau) pair.
+
+    `segment_surfaces[k][i]` is the `Fourier_Series_Function` fitted for
+    the frame `segments[k][i]` was recorded at - i.e. one surface per
+    row of that segment's own xy trajectory, in the same order.
+    """
+    if not segments:
+        return np.empty(0), np.empty(0), np.empty(0, dtype=int)
+
+    max_len = max(len(seg) for seg in segments)
+    max_tau_frames = max(1, int(max_len * max_tau_fraction))
+
+    sums = np.zeros(max_tau_frames)
+    counts = np.zeros(max_tau_frames, dtype=int)
+    for seg, surfaces in zip(segments, segment_surfaces):
+        seg_max_tau = max(1, int(len(seg) * max_tau_fraction))
+        for tau_frames in range(1, seg_max_tau + 1):
+            n_pairs = len(seg) - tau_frames
+            if n_pairs <= 0:
+                continue
+
+            x0, y0 = seg[:-tau_frames, 0], seg[:-tau_frames, 1]
+            x1, y1 = seg[tau_frames:, 0], seg[tau_frames:, 1]
+
+            # Every pair starts at a different frame, so every pair needs
+            # its own starting frame's surface - no shared quadrature
+            # across the batch here, unlike `_multi_tau_msd`'s vectorized
+            # subtract-and-square.
+            arc = np.array([
+                _surface_arc_length(surfaces[i], x0[i:i + 1], y0[i:i + 1], x1[i:i + 1], y1[i:i + 1])[0]
+                for i in range(n_pairs)
+            ])
+
+            sq = arc ** 2
             sums[tau_frames - 1] += sq.sum()
             counts[tau_frames - 1] += len(sq)
 

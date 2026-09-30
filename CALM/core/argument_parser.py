@@ -315,6 +315,11 @@ def add_build_arguments(
              "selection is used instead and --center is not required (see --man)",
     )
     optional.add_argument(
+        '--tmd-proximity-multiple', dest='tmd_proximity_multiple', default=2.0, type=float,
+        help="how far (as a multiple of the lipid-packing threshold) an unsupported grid point can "
+             "sit from a --Remove-TMD atom and still count as caused by it (default: 2.0, see --man)",
+    )
+    optional.add_argument(
         '--regularization', dest='regularize', default=False, action="store_true",
         help="enable Tikhonov regularization of the fit (see --man)",
     )

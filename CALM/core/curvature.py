@@ -53,8 +53,6 @@ def shape_operator_curvatures(
             S = np.array([[S11[i, j], S12[i, j]],
                           [S21[i, j], S22[i, j]]])
             vals, vecs = np.linalg.eig(S)
-            # Surface curvatures/directions are real; discard imaginary parts
-            # before sorting and constructing the 3D tangent vectors.
             vals = vals.real
             vecs = vecs.real
             order = np.argsort(vals)

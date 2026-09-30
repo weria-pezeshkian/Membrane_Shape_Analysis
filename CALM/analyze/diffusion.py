@@ -22,6 +22,7 @@ from ..core.diffusion import (
     _break_into_segments,
     _fit_diffusion_coefficient,
     _multi_tau_msd,
+    _multi_tau_msd_geodesic,
     _project_onto_surface,
     _selection_centers,
     _SurfaceAsInterp,
@@ -204,6 +205,7 @@ def _one_diffusion_frame(
     regularize: bool = False,
     remove_tmd: bool | str = False,
     tmd_far_multiple: float = 5.0,
+    tmd_proximity_multiple: float = 2.0,
     gridsize: int = 100,
     force_middle: bool = False,
 ) -> _DiffusionFrameResult:
@@ -278,9 +280,9 @@ def _one_diffusion_frame(
         x = np.linspace(0, Lx, gridsize, endpoint=False)
         y = np.linspace(0, Ly, gridsize, endpoint=False)
         X, Y = np.meshgrid(x, y)
-        hole_mask, _ = _remove_tmd_hole_mask(
+        hole_mask, _, _ = _remove_tmd_hole_mask(
             remove_tmd, None, universe, layer_group, layer_group_2,
-            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_far_multiple,
+            fourier_upper, fourier_lower, X, Y, Lx, Ly, Nx_modes, Ny_modes, tmd_proximity_multiple,
         )
         in_hole_upper = lookup_mask_at_point(hole_mask[0], xy[:, 0], xy[:, 1], Lx, Ly)
         in_hole_lower = lookup_mask_at_point(hole_mask[1], xy[:, 0], xy[:, 1], Lx, Ly)
@@ -336,8 +338,9 @@ def _extract_whole_continuous_positions(
 
 def _project_all_frames(
     out_dir: str, frames: list[int], until: int, n_tracked: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(leaflet, in_hole, proj_xy) for every tracked point across every analyzed frame, from the saved per-frame files.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[int, tuple[Fourier_Series_Function, Fourier_Series_Function]]]:
+    """(leaflet, in_hole, proj_xy, surfaces_by_frame) for every tracked point across every analyzed frame,
+    from the saved per-frame files.
 
     Rebuilds each frame's own upper/lower `Fourier_Series_Function` from
     its saved `Anm` (mode counts read back from `Anm`'s own shape) and box
@@ -346,6 +349,13 @@ def _project_all_frames(
     An unassigned point (`leaflet == 0`) keeps its own raw xy for that
     frame; it plays no further part once segments are broken at every
     unassigned frame.
+
+    `surfaces_by_frame` maps each analyzed frame's own number (not its
+    position in `frames`) to the `(fourier_upper, fourier_lower)` pair
+    just rebuilt for it - the same objects `--project`'s flat mode
+    already needed, reused by the curved-aware default to evaluate arc
+    length on each displacement's own starting frame (`_build_segments` /
+    `_fit_diffusion_pools`).
     """
     num_digits = len(str(abs(until)))
     out = Path(out_dir)
@@ -367,7 +377,8 @@ def _project_all_frames(
         surfaces.append((surface[0], surface[1]))
 
     proj_xy = np.zeros((n_frames, n_tracked, 2))
-    for t in range(n_frames):
+    surfaces_by_frame: dict[int, tuple[Fourier_Series_Function, Fourier_Series_Function]] = {}
+    for t, frame in enumerate(frames):
         Anm_upper, Anm_lower = surfaces[t]
         Nx_t = (Anm_upper.shape[0] - 1) // 2
         Ny_t = (Anm_upper.shape[1] - 1) // 2
@@ -378,6 +389,7 @@ def _project_all_frames(
         fourier_lower.setAnm(Anm_lower)
         interp_upper = _SurfaceAsInterp(fourier_upper)
         interp_lower = _SurfaceAsInterp(fourier_lower)
+        surfaces_by_frame[frame] = (fourier_upper, fourier_lower)
 
         for i in range(n_tracked):
             if leaflet[t, i] == 0:
@@ -390,7 +402,7 @@ def _project_all_frames(
                 x_proj, y_proj, _ = _project_onto_surface(px, py, pz, fourier_lower, interp_lower)
             proj_xy[t, i] = (x_proj, y_proj)
 
-    return leaflet, in_hole, proj_xy
+    return leaflet, in_hole, proj_xy, surfaces_by_frame
 
 
 def _build_segments(
@@ -437,6 +449,10 @@ def _build_segments(
                 "kept": discard_reason == "",
                 "discard_reason": discard_reason,
                 "xy": proj_xy[start:end, i, :],
+                # One frame number per row of "xy" above, same order - lets
+                # the curved-aware MSD path (--project off) look up each
+                # row's own fitted surface (see _fit_diffusion_pools).
+                "frame_indices": frames[start:end],
             })
     return segments
 
@@ -458,40 +474,62 @@ def _fit_diffusion_pools(
     fit_tau_max_fraction: float,
     per_instance: bool = False,
     force_middle: bool = False,
+    project: bool = False,
+    surfaces_by_frame: dict[int, tuple[Fourier_Series_Function, Fourier_Series_Function]] | None = None,
 ) -> tuple[list[tuple], list[tuple]]:
     """(diffusion_rows, msd_rows): one row per `(species, leaflet)` pool with a kept segment, plus a pooled "both" row.
 
-    A kept segment's own xy trajectory is pooled into both its own
-    `(label, leaflet)` pool and that label's `"both"` pool, so a species'
-    diffusion coefficient is reported per leaflet and combined across
-    both. `D`/`D_stderr` are converted from Angstrom^2/ps to cm^2/s.
-    `per_instance` pools by `(label, fragindex)` instead of `label` alone
-    (`_pool_label`), giving every individual tracked point its own
-    diffusion estimate rather than combining every point sharing a label -
-    e.g. every one of ten proteins matched by the same `--select` gets its
-    own row instead of all ten being combined into one. `force_middle`
-    skips the `"both"` pool entirely - every segment's own leaflet is
-    already `"middle"` there (see `_assign_middle_surface`), so `"both"`
-    would just be a duplicate of `"middle"` by construction, not a real
-    second pool.
+    A kept segment is pooled into both its own `(label, leaflet)` pool and
+    that label's `"both"` pool, so a species' diffusion coefficient is
+    reported per leaflet and combined across both. `D`/`D_stderr` are
+    converted from Angstrom^2/ps to cm^2/s. `per_instance` pools by
+    `(label, fragindex)` instead of `label` alone (`_pool_label`), giving
+    every individual tracked point its own diffusion estimate rather than
+    combining every point sharing a label - e.g. every one of ten proteins
+    matched by the same `--select` gets its own row instead of all ten
+    being combined into one. `force_middle` skips the `"both"` pool
+    entirely - every segment's own leaflet is already `"middle"` there
+    (see `_assign_middle_surface`), so `"both"` would just be a duplicate
+    of `"middle"` by construction, not a real second pool.
+
+    `project=True` reproduces the original flat, planar-XY-projected MSD
+    (`_multi_tau_msd`). The default, `project=False`, corrects each
+    displacement for the membrane's own local curvature instead
+    (`_multi_tau_msd_geodesic`; requires `surfaces_by_frame`, see this
+    module's own docstring and `core/diffusion.py`'s top-of-file note for
+    what it computes and why) - a "both" pool mixes segments from both
+    leaflets, so each pooled segment's own surfaces are looked up by its
+    own `"leaflet"`, not the pool's.
     """
-    pools: dict[tuple[str, str], list[np.ndarray]] = defaultdict(list)
+    pools: dict[tuple[str, str], list[dict]] = defaultdict(list)
     discarded_by_label_leaflet: dict[tuple[str, str], int] = defaultdict(int)
     discarded_by_label: dict[str, int] = defaultdict(int)
     for seg in segments:
         label = _pool_label(seg, per_instance)
         if seg["kept"]:
-            pools[(label, seg["leaflet"])].append(seg["xy"])
+            pools[(label, seg["leaflet"])].append(seg)
             if not force_middle:
-                pools[(label, "both")].append(seg["xy"])
+                pools[(label, "both")].append(seg)
         else:
             discarded_by_label_leaflet[(label, seg["leaflet"])] += 1
             discarded_by_label[label] += 1
 
     diffusion_rows = []
     msd_rows = []
-    for (label, leaflet_key), segs_xy in pools.items():
-        tau, msd, n_samples = _multi_tau_msd(segs_xy, dt, max_tau_fraction)
+    for (label, leaflet_key), segs in pools.items():
+        segs_xy = [s["xy"] for s in segs]
+        if project:
+            tau, msd, n_samples = _multi_tau_msd(segs_xy, dt, max_tau_fraction)
+        else:
+            assert surfaces_by_frame is not None
+            segment_surfaces = [
+                [
+                    surfaces_by_frame[f][0 if s["leaflet"] in ("upper", "middle") else 1]
+                    for f in s["frame_indices"]
+                ]
+                for s in segs
+            ]
+            tau, msd, n_samples = _multi_tau_msd_geodesic(segs_xy, segment_surfaces, dt, max_tau_fraction)
         D, D_stderr, r2, loglog_slope = _fit_diffusion_coefficient(tau, msd, fit_tau_min_fraction, fit_tau_max_fraction)
         n_discarded = (
             discarded_by_label[label] if leaflet_key == "both" else discarded_by_label_leaflet[(label, leaflet_key)]
@@ -585,6 +623,7 @@ def _finalize_diffusion(
     fit_tau_min_fraction: float,
     fit_tau_max_fraction: float,
     force_middle: bool = False,
+    project: bool = False,
 ) -> None:
     """Project, segment, pool, and fit: turn every frame's saved surface/meta/position files into the output files.
 
@@ -592,9 +631,12 @@ def _finalize_diffusion(
     the same segments - pooled by species/label (`diffusion.npy`) and per
     individual tracked point (`diffusion_per_instance.npy`) - so choosing
     between them is a `CALM map diffusion_plot` flag, not a re-run here.
+
+    `project` selects the original flat, planar-XY-projected MSD instead
+    of the curvature-aware default (see `_fit_diffusion_pools`).
     """
     n_tracked = len(tracked_points)
-    leaflet, in_hole, proj_xy = _project_all_frames(out_dir, frames, until, n_tracked)
+    leaflet, in_hole, proj_xy, surfaces_by_frame = _project_all_frames(out_dir, frames, until, n_tracked)
     segments = _build_segments(
         tracked_points, leaflet, in_hole, proj_xy, frames, min_segment_fraction, force_middle=force_middle
     )
@@ -604,6 +646,7 @@ def _finalize_diffusion(
         diffusion_rows, msd_rows = _fit_diffusion_pools(
             segments, dt, max_tau_fraction, fit_tau_min_fraction, fit_tau_max_fraction,
             per_instance=per_instance, force_middle=force_middle,
+            project=project, surfaces_by_frame=surfaces_by_frame,
         )
         _write_diffusion_and_msd(out_dir, diffusion_rows, msd_rows, suffix=suffix)
 
@@ -666,6 +709,7 @@ def calc_diffusion(args: argparse.Namespace, u: mda.Universe) -> None:
             Ny=args.lambda_y,
             regularize=args.regularize,
             remove_tmd=args.remove_tmd,
+            tmd_proximity_multiple=args.tmd_proximity_multiple,
             gridsize=args.gridsize,
             force_middle=args.force_middle,
         )
@@ -685,7 +729,7 @@ def calc_diffusion(args: argparse.Namespace, u: mda.Universe) -> None:
     _finalize_diffusion(
         args.out, tracked_points, frames, Until, dt,
         args.min_segment_fraction, args.max_tau_fraction, args.fit_tau_min_fraction, args.fit_tau_max_fraction,
-        force_middle=args.force_middle,
+        force_middle=args.force_middle, project=args.project,
     )
 
 
@@ -728,6 +772,13 @@ def _build_diffusion_parser() -> argparse.ArgumentParser:
              "trajectory into spurious segments (see --man)",
     )
     optional.add_argument(
+        "--project", dest="project", default=False, action="store_true",
+        help="measure each displacement as flat planar distance between the two surface-projected points "
+             "(the original method) instead of the default along-surface arc length that corrects for the "
+             "membrane's own local curvature - flat projection systematically underestimates D wherever the "
+             "membrane is curved (see --man)",
+    )
+    optional.add_argument(
         "--min-segment-fraction", dest="min_segment_fraction", default=0.1, type=float,
         help="segments shorter than this fraction of the analyzed range are excluded from the fit (default: 0.1)",
     )
@@ -764,19 +815,25 @@ def diffusion(args: list[str]) -> None:
 
     Each tracked point's real position is projected onto its own assigned
     leaflet's fitted surface every frame before displacement is measured,
-    so membrane undulation is separated from lateral motion. A tracked
-    point's trajectory splits into a new segment at a leaflet flip or a
-    --Remove-TMD hole-status change; segments shorter than
-    --min-segment-fraction of the analyzed range, or shorter than a fixed
-    minimum frame count, are excluded from the fit. D comes from a
-    multi-tau, ensemble-and-time-averaged MSD curve pooled across every
-    kept segment. Leaflet surfaces are always fit live from the
-    trajectory. --structure must carry bond information (e.g. a GROMACS
-    .tpr): both the automatic headgroup detection and the PBC-aware
-    position extraction need it. --Remove-TMD must always be given its own
-    selection here (e.g. --Remove-TMD 'name BB SC1'). --force-middle tracks
-    against the middle surface instead, for something that straddles both
-    leaflets (e.g. a transmembrane protein) rather than living in one.
+    so membrane undulation is separated from lateral motion. By default,
+    each displacement is then measured as the along-surface arc length
+    above the straight (x, y) path between the two projected points, not
+    the flat planar distance between them - flat projection silently
+    underestimates D wherever the membrane is locally curved (see --man
+    for the physical reasoning and references); --project restores the
+    original flat measurement. A tracked point's trajectory splits into a
+    new segment at a leaflet flip or a --Remove-TMD hole-status change;
+    segments shorter than --min-segment-fraction of the analyzed range, or
+    shorter than a fixed minimum frame count, are excluded from the fit. D
+    comes from a multi-tau, ensemble-and-time-averaged MSD curve pooled
+    across every kept segment. Leaflet surfaces are always fit live from
+    the trajectory. --structure must carry bond information (e.g. a
+    GROMACS .tpr): both the automatic headgroup detection and the
+    PBC-aware position extraction need it. --Remove-TMD must always be
+    given its own selection here (e.g. --Remove-TMD 'name BB SC1').
+    --force-middle tracks against the middle surface instead, for
+    something that straddles both leaflets (e.g. a transmembrane protein)
+    rather than living in one.
     """
     parser = _build_diffusion_parser()
 

@@ -180,6 +180,7 @@ def _draw_frame_isolated(
     frame_numbers: list[int],
     vector_frame: int,
     histogram: bool,
+    alpha_tmd: bool,
 ) -> None:
     """Render one frame via `draw()`, running it in its own child process.
 
@@ -198,7 +199,7 @@ def _draw_frame_isolated(
         kwargs=dict(
             Dir=Dir, mode=mode, minmax=minmax, thickness_minmax=thickness_minmax,
             filename=filename, show_vectors=show_vectors, frame_numbers=frame_numbers,
-            vector_frame=vector_frame, histogram=histogram,
+            vector_frame=vector_frame, histogram=histogram, alpha_tmd=alpha_tmd,
         ),
     )
     process.start()
@@ -218,6 +219,7 @@ def draw_dynamic(
     in_memory: bool = False,
     histogram: bool = False,
     percentile: float = 0.0,
+    alpha_tmd: bool = False,
 ) -> None:
     """Render a GIF: one frame per trajectory frame, each a rolling-window average of nearby frames.
 
@@ -246,6 +248,10 @@ def draw_dynamic(
 
     `percentile` is passed straight to `_windowed_minmax` - see its own
     docstring.
+
+    `alpha_tmd` is passed straight to `draw()` (see its own docstring) -
+    the same coverage-fade behavior, one video frame's own window at a
+    time.
     """
     if mode not in _MODE_PATTERNS:
         raise ValueError("mode must be 'mean', 'gaussian', 'principal', or 'thickness'")
@@ -271,7 +277,7 @@ def draw_dynamic(
             _draw_frame_isolated(
                 Dir=Dir, mode=mode, minmax=fixed_minmax, thickness_minmax=fixed_thickness_minmax,
                 filename=frame_path, show_vectors=show_vectors, frame_numbers=win,
-                vector_frame=frame_numbers[i], histogram=histogram,
+                vector_frame=frame_numbers[i], histogram=histogram, alpha_tmd=alpha_tmd,
             )
             frame_paths.append(frame_path)
 
@@ -320,6 +326,12 @@ def _build_dynamic_plot_parser() -> argparse.ArgumentParser:
              "e.g. 5 keeps the 2.5th-97.5th percentile range, guarding against a single spurious point setting "
              "the scale for the whole video (default: 0, the plain min/max)",
     )
+    parser.add_argument(
+        '--alpha-TMD', dest='alpha_tmd', action="store_true", default=False,
+        help="fade a --Remove-TMD hole point toward white by how many of that video frame's own "
+             "window it was actually missing in, instead of blanking it outright on a single bad "
+             "frame (see 'CALM map plot --man')",
+    )
     add_manual(parser, "map_dynamic_plot")
     return parser
 
@@ -335,7 +347,7 @@ def dynamic_plot(argv: list[str]) -> None:
     draw_dynamic(
         Dir=ns.numpys_directory, mode=ns.mode, out_gif=ns.outfile,
         window=ns.window, spf=ns.spf, minmax=minmax, show_vectors=ns.vectors,
-        in_memory=ns.in_memory, histogram=ns.histogram, percentile=ns.percentile,
+        in_memory=ns.in_memory, histogram=ns.histogram, percentile=ns.percentile, alpha_tmd=ns.alpha_tmd,
     )
 
 

@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 class _LayerHoleStats(TypedDict):
-    near_protein: int
-    far_fallback_only: int
+    triangle_cells: int
+    whole_square_cells: int
     closed_gap: int
     total: int
 
@@ -272,30 +272,23 @@ def _assign_tmd_atoms_to_leaflets(
     universe: mda.Universe,
     fourier_upper: Fourier_Series_Function,
     fourier_lower: Fourier_Series_Function,
-    dist_upper: np.ndarray,
-    dist_lower: np.ndarray,
     X: np.ndarray,
     Y: np.ndarray,
     Lx: float,
     Ly: float,
-    threshold: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """(upper_xyz, lower_xyz): `center_selection`'s own atoms, split by which leaflet each is
-    actually closer to - never both, never an average of the two - and kept only if it maps onto
-    a genuinely unsupported region of that same leaflet.
+    """(upper_xy, lower_xy): `center_selection`'s own atoms' own projected (x, y) position on
+    whichever leaflet's surface each is actually closer to - never both, never an average of the
+    two.
 
     Deliberately NOT "is this atom's z between the fitted upper and lower
-    surfaces at its own (x, y)" (the previous approach here): that fit is a
+    surfaces at its own (x, y)" (an earlier approach here): that fit is a
     smooth, low-order, whole-box surface, defined everywhere including
     where there's no real lipid data to constrain it - inside a large
     hole, it just continues the bulk membrane's own typical z-span rather
     than reflecting that there's no real membrane there at all, so nearly
     any atom near that typical span (not just genuine transmembrane atoms)
-    would pass. This never asks the fit whether an atom "looks embedded" -
-    it asks whether the atom's own real position maps, geometrically, onto
-    a part of a real leaflet's surface that itself has no real lipid
-    support (`dist_upper`/`dist_lower`, already computed from real
-    positions - ground truth, not a fit value).
+    would pass.
 
     For each atom: `nearest_surface_intersection` against upper (using
     upper's own analytic normal at the atom's own (x, y), from `surface_normal`)
@@ -304,29 +297,22 @@ def _assign_tmd_atoms_to_leaflets(
     Whichever gives the smaller-magnitude signed distance is the leaflet
     this atom actually belongs to - if only one intersection succeeds,
     that one wins; if neither does (both brackets failed even widened),
-    the atom is dropped, nothing meaningful to assign.
+    the atom is dropped, nothing meaningful to assign. The returned (x, y)
+    is where that winning normal ray actually crosses the leaflet's own
+    surface, not the atom's own raw (x, y) - the same curvature-correct
+    projection philosophy `analyze/diffusion.py`'s `_project_onto_surface`
+    uses.
 
-    How far the atom itself is from that leaflet plays no further part in
-    the decision - the hole is a property of the 2D surface (does real
-    lipid support exist at this (x, y)), and the atom is only ever used as
-    a probe for that; a deep-in-the-bilayer transmembrane atom and a loop
-    resting near the interface, at the same (x, y), point at the same
-    question about the same patch of surface. So the winning intersection
-    point's own grid cell is checked directly against that same leaflet's
-    own `dist_upper`/`dist_lower`: if at least 3 of its 4 corners are
-    already within `threshold` of real lipid (one outlier corner is
-    treated as noise, not a real gap), this atom maps onto a region that's
-    genuinely supported regardless of the atom's own presence, so it's
-    discarded; otherwise it's kept as a real contributor to that leaflet's
-    hole.
+    Every atom returned here is a candidate contributor to that leaflet's
+    hole; which grid cells actually end up marked hole because of one is
+    decided per-cell, downstream, in `_classify_hole_cells` - not filtered
+    out here.
     """
     atoms = universe.select_atoms(center_selection)
-    gridsize = X.shape[0]
-    dx, dy = Lx / gridsize, Ly / gridsize
     t_max_base = float(np.nanmax(np.abs(fourier_upper.Z(X, Y) - fourier_lower.Z(X, Y)))) * 2
 
-    upper_xyz: list[np.ndarray] = []
-    lower_xyz: list[np.ndarray] = []
+    upper_xy: list[tuple[float, float]] = []
+    lower_xy: list[tuple[float, float]] = []
     for pos in atoms.positions:
         ax, ay, az = float(pos[0]), float(pos[1]), float(pos[2])
         n_upper = surface_normal(fourier_upper, ax, ay)
@@ -341,23 +327,17 @@ def _assign_tmd_atoms_to_leaflets(
         if l_upper is None and l_lower is None:
             continue
         if l_lower is None or (l_upper is not None and abs(l_upper) <= abs(l_lower)):
-            leaflet, signed_distance, n, dist_field = "upper", l_upper, n_upper, dist_upper
+            leaflet, signed_distance, n = "upper", l_upper, n_upper
         else:
-            leaflet, signed_distance, n, dist_field = "lower", l_lower, n_lower, dist_lower
+            leaflet, signed_distance, n = "lower", l_lower, n_lower
 
         xq = (ax + signed_distance * n[0]) % Lx
         yq = (ay + signed_distance * n[1]) % Ly
-        i0, j0 = int(xq / dx) % gridsize, int(yq / dy) % gridsize
-        i1, j1 = (i0 + 1) % gridsize, (j0 + 1) % gridsize
-        corners = (dist_field[j0, i0], dist_field[j0, i1], dist_field[j1, i0], dist_field[j1, i1])
-        if sum(c <= threshold for c in corners) >= 3:
-            continue  # already genuinely supported there, regardless of this atom
-
-        (upper_xyz if leaflet == "upper" else lower_xyz).append(pos)
+        (upper_xy if leaflet == "upper" else lower_xy).append((xq, yq))
 
     return (
-        np.array(upper_xyz) if upper_xyz else np.empty((0, 3)),
-        np.array(lower_xyz) if lower_xyz else np.empty((0, 3)),
+        np.array(upper_xy) if upper_xy else np.empty((0, 2)),
+        np.array(lower_xy) if lower_xy else np.empty((0, 2)),
     )
 
 
@@ -536,47 +516,132 @@ def _dynamic_leaflet_groups(
     return universe.atoms[upper_index], universe.atoms[lower_index]
 
 
-def _dynamic_near_protein(
-    tmd_xyz: np.ndarray,
-    fourier: Fourier_Series_Function,
-    lipid_positions: np.ndarray,
-    cap: float,
-    X: np.ndarray,
-    Y: np.ndarray,
-    Lx: float,
-    Ly: float,
+def _project_tmd_onto_surface_distances(
+    tmd_xy: np.ndarray, fourier: Fourier_Series_Function, X: np.ndarray, Y: np.ndarray, Lx: float, Ly: float,
 ) -> np.ndarray:
-    """Grid points within reach of at least one atom in `tmd_xyz`, each atom's own reach set by its
-    own distance to the nearest real lipid in `lipid_positions` (capped at `cap`), not one shared
-    radius for every atom.
-
-    A single shared radius (`threshold`, the whole frame's own lipid-packing
-    scale) reaches the middle of a channel/pore only as far as that scale
-    itself - fine for a genuinely narrow, single-helix TMD (its own atoms
-    are already within that scale of the surrounding lipid), but a wider
-    feature described by a thin, central line of atoms with no lateral
-    spread needs each atom's own reach to grow to match the size of the
-    real gap it's actually sitting in the middle of. Each atom's own
-    distance to the nearest real lipid is exactly that local gap size,
-    already computed the same way `dist_upper`/`dist_lower` are, just
-    evaluated at the atom's own (x, y) instead of at grid points. `cap`
-    (far_threshold) bounds a stray atom whose own kept position happens to
-    be pathologically far from any real lipid, so it can't reach further
-    than the point at which `far_threshold` would already flag that region
-    as a hole regardless of protein proximity.
+    """Per-grid-point distance to the nearest of `tmd_xy`'s own points, each first projected onto
+    `fourier`'s own fitted surface at its own (x, y) - so a real backbone atom's own z (which, unlike
+    a lipid headgroup, can sit well off the surface) never distorts what should be a purely in-plane
+    proximity test. `tmd_xy` is `_assign_tmd_atoms_to_leaflets`'s own (x, y) output.
     """
-    if len(tmd_xyz) == 0:
-        return np.zeros(X.shape, dtype=bool)
-    tx, ty = tmd_xyz[:, 0], tmd_xyz[:, 1]
+    if len(tmd_xy) == 0:
+        return np.full(X.shape, np.inf)
+    tx, ty = tmd_xy[:, 0], tmd_xy[:, 1]
     on_surface = np.column_stack([tx, ty, fourier.Z(tx, ty)])
+    return _grid_to_atom_distances(on_surface, X, Y, fourier, Lx, Ly)
 
-    own_radius = np.minimum(
-        _grid_to_atom_distances(lipid_positions, tx[None, :], ty[None, :], fourier, Lx, Ly)[0], cap,
+
+def _classify_hole_cells(
+    dist: np.ndarray, dist_tmd: np.ndarray, threshold: float, tmd_proximity_threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """(point_hole, corner_code) for one leaflet, from the per-grid-cell corner rule.
+
+    `dist`/`dist_tmd` are per-grid-point (gridsize, gridsize) arrays, laid
+    out [y-index, x-index] like every other such array in this module:
+    `dist[j, i]` is grid point (x[i], y[j])'s own distance to the nearest
+    real lipid; `dist_tmd[j, i]` its distance to the nearest candidate
+    --Remove-TMD atom (`_project_tmd_onto_surface_distances`).
+
+    Classifies every grid CELL - the square bounded by 4 neighboring grid
+    points, periodic in both directions - by its own 4 corners:
+
+      - well-described: dist <= threshold.
+      - 4/4 well-described: not a hole.
+      - 3/4 well-described (one bad corner): a hole only if that one bad
+        corner is itself close to a real --Remove-TMD atom
+        (dist_tmd <= tmd_proximity_threshold) - if so, only the TRIANGLE
+        half of the cell containing the bad corner (split along the
+        diagonal connecting its two edge-neighbors, leaving the corner
+        diagonally opposite the bad one as the triangle's own excluded
+        vertex) counts as hole; the other triangle, covering the 3 good
+        corners, does not. A bad corner with no nearby protein atom is
+        left alone entirely (noise, not a real gap).
+      - <=2/4 well-described: a hole, as a WHOLE cell (no triangle split,
+        since with 2+ bad corners a single diagonal cut can't cleanly
+        separate "explained by protein" from "not"), only if at least one
+        of its bad corners is close to a real --Remove-TMD atom;
+        otherwise left alone entirely, same as above.
+
+    Nothing is ever marked hole without a bad corner AND a nearby real
+    --Remove-TMD atom explaining it - there is no independent "far from
+    any lipid" fallback.
+
+    Returns:
+        point_hole: (gridsize, gridsize) bool, one entry per grid POINT -
+            True if that point is a corner of the "white" region of any
+            cell touching it (all 4 corners for a whole-cell hole; the
+            bad corner and its two edge-neighbors, i.e. 3 of 4 corners,
+            for a triangle-cell hole). Same shape and per-point boolean
+            meaning every other consumer of a hole mask already expects,
+            just computed by this rule.
+        corner_code: (gridsize, gridsize) int8, one entry per grid CELL,
+            indexed by that cell's own bottom-left corner (periodic
+            wrap), fully self-describing that cell's own verdict: 0 not a
+            hole, 1/2/3/4 a triangle-cell hole naming which corner
+            (bottom-left/bottom-right/top-left/top-right) is the bad one,
+            5 a whole-cell hole. Only ever consulted by plotting code
+            that wants the sharper triangle boundary
+            (`map/plot.py`) - every other consumer only needs
+            `point_hole`'s own plain boolean.
+    """
+    good = dist <= threshold
+    near_tmd = dist_tmd <= tmd_proximity_threshold
+
+    # Per-cell corner arrays, indexed by each cell's own bottom-left grid
+    # point (cell[j, i] spans grid points (i, j)-(i+1, j)-(i, j+1)-
+    # (i+1, j+1)), periodic in both directions.
+    bl_good, bl_near = good, near_tmd
+    br_good, br_near = np.roll(good, -1, axis=1), np.roll(near_tmd, -1, axis=1)
+    tl_good, tl_near = np.roll(good, -1, axis=0), np.roll(near_tmd, -1, axis=0)
+    tr_good = np.roll(np.roll(good, -1, axis=0), -1, axis=1)
+    tr_near = np.roll(np.roll(near_tmd, -1, axis=0), -1, axis=1)
+
+    n_good = (
+        bl_good.astype(np.int8) + br_good.astype(np.int8) + tl_good.astype(np.int8) + tr_good.astype(np.int8)
     )
-    covered = np.zeros(X.shape, dtype=bool)
-    for i in range(len(tx)):
-        covered |= _grid_to_atom_distances(on_surface[i:i + 1], X, Y, fourier, Lx, Ly) <= own_radius[i]
-    return covered
+    one_bad = n_good == 3
+    many_bad = n_good <= 2
+
+    corner_code = np.zeros(good.shape, dtype=np.int8)
+    triangle = np.zeros(good.shape, dtype=bool)
+    for code, bad, bad_near in (
+        (1, ~bl_good, bl_near), (2, ~br_good, br_near), (3, ~tl_good, tl_near), (4, ~tr_good, tr_near),
+    ):
+        this_corner = one_bad & bad & bad_near
+        corner_code[this_corner] = code
+        triangle |= this_corner
+
+    any_bad_near = (
+        (~bl_good & bl_near) | (~br_good & br_near) | (~tl_good & tl_near) | (~tr_good & tr_near)
+    )
+    whole = many_bad & any_bad_near
+    corner_code[whole] = 5
+
+    # Which of a cell's own 4 corners does its own verdict paint white?
+    # A whole-cell hole paints all 4. A triangle-cell hole paints every
+    # corner except the one diagonally opposite the bad one (the "kept"
+    # triangle's own unique vertex) - e.g. a bad top-right corner (code 4)
+    # paints bottom-right/top-left/top-right, leaving only bottom-left
+    # (top-right's diagonal opposite) unpainted.
+    paint_bl = whole | (triangle & (corner_code != 4))
+    paint_br = whole | (triangle & (corner_code != 3))
+    paint_tl = whole | (triangle & (corner_code != 2))
+    paint_tr = whole | (triangle & (corner_code != 1))
+
+    # Fold each cell's own paint verdict back onto its 4 corner points. A
+    # grid point at (i, j) is: the bottom-left corner of cell (i, j)
+    # itself; the bottom-right corner of cell (i-1, j); the top-left
+    # corner of cell (i, j-1); the top-right corner of cell (i-1, j-1) -
+    # each shift below reads the OTHER cell's own paint array back at
+    # this point's own index.
+    point_hole = (
+        paint_bl
+        | np.roll(paint_br, 1, axis=1)
+        | np.roll(paint_tl, 1, axis=0)
+        | np.roll(np.roll(paint_tr, 1, axis=0), 1, axis=1)
+    )
+
+    return point_hole, corner_code
 
 
 def _remove_tmd_hole_mask(
@@ -593,26 +658,39 @@ def _remove_tmd_hole_mask(
     Ly: float,
     Nx: int,
     Ny: int,
-    tmd_far_multiple: float = 5.0,
-) -> tuple[np.ndarray, _HoleStats]:
-    """(hole_mask, hole_stats) for one frame's --Remove-TMD hole detection.
+    tmd_proximity_multiple: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray, _HoleStats]:
+    """(hole_mask, hole_corner, hole_stats) for one frame's --Remove-TMD hole detection.
 
-    One threshold shared by both leaflets. The Nyquist term
-    (_tmd_threshold) reflects the fit's chosen resolution; capping it with
-    median_multiple_threshold anchors it to how densely lipids are packed,
-    using the larger of the two leaflets' own median-based candidates.
+    Two thresholds, both anchored to the same per-frame lipid-packing
+    scale but kept separately named and independently tunable, since they
+    answer different questions:
 
-    A grid point counts as a hole when it is unsupported by lipids (the
-    distance test) and either within reach of a protein atom actually
-    assigned to that same leaflet (`_assign_tmd_atoms_to_leaflets` - each
-    atom belongs to exactly one leaflet, never both, decided by which
-    leaflet's own fitted surface it's geometrically closer to), or farther
-    from any lipid than `far_threshold`. "Within reach" is each atom's own
-    distance to the nearest real lipid, capped at `far_threshold`
-    (`_dynamic_near_protein`), not the single shared `threshold` - the
-    protein selection is `remove_tmd`'s own value when --Remove-TMD was
-    given one, and --center's selection (`rotation_and_center.sel1`) when
-    --Remove-TMD was given bare (`remove_tmd is True`).
+      - `threshold` (Nyquist-capped median grid-to-headgroup distance,
+        `_tmd_threshold`/`median_multiple_threshold`): how far a grid
+        point can sit from real lipid data before it counts as
+        unsupported at all.
+      - `tmd_proximity_threshold` (`threshold * tmd_proximity_multiple`,
+        default multiple an empirical starting point, may need
+        retuning): how far an unsupported point can sit from an actual
+        --Remove-TMD atom before that atom no longer explains it.
+
+    The actual hole geometry is decided per grid CELL, not per point -
+    see `_classify_hole_cells` for the full rule. Nothing is ever marked
+    hole without both an unsupported corner AND a nearby real
+    --Remove-TMD atom explaining it; there is no independent "far from
+    any lipid, regardless of protein" fallback.
+
+    The protein selection is `remove_tmd`'s own value when --Remove-TMD
+    was given one, and --center's selection (`rotation_and_center.sel1`)
+    when --Remove-TMD was given bare (`remove_tmd is True`).
+
+    `hole_mask` keeps the exact shape and per-point boolean meaning every
+    existing consumer (thickness/curvature masking, lipids' valid_upper/
+    valid_lower, diffusion's lookup_mask_at_point, ...) already expects.
+    `hole_corner` is the extra, cell-indexed triangle information -
+    needed only for the sharper plotted hole boundary
+    (`map/plot.py`), safe for every other consumer to ignore entirely.
     """
     nyquist = _tmd_threshold(Lx, Ly, Nx, Ny)
 
@@ -623,58 +701,56 @@ def _remove_tmd_hole_mask(
         median_multiple_threshold(dist_upper, k=1),
         median_multiple_threshold(dist_lower, k=1),
     ))
-    far_threshold = threshold * tmd_far_multiple
+    tmd_proximity_threshold = threshold * tmd_proximity_multiple
 
     if remove_tmd is True:
         assert rotation_and_center is not None
         tmd_selection = rotation_and_center.sel1
     else:
         tmd_selection = remove_tmd
-    tmd_xyz_upper, tmd_xyz_lower = _assign_tmd_atoms_to_leaflets(
-        tmd_selection, universe, fourier1, fourier2, dist_upper, dist_lower, X, Y, Lx, Ly, threshold,
+    tmd_xy_upper, tmd_xy_lower = _assign_tmd_atoms_to_leaflets(
+        tmd_selection, universe, fourier1, fourier2, X, Y, Lx, Ly,
     )
-    # Each kept atom's own reach is its own distance to the nearest real
-    # lipid (see _dynamic_near_protein), not the single shared `threshold` -
-    # a wide channel/pore described by only a thin, central line of atoms
-    # needs that reach to grow to match the size of the real gap it's
-    # actually in the middle of, not just the lipid-packing scale.
-    near_protein_upper = _dynamic_near_protein(
-        tmd_xyz_upper, fourier1, layer_group.positions, far_threshold, X, Y, Lx, Ly,
+    dist_tmd_upper = _project_tmd_onto_surface_distances(tmd_xy_upper, fourier1, X, Y, Lx, Ly)
+    dist_tmd_lower = _project_tmd_onto_surface_distances(tmd_xy_lower, fourier2, X, Y, Lx, Ly)
+
+    hole_upper, corner_upper = _classify_hole_cells(
+        dist_upper, dist_tmd_upper, threshold, tmd_proximity_threshold,
     )
-    near_protein_lower = _dynamic_near_protein(
-        tmd_xyz_lower, fourier2, layer_group_2.positions, far_threshold, X, Y, Lx, Ly,
+    hole_lower, corner_lower = _classify_hole_cells(
+        dist_lower, dist_tmd_lower, threshold, tmd_proximity_threshold,
     )
-    hole_upper = (dist_upper > threshold) & (near_protein_upper | (dist_upper > far_threshold))
-    hole_lower = (dist_lower > threshold) & (near_protein_lower | (dist_lower > far_threshold))
+
     n_before_upper = int(hole_upper.sum())
     n_before_lower = int(hole_lower.sum())
     hole_upper = _close_enclosed_gaps(hole_upper)
     hole_lower = _close_enclosed_gaps(hole_lower)
     hole_mask = np.stack((hole_upper, hole_lower), axis=0)
+    hole_corner = np.stack((corner_upper, corner_lower), axis=0)
 
-    # Breaks each leaflet's flagged points down by which rule flagged them,
-    # and how many more the enclosed-gap-closing pass added, so the caller
-    # can log a concrete accounting of what --Remove-TMD did on this frame.
+    # Cell-level counts (triangle_cells/whole_square_cells, from
+    # corner_code's own 0/1-4/5 encoding) and point-level counts
+    # (closed_gap/total, matching hole_mask's own units) are deliberately
+    # kept separate here, not combined - a cell and a grid point are
+    # different units and mixing their counts would be meaningless.
+    n_triangle_upper = int(((corner_upper >= 1) & (corner_upper <= 4)).sum())
+    n_triangle_lower = int(((corner_lower >= 1) & (corner_lower <= 4)).sum())
     hole_stats: _HoleStats = {
         "n_grid": int(hole_upper.size),
         "upper": {
-            "near_protein": int((near_protein_upper & (dist_upper > threshold)).sum()),
-            "far_fallback_only": int(
-                ((dist_upper > far_threshold) & ~near_protein_upper & (dist_upper > threshold)).sum()
-            ),
+            "triangle_cells": n_triangle_upper,
+            "whole_square_cells": int((corner_upper == 5).sum()),
             "closed_gap": int(hole_upper.sum()) - n_before_upper,
             "total": int(hole_upper.sum()),
         },
         "lower": {
-            "near_protein": int((near_protein_lower & (dist_lower > threshold)).sum()),
-            "far_fallback_only": int(
-                ((dist_lower > far_threshold) & ~near_protein_lower & (dist_lower > threshold)).sum()
-            ),
+            "triangle_cells": n_triangle_lower,
+            "whole_square_cells": int((corner_lower == 5).sum()),
             "closed_gap": int(hole_lower.sum()) - n_before_lower,
             "total": int(hole_lower.sum()),
         },
     }
-    return hole_mask, hole_stats
+    return hole_mask, hole_corner, hole_stats
 
 
 def _one_frame(
@@ -688,7 +764,7 @@ def _one_frame(
     sqrt_n_atoms: int = 100,
     remove_tmd: bool | str = False,
     regularize: bool = False,
-    tmd_far_multiple: float = 5.0,
+    tmd_proximity_multiple: float = 2.0,
 ) -> _FrameResult:
     """Fit one frame's Fourier surfaces (and optional hole mask) and save its raw_sft output.
 
@@ -738,9 +814,9 @@ def _one_frame(
 
     hole_stats: _HoleStats | None = None
     if remove_tmd:
-        hole_mask, hole_stats = _remove_tmd_hole_mask(
+        hole_mask, hole_corner, hole_stats = _remove_tmd_hole_mask(
             remove_tmd, rotation_and_center, universe, layer_group, layer_group_2,
-            fourier1, fourier2, X, Y, dimensions[:3][0], dimensions[:3][1], Nx, Ny, tmd_far_multiple,
+            fourier1, fourier2, X, Y, dimensions[:3][0], dimensions[:3][1], Nx, Ny, tmd_proximity_multiple,
         )
 
     if q_angle is not None:
@@ -764,6 +840,11 @@ def _one_frame(
     if remove_tmd:
         filehole = raw_dir / f"{frame:0{num_digits}d}_hole_mask.npy"
         np.save(filehole, hole_mask)
+        # Cell-indexed triangle info, extra to hole_mask's own per-point
+        # boolean - only ever read by plotting code wanting the sharper
+        # triangle boundary (see _remove_tmd_hole_mask's own docstring).
+        filecorner = raw_dir / f"{frame:0{num_digits}d}_hole_corner.npy"
+        np.save(filecorner, hole_corner)
 
     return {"frame": frame, "diagnostics": diagnostics, "hole_stats": hole_stats}
 
@@ -812,6 +893,7 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
                     sqrt_n_atoms=args.gridsize,
                     remove_tmd=args.remove_tmd,
                     regularize=args.regularize,
+                    tmd_proximity_multiple=args.tmd_proximity_multiple,
                     )
 
         futures = [ex.submit(fn, x) for x in frames]
@@ -830,16 +912,16 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
                 f"frame {frame_num}: --Remove-TMD flagged "
                 f"{stats['upper']['total']}/{stats['n_grid']} upper and "
                 f"{stats['lower']['total']}/{stats['n_grid']} lower grid points as holes "
-                f"(near-protein upper/lower: {stats['upper']['near_protein']}/{stats['lower']['near_protein']}, "
-                f"far-fallback-only upper/lower: "
-                f"{stats['upper']['far_fallback_only']}/{stats['lower']['far_fallback_only']}, "
+                f"(triangle cells upper/lower: {stats['upper']['triangle_cells']}/{stats['lower']['triangle_cells']}, "
+                f"whole-square cells upper/lower: "
+                f"{stats['upper']['whole_square_cells']}/{stats['lower']['whole_square_cells']}, "
                 f"enclosed gaps closed upper/lower: {stats['upper']['closed_gap']}/{stats['lower']['closed_gap']})"
             )
             if hole_totals is None:
                 hole_totals = {
                     "n_grid": 0,
-                    "upper": {"near_protein": 0, "far_fallback_only": 0, "closed_gap": 0, "total": 0},
-                    "lower": {"near_protein": 0, "far_fallback_only": 0, "closed_gap": 0, "total": 0},
+                    "upper": {"triangle_cells": 0, "whole_square_cells": 0, "closed_gap": 0, "total": 0},
+                    "lower": {"triangle_cells": 0, "whole_square_cells": 0, "closed_gap": 0, "total": 0},
                 }
             hole_totals["n_grid"] += stats["n_grid"]
             layer_pairs = ((stats["upper"], hole_totals["upper"]), (stats["lower"], hole_totals["lower"]))

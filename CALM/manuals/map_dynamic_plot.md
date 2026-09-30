@@ -52,6 +52,11 @@ CALM map dynamic_plot -i full_out_dir -o dynamic.gif
   landing on a physically implausible root - see TODO.md) setting the
   scale for the whole video by itself. The default, 0, is exactly the
   plain min/max.
+- `--alpha-TMD` - same coverage fade as `CALM map plot --man`'s own
+  `--alpha-TMD`, applied per window: a point's color comes from the mean
+  of just that window's frames with real data there, faded toward white
+  by how many of that window's own frames were actually missing it. Off
+  by default.
 
 ## Notes
 
