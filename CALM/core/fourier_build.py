@@ -82,14 +82,24 @@ class Rotation_and_Center_tracker:
         box_center = self.u.dimensions[:3] / 2.0
         if hasattr(sel.atoms,"bonds"):
             if len(self.u.atoms.bonds)>0:
-                self.u.atoms.unwrap(compound="fragments")
+                self.u.atoms.unwrap(compound="fragments", reference="cog")
         sel_center = sel.center_of_geometry(wrap=True)
 
         shift = box_center - sel_center
         shift[2] = 0.0
 
         self.u.atoms.translate(shift)
-        self.u.atoms.wrap(compound="atoms")
+        # compound="residues" moves each residue back into the primary cell
+        # as one rigid unit; compound="atoms" (the default) would instead
+        # wrap every atom independently, re-splitting apart any residue
+        # whose extent straddles a periodic boundary after the shift above
+        # - exactly the kind of break the unwrap() a few lines up just
+        # undid, except now at an uncontrolled, per-frame location. Any
+        # residue split that way has its headgroup center (core/headgroup.py)
+        # averaged from atoms on opposite sides of the box, scrambling the
+        # positions real local structure (e.g. a lipid shell around a
+        # protein) depends on.
+        self.u.atoms.wrap(compound="residues", center="cog")
 
         self.sel_center = box_center.copy()
 

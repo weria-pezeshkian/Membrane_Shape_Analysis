@@ -85,12 +85,27 @@ def lipids_species_token(x: str) -> str:
     return x
 
 
-def _sha256_of_file(path: str, chunk_size: int = 2 ** 20) -> str:
-    """SHA-256 hex digest of the file at `path`, read in chunks to bound memory use for large trajectories."""
+_SHA256_MAX_BYTES = 64 * 2 ** 20  # 64 MiB
+
+
+def _sha256_of_file(path: str, chunk_size: int = 2 ** 20, max_bytes: int = _SHA256_MAX_BYTES) -> str:
+    """SHA-256 hex digest of the first `max_bytes` of the file at `path`, or the whole file if it's smaller.
+
+    Trajectories can be large enough that hashing the whole file measurably
+    slows down every replay; the replay checksum only needs to catch the
+    common case of a file being swapped or re-generated; hashing a bounded
+    prefix is bounded in time and still does. Read in chunks to bound memory
+    use for large trajectories.
+    """
     digest = hashlib.sha256()
+    remaining = max_bytes
     with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(chunk_size), b""):
+        while remaining > 0:
+            chunk = f.read(min(chunk_size, remaining))
+            if not chunk:
+                break
             digest.update(chunk)
+            remaining -= len(chunk)
     return digest.hexdigest()
 
 

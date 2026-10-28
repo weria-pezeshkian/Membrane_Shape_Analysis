@@ -214,6 +214,7 @@ def test_draw_frame_isolated_runs_draw_in_a_subprocess(tmp_path: Path) -> None:
     _draw_frame_isolated(
         Dir=str(tmp_path), mode="mean", minmax=[-0.1, 0.1], thickness_minmax=None,
         filename=str(out_png), show_vectors=True, frame_numbers=[0], vector_frame=0, histogram=False,
+        alpha_tmd=False,
     )
 
     assert out_png.exists()
@@ -224,7 +225,7 @@ def test_draw_frame_isolated_raises_when_the_subprocess_fails(tmp_path: Path) ->
         _draw_frame_isolated(
             Dir=str(tmp_path / "does_not_exist"), mode="mean", minmax=[-0.1, 0.1], thickness_minmax=None,
             filename=str(tmp_path / "frame.png"), show_vectors=True, frame_numbers=[0], vector_frame=0,
-            histogram=False,
+            histogram=False, alpha_tmd=False,
         )
 
 
