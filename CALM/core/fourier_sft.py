@@ -60,6 +60,28 @@ class SFT:
         # hole_mask is.
         self.hole_corner: np.ndarray | None = None
         self.regularized: bool | None = None  # None if unknown (older SFTs written before this was tracked)
+        # The --center selection string this SFT was built with (None if
+        # --center wasn't used, or for an older SFT written before this was
+        # tracked). --rotate requires --center (validate_rotation_args), so
+        # this is always set whenever rotation_was_used(sft) is True for an
+        # SFT written after this field was added - utilize/vmd_xtc.py's
+        # build_rotation_tcl needs it to re-center the raw trajectory the
+        # same way every frame was centered at build time, before applying
+        # the recovered rotation.
+        self.center_selection: str | None = None
+        # The lambda_x/lambda_y this SFT was actually fit with - None for an
+        # older SFT written before this was tracked. Needed even when the
+        # build was given explicit --lambda_x/--lambda_y (not just an
+        # auto-selected one): analyze.py::analysis reconstructs Fourier_Series_Function
+        # objects from A_mn using whatever Nx/Ny get_fourier_modes derives
+        # from lambda_x/lambda_y, and that MUST match the Nx/Ny this SFT's
+        # A_mn was actually built with, or Fourier_Series_Function.setAnm
+        # silently indexes the wrong slice of A_mn instead of raising -
+        # relying on a separate 'CALM analyze full --sft ...' invocation to
+        # pass the identical --lambda_x/--lambda_y by hand is fragile even
+        # without auto-selection.
+        self.lambda_x: float | None = None
+        self.lambda_y: float | None = None
 
     def read_raw(self, read_dir: str, which: str) -> tuple[np.ndarray, np.ndarray]:
         """Load per-frame `{frame}_{which}.npy` files from `read_dir/raw_sft`, stacked in frame order."""
@@ -101,13 +123,21 @@ class SFT:
             self.hole_corner, corner_frame_indices = self.read_raw(args.out, "hole_corner")
             _check_hole_mask_matches_frames(self.frame_indices, corner_frame_indices, args.out)
         self.regularized = bool(args.regularize)
+        self.center_selection = args.center
+        # calc_fourier resolves args.lambda_x/lambda_y in place (auto-
+        # selecting via 'CALM calibrate lambda' if both were None) before it
+        # returns - reading them back here, after the call, captures
+        # whichever one actually produced this SFT's own A_mn.
+        self.lambda_x = args.lambda_x
+        self.lambda_y = args.lambda_y
 
     def write(self, out_dir: str) -> None:
         """Save the consolidated SFT (Amn.npy, qmn.npy, dimensions.npy) into out_dir.
 
         dimensions.npy is [frame_index, Lx, Ly, Lz] per row, as read back by
-        `from_directory`. holemask.npy and regularized.npy are written only
-        if known (hole_mask/regularized are not None).
+        `from_directory`. holemask.npy, regularized.npy, center_selection.txt
+        and lambda_xy.npy are written only if known (hole_mask/regularized/
+        center_selection/lambda_x are not None).
         """
         assert self.A_mn is not None
         assert self.q_mn is not None
@@ -125,6 +155,11 @@ class SFT:
             np.save(out_path / "holecorner.npy", self.hole_corner)
         if self.regularized is not None:
             np.save(out_path / "regularized.npy", np.array(self.regularized))
+        if self.center_selection is not None:
+            (out_path / "center_selection.txt").write_text(self.center_selection, encoding="utf-8")
+        if self.lambda_x is not None:
+            assert self.lambda_y is not None  # always set together, see build()
+            np.save(out_path / "lambda_xy.npy", np.array([self.lambda_x, self.lambda_y]))
 
     @classmethod
     def from_directory(cls, directory: str) -> SFT:
@@ -195,6 +230,15 @@ class SFT:
         regularized_path = dir_path / "regularized.npy"
         if regularized_path.exists():
             sft.regularized = bool(np.load(regularized_path))
+
+        center_selection_path = dir_path / "center_selection.txt"
+        if center_selection_path.exists():
+            sft.center_selection = center_selection_path.read_text(encoding="utf-8")
+
+        lambda_xy_path = dir_path / "lambda_xy.npy"
+        if lambda_xy_path.exists():
+            lambda_xy = np.load(lambda_xy_path)
+            sft.lambda_x, sft.lambda_y = float(lambda_xy[0]), float(lambda_xy[1])
 
         return sft
 

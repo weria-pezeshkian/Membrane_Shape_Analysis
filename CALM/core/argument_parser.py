@@ -308,7 +308,11 @@ def add_build_arguments(
     optional.add_argument('-S', '--Step', default=1, type=int, help="frame stride (default: 1)")
     optional.add_argument('--lambda_x', type=float, default=None, help="Fourier wavelength scale in x (nm)")
     optional.add_argument('--lambda_y', type=float, default=None, help="Fourier wavelength scale in y (nm)")
-    optional.add_argument('--gridsize', default=100, type=int, help="grid points per side (default: 100)")
+    optional.add_argument(
+        '--gridsize', default=None, type=int,
+        help="grid points per side (default: 100, raised automatically if needed to resolve "
+             "lambda_x/lambda_y's own finest mode without aliasing - see --man)",
+    )
     if include_center:
         optional.add_argument(
             '-C', '--center', default=None, type=str, help="MDAnalysis selection to center each frame on"

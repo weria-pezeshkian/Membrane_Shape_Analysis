@@ -9,7 +9,8 @@ from ..analyze.diffusion import _build_diffusion_parser
 from ..analyze.full import _build_full_parser
 from ..analyze.lipids import _build_lipids_parser
 from ..analyze.sft import _build_sft_parser
-from ..calibrate.enter import _build_calibrate_parser
+from ..calibrate.dts import _build_dts_parser
+from ..calibrate.lambda_sweep import _build_lambda_sweep_parser
 from ..map.diffusion_plot import _build_diffusion_plot_parser
 from ..map.dynamic_plot import _build_dynamic_plot_parser
 from ..map.lipids_plot import _build_lipids_plot_parser
@@ -149,8 +150,8 @@ def _field_spec(action: argparse.Action, group_title: str | None) -> FieldSpec:
 @dataclass
 class CommandSpec:
     """One leaf command's identity for the GUI: its tab label, the argv prefix `CALM` itself needs
-    (e.g. `["analyze", "sft"]`, or just `["calibrate"]` for the one command with no submodule), the
-    manual name `core/manual.py` knows it by, and its own parser builder."""
+    (e.g. `["analyze", "sft"]`), the manual name `core/manual.py` knows it by, and its own parser
+    builder."""
 
     label: str
     argv_prefix: list[str]
@@ -158,11 +159,13 @@ class CommandSpec:
     build_parser: Callable[[], argparse.ArgumentParser]
 
 
-# One entry per top-level GUI tab. Calibrate has no subcommands of its own
-# (a single CommandSpec, not a list) - every other module is a list of its
-# own subcommands, in the same order `CALM <module> -h` lists them.
+# One entry per top-level GUI tab, each a list of its own subcommands, in
+# the same order `CALM <module> -h` lists them.
 MODULES: dict[str, CommandSpec | list[CommandSpec]] = {
-    "Calibrate": CommandSpec("Calibrate", ["calibrate"], "calibrate", _build_calibrate_parser),
+    "Calibrate": [
+        CommandSpec("dts", ["calibrate", "dts"], "calibrate_dts", _build_dts_parser),
+        CommandSpec("lambda", ["calibrate", "lambda"], "calibrate_lambda", _build_lambda_sweep_parser),
+    ],
     "Analyze": [
         CommandSpec("sft", ["analyze", "sft"], "analyze_sft", _build_sft_parser),
         CommandSpec("full", ["analyze", "full"], "analyze_full", _build_full_parser),

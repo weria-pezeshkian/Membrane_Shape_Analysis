@@ -5,7 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from CALM.core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
+from CALM.core.fourier_core import (
+    DEFAULT_GRIDSIZE,
+    Fourier_Series_Function,
+    average_coefficients,
+    get_fourier_modes,
+    resolve_build_gridsize,
+)
 
 
 def make_surface(
@@ -87,3 +93,25 @@ def test_get_fourier_modes_silent_when_lambda_fits() -> None:
     Nx, Ny = get_fourier_modes([500.0, 500.0], lambda_x=10.0, lambda_y=10.0, diagnostics=diagnostics)
     assert Nx > 1 and Ny > 1
     assert diagnostics == []
+
+
+def test_resolve_build_gridsize_leaves_an_explicit_value_untouched() -> None:
+    # Even one that's numerically below the Nyquist minimum - an explicit
+    # choice is never second-guessed, only "not given" gets a default.
+    assert resolve_build_gridsize(42, Nx=100, Ny=100) == 42
+
+
+def test_resolve_build_gridsize_defaults_to_the_floor_when_nx_ny_are_small() -> None:
+    assert resolve_build_gridsize(None, Nx=3, Ny=3) == DEFAULT_GRIDSIZE
+
+
+def test_resolve_build_gridsize_raises_the_default_for_a_fine_fit() -> None:
+    # Nx=60 needs gridsize >= 120 (Nyquist, 2 points per shortest
+    # wavelength) to avoid aliasing the fit's own finest mode - well above
+    # DEFAULT_GRIDSIZE.
+    assert resolve_build_gridsize(None, Nx=60, Ny=3) == 120
+    assert resolve_build_gridsize(None, Nx=3, Ny=60) == 120
+
+
+def test_resolve_build_gridsize_uses_the_larger_of_nx_ny() -> None:
+    assert resolve_build_gridsize(None, Nx=70, Ny=10) == resolve_build_gridsize(None, Nx=70, Ny=70)

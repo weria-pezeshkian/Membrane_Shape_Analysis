@@ -17,20 +17,24 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import MDAnalysis as mda
 import numpy as np
+import pytest
 
+from CALM.calibrate.lambda_calibration import calibrate_lambda
 from CALM.core import fourier_build as fb
 from CALM.core.fourier_build import (
     _close_enclosed_gaps,
     _grid_to_atom_distances,
     _tmd_threshold,
 )
-from CALM.core.fourier_core import Fourier_Series_Function
+from CALM.core.fourier_core import Fourier_Series_Function, resolve_build_gridsize
 
 
 def test_tmd_threshold_is_half_the_shortest_wavelength() -> None:
@@ -529,6 +533,134 @@ def test_calc_fourier_runs_end_to_end_with_a_dynamic_selection(tmp_path: Path) -
     assert (out_dir / "raw_sft" / "0_A_mn.npy").exists()
     assert (out_dir / "raw_sft" / "0_q_mn.npy").exists()
     assert (out_dir / "raw_sft" / "0_dimensions.npy").exists()
+
+
+def test_calc_fourier_auto_selects_lambda_when_none_given(tmp_path: Path, caplog: Any) -> None:
+    # args.lambda_x/lambda_y both None (nothing given on the command line)
+    # must no longer silently fall through to get_fourier_modes' own fixed
+    # Nx=Ny=3 default - calc_fourier must call 'CALM calibrate lambda'
+    # itself, use its finest-safe recommendation, log it at INFO, and leave
+    # args.lambda_x/lambda_y holding the concrete value actually used (so a
+    # caller building an SFT - see fourier_sft.py's own build() - can
+    # persist it).
+    xs, ys = np.meshgrid(np.arange(0, 200.0, 10.0), np.arange(0, 200.0, 10.0))
+    xy = np.column_stack([xs.ravel(), ys.ravel()])
+    n = xy.shape[0]
+    positions = np.vstack([
+        np.column_stack([xy, np.full(n, 70.0)]),
+        np.column_stack([xy, np.full(n, 30.0)]),
+    ])
+    u = mda.Universe.empty(n_atoms=positions.shape[0], trajectory=True)
+    u.add_TopologyAttr("name", ["P"] * positions.shape[0])
+    u.atoms.positions = positions
+    u.dimensions = [200.0, 200.0, 100.0, 90.0, 90.0, 90.0]
+
+    gro_path = tmp_path / "structure.gro"
+    u.atoms.write(str(gro_path))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    args = SimpleNamespace(
+        Until=None, index="name P", index_file=None, From=0, Step=1, Workers=1,
+        structure=str(gro_path), trajectory=str(gro_path),
+        center=None, rotation_direction=None, rotate=False,
+        out=str(out_dir), lambda_x=None, lambda_y=None, gridsize=10,
+        remove_tmd=False, regularize=False, min_balance=0.6, margin=2.0,
+        tmd_proximity_multiple=2.0,
+    )
+
+    # The exact same recommendation calc_fourier's own auto-select must
+    # arrive at, computed independently here for a precise (not just
+    # "isn't the old fixed 3") assertion below.
+    expected_winner, _ = calibrate_lambda(
+        args.structure, args.trajectory,
+        dynamic_selection=args.index, from_frame=args.From, until_frame=len(u.trajectory), step=args.Step,
+    )
+
+    with caplog.at_level(logging.INFO, logger="CALM.core.fourier_build"):
+        fb.calc_fourier(args, mda.Universe(str(gro_path)))
+
+    assert "auto-selected lambda_x = lambda_y" in caplog.text
+    assert args.lambda_x == pytest.approx(expected_winner.lambda_nm)
+    assert args.lambda_y == pytest.approx(expected_winner.lambda_nm)
+
+    A_mn = np.load(out_dir / "raw_sft" / "0_A_mn.npy")
+    Nx_used = (A_mn.shape[-2] - 1) // 2
+    Ny_used = (A_mn.shape[-1] - 1) // 2
+    assert (Nx_used, Ny_used) == (expected_winner.Nx, expected_winner.Ny)
+    # A 200x200 A box's own finest-safe recommendation is never the old
+    # fixed default - confirms real calibration happened, not a silent
+    # no-op that coincidentally reproduced it.
+    assert (Nx_used, Ny_used) != (3, 3)
+
+
+def _write_square_leaflet_structure(path: Path, box: float = 200.0, spacing: float = 10.0) -> mda.Universe:
+    xs, ys = np.meshgrid(np.arange(0, box, spacing), np.arange(0, box, spacing))
+    xy = np.column_stack([xs.ravel(), ys.ravel()])
+    n = xy.shape[0]
+    positions = np.vstack([
+        np.column_stack([xy, np.full(n, 70.0)]),
+        np.column_stack([xy, np.full(n, 30.0)]),
+    ])
+    u = mda.Universe.empty(n_atoms=positions.shape[0], trajectory=True)
+    u.add_TopologyAttr("name", ["P"] * positions.shape[0])
+    u.atoms.positions = positions
+    u.dimensions = [box, box, 100.0, 90.0, 90.0, 90.0]
+    u.atoms.write(str(path))
+    return u
+
+
+def test_calc_fourier_raises_gridsize_when_not_given_to_avoid_aliasing(tmp_path: Path) -> None:
+    # args.gridsize=None (not given) alongside auto-selected lambda on a
+    # 200x200 A box - whatever Nx the auto-selected lambda implies, the
+    # resulting A_mn's own raw_sft output must have been evaluated (for
+    # --Remove-TMD/hole-mask purposes) on a grid fine enough not to alias
+    # it: gridsize must land at resolve_build_gridsize's own value, not the
+    # untouched DEFAULT_GRIDSIZE=100 fallback that ignored Nx entirely.
+    gro_path = tmp_path / "structure.gro"
+    _write_square_leaflet_structure(gro_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    args = SimpleNamespace(
+        Until=None, index="name P", index_file=None, From=0, Step=1, Workers=1,
+        structure=str(gro_path), trajectory=str(gro_path),
+        center=None, rotation_direction=None, rotate=False,
+        out=str(out_dir), lambda_x=None, lambda_y=None, gridsize=None,
+        remove_tmd=False, regularize=False, min_balance=0.6, margin=2.0,
+        tmd_proximity_multiple=2.0,
+    )
+
+    fb.calc_fourier(args, mda.Universe(str(gro_path)))
+
+    A_mn = np.load(out_dir / "raw_sft" / "0_A_mn.npy")
+    Nx_used = (A_mn.shape[-2] - 1) // 2
+    Ny_used = (A_mn.shape[-1] - 1) // 2
+    assert args.gridsize == resolve_build_gridsize(None, Nx_used, Ny_used)
+    assert args.gridsize >= 2 * max(Nx_used, Ny_used)
+
+
+def test_calc_fourier_leaves_an_explicitly_given_gridsize_untouched(tmp_path: Path) -> None:
+    # An explicit --gridsize is never second-guessed or raised, even when
+    # it's below the Nyquist minimum for the (here, auto-selected) lambda -
+    # only "not given" gets a computed default.
+    gro_path = tmp_path / "structure.gro"
+    _write_square_leaflet_structure(gro_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    args = SimpleNamespace(
+        Until=None, index="name P", index_file=None, From=0, Step=1, Workers=1,
+        structure=str(gro_path), trajectory=str(gro_path),
+        center=None, rotation_direction=None, rotate=False,
+        out=str(out_dir), lambda_x=None, lambda_y=None, gridsize=10,
+        remove_tmd=False, regularize=False, min_balance=0.6, margin=2.0,
+        tmd_proximity_multiple=2.0,
+    )
+
+    fb.calc_fourier(args, mda.Universe(str(gro_path)))
+
+    assert args.gridsize == 10
 
 
 # ---- _one_frame's dynamic_select path ----

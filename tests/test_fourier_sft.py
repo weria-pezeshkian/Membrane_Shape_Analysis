@@ -162,3 +162,53 @@ def test_regularized_flag_absent_when_not_set(tmp_path: Path) -> None:
 
     loaded = SFT.from_directory(tmp_path)
     assert loaded.regularized is None
+
+
+def test_center_selection_round_trips_when_set(tmp_path: Path) -> None:
+    original = make_sft()
+    original.center_selection = "name BB and resid 1 to 50"
+    original.write(tmp_path)
+
+    assert (tmp_path / "center_selection.txt").exists()
+
+    loaded = SFT.from_directory(tmp_path)
+    assert loaded.center_selection == "name BB and resid 1 to 50"
+
+
+def test_center_selection_absent_when_not_set(tmp_path: Path) -> None:
+    original = make_sft()  # center_selection left as None (default)
+    original.write(tmp_path)
+
+    assert not (tmp_path / "center_selection.txt").exists()
+
+    loaded = SFT.from_directory(tmp_path)
+    assert loaded.center_selection is None
+
+
+def test_lambda_xy_round_trips_when_set(tmp_path: Path) -> None:
+    # Whatever lambda_x/lambda_y this SFT's own A_mn was actually fit with -
+    # explicit or auto-selected by 'CALM calibrate lambda' - must survive a
+    # write/read round trip exactly: analyze.py::analysis reconstructs
+    # Fourier_Series_Function objects from A_mn using this value, and a
+    # mismatch would silently index the wrong slice of A_mn.
+    original = make_sft()
+    original.lambda_x = 5.6
+    original.lambda_y = 5.6
+    original.write(tmp_path)
+
+    assert (tmp_path / "lambda_xy.npy").exists()
+
+    loaded = SFT.from_directory(tmp_path)
+    assert loaded.lambda_x == pytest.approx(5.6)
+    assert loaded.lambda_y == pytest.approx(5.6)
+
+
+def test_lambda_xy_absent_when_not_set(tmp_path: Path) -> None:
+    original = make_sft()  # lambda_x/lambda_y left as None (an older SFT)
+    original.write(tmp_path)
+
+    assert not (tmp_path / "lambda_xy.npy").exists()
+
+    loaded = SFT.from_directory(tmp_path)
+    assert loaded.lambda_x is None
+    assert loaded.lambda_y is None

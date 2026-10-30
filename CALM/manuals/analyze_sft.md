@@ -31,15 +31,24 @@ CALM analyze sft -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" [options]
 - `--min-balance` (default 0.6) - only used with a dynamic `-n` selection.
   Minimum acceptable leaflet-size balance (1.0 = perfectly equal, 0.0 =
   all atoms in one leaflet) for a candidate split to be accepted; among
-  valid splits, the one covering the most atoms wins. 0.6 rejects splits
-  more lopsided than roughly 4:1.
+  valid splits, the one covering the most atoms wins. 0.6 accepts splits
+  down to about 7:3 and rejects anything more lopsided - looser than the
+  one directly comparable precedent found in the wider literature
+  (MDAnalysis's `LeafletFinder.optimize_cutoff`, `max_imbalance=0.2`, i.e.
+  ~6:4), chosen deliberately to tolerate real protein-induced leaflet-size
+  asymmetry across many trajectory frames rather than a single offline
+  cutoff optimization.
 - `--margin` (default 2.0) - only used with a dynamic `-n` selection. An
   atom is kept in a leaflet only if its distance to the nearest atom in the
   OTHER leaflet is at least this many times its distance to the nearest
   atom in its OWN leaflet. Catches atoms XY-connectivity alone would
   misclassify (e.g. squeezed toward the mid-plane near a protein, or mid
   flip-flop) without suppressing genuine sharp curvature, since curvature
-  preserves inter-leaflet distance.
+  preserves inter-leaflet distance. No comparable ratio-based convention
+  was found in the literature for this kind of margin (the nearest analog
+  in other tools, an absolute-distance midplane cutoff applied only to
+  sterols, solves a different, narrower problem) - this stays an
+  empirical, CALM-specific choice.
 
 ## Frame range
 
@@ -49,9 +58,18 @@ CALM analyze sft -f traj.xtc -s structure.tpr -o out_dir -n "name PO4" [options]
 
 ## Fourier fit
 
-- `--lambda_x`, `--lambda_y` - Fourier wavelength scale in x/y (nm).
+- `--lambda_x`, `--lambda_y` - Fourier wavelength scale in x/y (nm). If
+  neither is given, the finest resolution `CALM calibrate lambda` itself
+  calls safe for this exact structure is used instead of a fixed value -
+  logged at INFO level. Giving exactly one of the two leaves the other at
+  `get_fourier_modes`' own fixed default (no auto-selection for a partial
+  override).
 - `--gridsize` (default 100) - square root of the output grid's point
-  count (100 gives a 100x100 grid).
+  count (100 gives a 100x100 grid). If not given, raised automatically
+  past 100 when needed so the output grid is fine enough to represent
+  `lambda_x`/`lambda_y`'s own finest mode without aliasing (Nyquist:
+  `gridsize >= 2*max(Nx, Ny)`) - an explicitly given value is never
+  raised.
 - `--regularization` - enable Tikhonov (`|q|^2`-weighted,
   Helfrich-bending-energy-like) regularization as a leaflet's coefficient
   count approaches its atom count. Off by default: it biases per-frame

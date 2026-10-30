@@ -1,4 +1,4 @@
-"""Tests for calibrate/enter.py::Calibrate: the CLI entry point that loads a
+"""Tests for calibrate/dts.py::dts: the CLI entry point that loads a
 built SFT and hands off to calibrate/calibrate.py::calibrate.
 """
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from CALM.calibrate.enter import Calibrate
+from CALM.calibrate.dts import dts
 from CALM.core.fourier_sft import SFT
 
 
@@ -24,10 +24,10 @@ def _write_sft(d: Path, n_frames: int = 2, Nx: int = 2, Ny: int = 2) -> None:
     sft.write(d)
 
 
-def test_calibrate_loads_sft_and_writes_calibration_output(tmp_path: Path) -> None:
+def test_dts_loads_sft_and_writes_calibration_output(tmp_path: Path) -> None:
     _write_sft(tmp_path)
     out_base = tmp_path / "out"
-    Calibrate([
+    dts([
         "-i", str(tmp_path), "--radius", "5.0",
         "--startframe", "0", "--endframe", "2",
         "-o", str(out_base),
@@ -36,16 +36,16 @@ def test_calibrate_loads_sft_and_writes_calibration_output(tmp_path: Path) -> No
     assert out_base.with_suffix(".txt").exists()
 
 
-def test_calibrate_missing_sft_directory_raises_file_not_found(tmp_path: Path) -> None:
+def test_dts_missing_sft_directory_raises_file_not_found(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist"
     with pytest.raises(FileNotFoundError):
-        Calibrate([
+        dts([
             "-i", str(missing), "--radius", "5.0",
             "--startframe", "0", "--endframe", "2",
             "-o", str(tmp_path / "out"),
         ])
 
 
-def test_calibrate_requires_its_other_flags() -> None:
+def test_dts_requires_its_other_flags() -> None:
     with pytest.raises(SystemExit):
-        Calibrate(["--radius", "5.0"])
+        dts(["--radius", "5.0"])

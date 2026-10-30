@@ -18,7 +18,12 @@ from scipy.spatial import ConvexHull, cKDTree
 
 from ..core import argument_parser as arg_helper
 from ..core.curvature import nearest_surface_intersection, surface_normal
-from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
+from ..core.fourier_core import (
+    Fourier_Series_Function,
+    average_coefficients,
+    get_fourier_modes,
+    resolve_build_gridsize,
+)
 from ..core.fourier_fit import fit_coefficients
 from ..core.leaflet import _label_by_z, apply_margin_filter, get_components, track_components
 from ..core.packing import median_multiple_threshold
@@ -680,10 +685,24 @@ def _remove_tmd_hole_mask(
         `_tmd_threshold`/`median_multiple_threshold`): how far a grid
         point can sit from real lipid data before it counts as
         unsupported at all.
-      - `tmd_proximity_threshold` (`threshold * tmd_proximity_multiple`,
-        default multiple an empirical starting point, may need
-        retuning): how far an unsupported point can sit from an actual
-        --Remove-TMD atom before that atom no longer explains it.
+      - `tmd_proximity_threshold` (`threshold * tmd_proximity_multiple`):
+        how far an unsupported point can sit from an actual --Remove-TMD
+        atom before that atom no longer explains it. The default
+        multiple (2.0) is an empirical judgment call, not analytically
+        or empirically derived from any published source - unlike
+        `fit_coefficients`'s own 10x oversampling cutoff (also
+        originally just a judgment call), which a later literature
+        search found happens to agree with a real measurement (Lindahl &
+        Edholm 2000), a literature search specifically for this
+        multiplier (membrane-curvature masking tools: g_lomepro's own
+        descendant work, GridMAT-MD, FATSLiM, MemSurfer, MDAnalysis's
+        membrane_curvature; and the general kriging boundary-buffer
+        literature) found no transferable constant - every convention
+        found is either an absolute, protein-specific distance or
+        explicitly tied to deriving the buffer from the dataset's own
+        correlation length/noise rather than a fixed multiple of
+        grid/fit resolution. Retune per-system if TMD holes look too
+        small or too large.
 
     The actual hole geometry is decided per grid CELL, not per point -
     see `_classify_hole_cells` for the full rule. Nothing is ever marked
@@ -873,7 +892,36 @@ def calc_fourier(args: argparse.Namespace, u: mda.Universe) -> None:
         sys.exit("An index selection or file has to be supplied. Exiting.")
     dynamic_select = ndx_groups is None
 
+    if args.lambda_x is None and args.lambda_y is None:
+        # Deferred import: calibrate.lambda_calibration imports from this
+        # module at its own top level, so importing it back at module load
+        # time here would be a real circular import, not just a style
+        # preference - safe once deferred into a function body, since by
+        # the time calc_fourier actually runs both modules have already
+        # finished loading.
+        from ..calibrate.lambda_calibration import resolve_build_lambda
+        args.lambda_x, args.lambda_y, auto_lambda = resolve_build_lambda(
+            args.lambda_x, args.lambda_y, args.structure, args.trajectory,
+            ndx_groups=ndx_groups, dynamic_selection=dynamic_selection,
+            from_frame=args.From, until_frame=Until, step=args.Step,
+        )
+        assert auto_lambda is not None  # both were None, so resolve_build_lambda always calibrates
+        logger.info(
+            f"No --lambda_x/--lambda_y given - auto-selected lambda_x = lambda_y = "
+            f"{auto_lambda.lambda_nm:.3f} nm (Nx={auto_lambda.Nx}, Ny={auto_lambda.Ny}, "
+            f"tier: {auto_lambda.tier}) via 'CALM calibrate lambda'."
+        )
+
     frames = list(range(args.From, Until, args.Step))
+
+    if args.gridsize is None:
+        # Representative box size for this check only - frame0, same as the
+        # dynamic-leaflet bootstrap just below. A small NPT fluctuation in
+        # box size by build time doesn't change the Nyquist bound enough to
+        # matter here.
+        u.trajectory[frames[0]]
+        Nx_for_grid, Ny_for_grid = get_fourier_modes(u.dimensions[:3], args.lambda_x, args.lambda_y)
+        args.gridsize = resolve_build_gridsize(None, Nx_for_grid, Ny_for_grid)
 
     dynamic_ref = None
     if dynamic_select:

@@ -60,7 +60,8 @@ def fit_coefficients(
             diagnostics.append(("warning", f"Fourier fit is underdetermined: {Length} coefficients "
                   f"((2*{Nx}+1)*(2*{Ny}+1)) for only {M} fit atoms, and regularization "
                   "is OFF. The least-squares solution is not unique or noise-robust - "
-                  "curvature is likely unphysical. Increase lambda_x/lambda_y, use a "
+                  "curvature is likely unphysical. Increase lambda_x/lambda_y (run "
+                  "'CALM calibrate lambda' to find a value that works), use a "
                   "selection with more atoms, or opt into --regularization (visualization "
                   "use only)."))
     elif M < 3 * Length:
@@ -73,19 +74,27 @@ def fit_coefficients(
             diagnostics.append(("warning", f"Fourier fit has low redundancy: {Length} coefficients for "
                   f"{M} fit atoms (less than 3x oversampling), and regularization is "
                   "OFF. Curvature may be noisy or overfit - consider increasing "
-                  "lambda_x/lambda_y or opting into --regularization (visualization "
-                  "use only)."))
+                  "lambda_x/lambda_y (run 'CALM calibrate lambda' to find a value that "
+                  "works) or opting into --regularization (visualization use only)."))
     elif M < 10 * Length:
         # Statistical (bias-variance), not numerical-conditioning: even a
         # well-determined fit here can resolve per-lipid thermal protrusions
-        # as membrane curvature. The 10x cutoff is an empirical judgment
-        # call, not analytically derived, and may need retuning.
+        # as membrane curvature. The 10x cutoff itself is an empirical
+        # judgment call, not analytically derived - but calibrate/
+        # lambda_calibration.py::LINDAHL_EDHOLM_MIN_LIPIDS_PER_MODE cross-
+        # checks it against a real, published measurement of this same
+        # effect (Lindahl & Edholm 2000): a candidate clearing this 10x
+        # tier at the lambda 'CALM calibrate lambda' actually recommends
+        # also clears their directly-measured ~50-lipids-per-mode
+        # genuine-undulation threshold, so 10x is in the right ballpark,
+        # even though it was not originally derived from their data.
         diagnostics.append(("warning", f"Fourier fit has only {M/Length:.1f}x oversampling ({Length} "
               f"coefficients for {M} fit atoms) - below numerical risk, but curvature "
               "may still be inflated beyond a physically reasonable membrane ballpark "
               "by real per-lipid thermal protrusions being resolved as if they were "
               "membrane shape. Consider increasing lambda_x/lambda_y (regularization "
-              "does not fix this)."))
+              "does not fix this) - run 'CALM calibrate lambda' for a recommendation "
+              "cross-checked against a published lipid-protrusion measurement."))
 
     A = np.zeros((M, Length))
     b = Data_3M[2, :]

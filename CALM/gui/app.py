@@ -181,11 +181,13 @@ class App:
         ttk.Label(landing, text="CALM", font=(font_family, 48, "bold")).pack(expand=True)
 
         # Maps each outer tab's own module name to how to find its
-        # currently-active CommandTab - see _active_tab. "Calibrate" has
-        # no subcommands (a single CommandSpec, not a list), so it goes
-        # straight into _single_tabs; every other module gets its own
-        # inner TabBar (whose own `.active` gives the selected subcommand's
-        # label) plus a label -> CommandTab lookup, in _multi_tabs.
+        # currently-active CommandTab - see _active_tab. Every module today
+        # is a list of subcommands (MODULES' own value type), so each gets
+        # its own inner TabBar (whose own `.active` gives the selected
+        # subcommand's label) plus a label -> CommandTab lookup, in
+        # _multi_tabs; _single_tabs exists for a bare CommandSpec entry
+        # (a module with no subcommands of its own), which MODULES
+        # currently has none of.
         self._single_tabs: dict[str, CommandTab] = {}
         self._multi_tabs: dict[str, tuple[TabBar, dict[str, CommandTab]]] = {}
 

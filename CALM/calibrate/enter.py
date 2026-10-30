@@ -1,63 +1,43 @@
 from __future__ import annotations
 
 import argparse
-import logging
+import sys
+from importlib.metadata import version
 
-from ..core.fourier_sft import SFT
 from ..core.manual import add_manual
-from .calibrate import calibrate
+from .dts import dts
+from .lambda_sweep import lambda_sweep
 
-logger = logging.getLogger(__name__)
+MODULES = ["dts", "lambda"]
 
 
-def _build_calibrate_parser() -> argparse.ArgumentParser:
-    """The 'CALM calibrate' parser alone, with no side effects - shared by the CLI entry point below
-    and by anything else that needs this command's own flags (e.g. the GUI's form generator)."""
-    parser = argparse.ArgumentParser(
-        description="Calibrate membrane material parameters from a built SFT",
-        prog="CALM calibrate",
-    )
-    parser.add_argument(
-        '-i', '--sft', type=str, required=True,
-        help="'CALM analyze sft'/'CALM analyze full' output directory",
-    )
-    parser.add_argument(
-        '--radius', type=float, required=True,
-        help="calibration radius (meaning defined by the physics implementation)",
-    )
-    ##Add the other new arguments:  frame_start: int, frame_end: int,
-    parser.add_argument(
-        '--startframe', type=int, required=True,
-        help="frame to start at, together w. endframe it determines number of user chosen frames for integral calculations ",
-    )
-    parser.add_argument(
-        '--endframe', type=int, required=True,
-        help="frame to end at, together w. startframe it determines number of user chosen frames for integral calculations ",
-    )
-
-    parser.add_argument('-o', '--out', type=str, required=True, help="output file path")
-    add_manual(parser, "calibrate")
-    
-    parser.add_argument(
-    "--surface", type=str,choices=["top", "middle", "bottom"],default="top",
-    help="Surface to use for calibration: top, middle, or bottom (default: top)."
-    )
-    return parser
+def run_module(module_name: str, args: list[str]) -> None:
+    """Dispatch to the named calibrate command's entry point."""
+    module_name = module_name.lower()
+    if module_name == "dts":
+        dts(args)
+    elif module_name == "lambda":
+        lambda_sweep(args)
+    else:
+        print(f"Unknown module: {module_name}")
 
 
 def Calibrate(args: list[str]) -> None:
-    """CLI entry: calibrate membrane material parameters from a built SFT. Has no submodules."""
-    parser = _build_calibrate_parser()
+    """CLI entry point: `CALM calibrate <command> <args...>`."""
+    sys.argv = [""] + args
 
-    ns = parser.parse_args(args)
-    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(
+        description="CALM calibrate: membrane material parameter calibration and the "
+                     "Fourier-fit lambda_x/lambda_y advisor.",
+        prog="CALM",
+    )
+    parser.add_argument("module", choices=MODULES, help="command to run")
+    parser.add_argument("args", nargs=argparse.REMAINDER, help="arguments for the chosen command")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {version('CALM')}")
+    add_manual(parser, "calibrate")
 
-    try:
-        sft_obj = SFT.from_directory(ns.sft)
-        calibrate(sft_obj, ns.radius,ns.startframe,ns.endframe, ns.out,ns.surface)
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        raise
+    ns = parser.parse_args()
+    run_module(ns.module, ns.args)
 
 
 if __name__ == "__main__":

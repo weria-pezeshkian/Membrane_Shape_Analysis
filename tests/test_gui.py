@@ -23,7 +23,7 @@ def _all_commands() -> list[CommandSpec]:
 
 def test_modules_covers_every_leaf_command() -> None:
     assert set(MODULES.keys()) == {"Calibrate", "Analyze", "Link", "Map"}
-    assert isinstance(MODULES["Calibrate"], CommandSpec)  # the one command with no submodules
+    assert [c.label for c in MODULES["Calibrate"]] == ["dts", "lambda"]
     assert [c.label for c in MODULES["Analyze"]] == ["sft", "full", "lipids", "diffusion"]
     assert [c.label for c in MODULES["Link"]] == ["write_ndx", "vmd_xtc", "vmd_vectors"]
     assert [c.label for c in MODULES["Map"]] == [
@@ -89,7 +89,7 @@ def test_field_specs_classifies_replica_as_append() -> None:
 
 
 def test_field_specs_excludes_help_and_man_actions() -> None:
-    specs = field_specs(MODULES["Calibrate"].build_parser())
+    specs = field_specs(MODULES["Calibrate"][0].build_parser())
     dests = {s.dest for s in specs}
     assert "help" not in dests
     assert not any(s.flag == "--man" for s in specs)

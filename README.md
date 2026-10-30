@@ -59,8 +59,15 @@ readable as Markdown. Start from
 [`CALM/manuals/calm.md`](CALM/manuals/calm.md) for the module overview,
 or jump to a command below.
 
-- [`calibrate`](CALM/manuals/calibrate.md) - calibrate membrane material
-  parameters (kappa, sigma) from a built Fourier coefficient stack.
+- [`calibrate`](CALM/manuals/calibrate.md) - membrane material parameter
+  calibration, and the Fourier-fit `lambda_x`/`lambda_y` advisor.
+  - [`calibrate dts`](CALM/manuals/calibrate_dts.md) - calibrate membrane
+    material parameters (kappa, delta_kappa, delta_kappa_g, C_0) from a
+    built Fourier coefficient stack.
+  - [`calibrate lambda`](CALM/manuals/calibrate_lambda.md) - sweep
+    candidate `lambda_x`/`lambda_y` values against a structure and
+    recommend the finest resolution that won't trigger `analyze`'s own
+    Fourier-fit warnings.
 - [`analyze`](CALM/manuals/analyze.md) - build the Fourier coefficient
   stack from a trajectory and run the geometric analysis pipeline
   (thickness, curvature).
@@ -120,6 +127,14 @@ pre-commit install
 Run it with your virtual environment active - the mypy hook runs against
 your own installed environment, since it needs CALM's dependencies
 (MDAnalysis, numpy, scipy, ...) available to type against.
+
+`pyproject.toml` pulls its install dependencies from `requirements.in`
+(`[tool.setuptools.dynamic]`). Regenerate it after adding/removing an
+import anywhere in `CALM/`:
+
+```console
+./find_requirements.sh
+```
 
 ## License
 

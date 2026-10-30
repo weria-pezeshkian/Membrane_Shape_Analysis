@@ -43,8 +43,12 @@ for _command in ("sft", "full", "lipids", "diffusion"):
 
 PATH_SPECS[("full", "sft")] = PathSpec("dir")  # reusing a precomputed analyze-sft/full output dir
 
-PATH_SPECS[("Calibrate", "sft")] = PathSpec("dir")
-PATH_SPECS[("Calibrate", "out")] = PathSpec("save")  # physics-implementation-defined format
+PATH_SPECS[("dts", "sft")] = PathSpec("dir")
+PATH_SPECS[("dts", "out")] = PathSpec("save")  # physics-implementation-defined format
+
+PATH_SPECS[("lambda", "structure")] = PathSpec("open", _STRUCTURE_EXTS)
+PATH_SPECS[("lambda", "trajectory")] = PathSpec("open", _TRAJECTORY_EXTS)
+PATH_SPECS[("lambda", "index_file")] = PathSpec("open", [".ndx"])
 
 PATH_SPECS[("write_ndx", "trajectory")] = PathSpec("open", _TRAJECTORY_EXTS)
 PATH_SPECS[("write_ndx", "structure")] = PathSpec("open", _STRUCTURE_EXTS)

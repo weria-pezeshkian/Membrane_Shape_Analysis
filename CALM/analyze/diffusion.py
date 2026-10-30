@@ -35,7 +35,12 @@ from ..core.fourier_build import (
     _remove_tmd_hole_mask,
     _worker_state,
 )
-from ..core.fourier_core import Fourier_Series_Function, average_coefficients, get_fourier_modes
+from ..core.fourier_core import (
+    Fourier_Series_Function,
+    average_coefficients,
+    get_fourier_modes,
+    resolve_build_gridsize,
+)
 from ..core.headgroup import (
     _headgroup_centers,
     _named_headgroup_centers,
@@ -684,7 +689,28 @@ def calc_diffusion(args: argparse.Namespace, u: mda.Universe) -> None:
         sys.exit("An index selection or file has to be supplied. Exiting.")
     dynamic_select = ndx_groups is None
 
+    if args.lambda_x is None and args.lambda_y is None:
+        # Deferred import: see core/fourier_build.py::calc_fourier's own
+        # identical block for why this can't be a top-level import.
+        from ..calibrate.lambda_calibration import resolve_build_lambda
+        args.lambda_x, args.lambda_y, auto_lambda = resolve_build_lambda(
+            args.lambda_x, args.lambda_y, args.structure, args.trajectory,
+            ndx_groups=ndx_groups, dynamic_selection=dynamic_selection,
+            from_frame=args.From, until_frame=Until, step=args.Step,
+        )
+        assert auto_lambda is not None
+        logger.info(
+            f"No --lambda_x/--lambda_y given - auto-selected lambda_x = lambda_y = "
+            f"{auto_lambda.lambda_nm:.3f} nm (Nx={auto_lambda.Nx}, Ny={auto_lambda.Ny}, "
+            f"tier: {auto_lambda.tier}) via 'CALM calibrate lambda'."
+        )
+
     frames = list(range(args.From, Until, args.Step))
+
+    if args.gridsize is None:
+        u.trajectory[frames[0]]
+        Nx_for_grid, Ny_for_grid = get_fourier_modes(u.dimensions[:3], args.lambda_x, args.lambda_y)
+        args.gridsize = resolve_build_gridsize(None, Nx_for_grid, Ny_for_grid)
 
     dynamic_ref = None
     if dynamic_select:

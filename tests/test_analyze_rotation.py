@@ -139,3 +139,39 @@ def test_analysis_rotation_curvature_and_directions_match_manual_reference(tmp_p
     dirs1_rotated_expected_masked = circle_cutter(np.stack([dirs1_rotated_expected]), dimensions)[0]
     assert np.allclose(dirs_out[0][valid], dirs1_rotated_expected_masked[valid], atol=1e-6)
     assert not np.allclose(dirs_out[0][valid], dirs1_expected[valid], atol=1e-3)
+
+
+def test_analysis_uses_sfts_own_lambda_over_args_when_args_has_none(tmp_path: Path) -> None:
+    # Simulates a separate 'CALM analyze full --sft <dir>' invocation that
+    # didn't re-pass --lambda_x/--lambda_y (args.lambda_x/lambda_y both
+    # None, as if never given at all) - analysis() must reconstruct using
+    # the SFT's OWN persisted lambda_x/lambda_y (set at build time, see
+    # fourier_sft.py::SFT.build), not silently fall through to
+    # get_fourier_modes' fixed Nx=Ny=3 default, which would misread this
+    # A_mn's real Nx=Ny=3 shape as a coincidence rather than by design -
+    # and would misreconstruct entirely for any A_mn not actually Nx=Ny=3.
+    Lx, Ly, Nx, Ny = 100.0, 80.0, 3, 3
+    rng = np.random.default_rng(0)
+
+    surface = Fourier_Series_Function(Lx, Ly, Nx, Ny)
+    surface.setAnm(rng.uniform(-1, 1, size=surface.Anm.shape))
+
+    sft = SFT()
+    sft.A_mn = np.stack([surface.Anm, surface.Anm, surface.Anm])[None, ...]
+    sft.q_mn = np.zeros((1, 2, 2 * Nx + 1, 2 * Ny + 1))
+    sft.frame_indices = np.array([0])
+    sft.dimensions = np.array([[Lx, Ly, 60.0]])
+    sft.lambda_x = 3.0  # -> Nx=3 via get_fourier_modes, matching the surface above
+    sft.lambda_y = 2.5  # -> Ny=3
+
+    args = make_args(tmp_path, gridsize=20, lambda_x=None, lambda_y=None, rotate=False)
+    analysis(None, sft, ("Z_fitted",), args)
+
+    Z_fitted = np.load(tmp_path / "0_Z_fitted.npy") * 10  # analysis() saves in nm, undo /10
+
+    x = np.linspace(0, Lx, args.gridsize, endpoint=False)
+    y = np.linspace(0, Ly, args.gridsize, endpoint=False)
+    X, Y = np.meshgrid(x, y)
+    expected = surface.Z(X, Y)
+
+    assert np.allclose(Z_fitted[0], expected, atol=1e-4)

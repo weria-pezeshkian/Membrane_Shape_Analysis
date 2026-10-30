@@ -38,6 +38,13 @@ def get_components(
     distance value.
 
     Raises ValueError if no cutoff yields a split meeting `min_balance`.
+
+    `min_balance=0.6` accepts splits down to about 7:3 - an empirical
+    choice, looser than the one directly comparable precedent found in
+    the wider literature (MDAnalysis's own `LeafletFinder.optimize_cutoff`,
+    `max_imbalance=0.2`, i.e. ~6:4), chosen deliberately to tolerate real
+    protein-induced leaflet-size asymmetry across many trajectory frames
+    rather than a single offline cutoff optimization.
     """
     total = matrix.shape[0]
     best_score = -1.0

@@ -11,7 +11,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from ..core.curvature import _thickness_root, shape_operator_curvatures
-from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes
+from ..core.fourier_core import Fourier_Series_Function, get_fourier_modes, resolve_build_gridsize
 from ..core.fourier_sft import SFT
 from ..core.rotation import recover_rotation_angle, rotated_grid
 
@@ -94,6 +94,22 @@ def analysis(
     assert sft.q_mn is not None
     rotated = args.rotate
 
+    # sft's own lambda_x/lambda_y - whatever this SFT's A_mn was ACTUALLY
+    # built with, whether given explicitly or auto-selected by
+    # 'CALM calibrate lambda' at build time - takes precedence over args'
+    # own (possibly unrelated, possibly unset) value: get_fourier_modes
+    # below must reconstruct the exact Nx/Ny this A_mn's shape already is,
+    # or Fourier_Series_Function.setAnm silently indexes the wrong slice of
+    # it instead of raising. Falls back to args.lambda_x/lambda_y only for
+    # an older SFT written before this was tracked.
+    lambda_x = sft.lambda_x if sft.lambda_x is not None else args.lambda_x
+    lambda_y = sft.lambda_y if sft.lambda_y is not None else args.lambda_y
+
+    gridsize = args.gridsize
+    if gridsize is None:
+        Nx_for_grid, Ny_for_grid = get_fourier_modes(sft.dimensions[0], lambda_x, lambda_y)
+        gridsize = resolve_build_gridsize(None, Nx_for_grid, Ny_for_grid)
+
     # logging_redirect_tqdm only patches the loggers passed to it (root, if
     # none given) - the console handler that actually prints logger.warning
     # below lives on the "CALM" logger itself (attach_replay_log_handler),
@@ -113,12 +129,12 @@ def analysis(
                 # No trajectory (SFT was loaded via --sft): use the box size
                 # captured per-frame at build time instead.
                 dimensions = sft.dimensions[i]
-            x = np.linspace(0, dimensions[:3][0], args.gridsize, endpoint=False)
-            y = np.linspace(0, dimensions[:3][1], args.gridsize, endpoint=False)
+            x = np.linspace(0, dimensions[:3][0], gridsize, endpoint=False)
+            y = np.linspace(0, dimensions[:3][1], gridsize, endpoint=False)
             X, Y = np.meshgrid(x, y)
 
             num_digits = len(str(max(sft.frame_indices)))
-            Nx, Ny = get_fourier_modes(dimensions[:3], args.lambda_x, args.lambda_y)
+            Nx, Ny = get_fourier_modes(dimensions[:3], lambda_x, lambda_y)
             fourier0 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)
             fourier0.setAnm(sft.A_mn[i, 0])
             fourier1 = Fourier_Series_Function(dimensions[:3][0], dimensions[:3][1], Nx, Ny)

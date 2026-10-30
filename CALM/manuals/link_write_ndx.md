@@ -22,13 +22,22 @@ CALM link write_ndx -f traj.xtc -s structure.tpr -n "name PO4" -o monolayers.ndx
 - `--min-balance` (default 0.6) - minimum acceptable leaflet-size balance
   (1.0 = perfectly equal, 0.0 = all atoms in one leaflet) for a candidate
   split to be accepted; among valid splits, the one covering the most
-  atoms wins. 0.6 rejects splits more lopsided than roughly 4:1.
+  atoms wins. 0.6 accepts splits down to about 7:3 and rejects anything
+  more lopsided - looser than the one directly comparable precedent found
+  in the wider literature (MDAnalysis's `LeafletFinder.optimize_cutoff`,
+  `max_imbalance=0.2`, i.e. ~6:4), chosen deliberately to tolerate real
+  protein-induced leaflet-size asymmetry across many trajectory frames
+  rather than a single offline cutoff optimization.
 - `--margin` (default 2.0) - an atom is kept in a leaflet only if its
   distance to the nearest atom in the OTHER leaflet is at least this many
   times its distance to the nearest atom in its OWN leaflet. Catches atoms
   XY-connectivity alone would misclassify (e.g. squeezed toward the
   mid-plane near a protein, or mid flip-flop) without suppressing genuine
-  sharp curvature, since curvature preserves inter-leaflet distance.
+  sharp curvature, since curvature preserves inter-leaflet distance. No
+  comparable ratio-based convention was found in the literature for this
+  kind of margin (the nearest analog in other tools, an absolute-distance
+  midplane cutoff applied only to sterols, solves a different, narrower
+  problem) - this stays an empirical, CALM-specific choice.
 
 Atoms belonging to neither leaflet's best-scoring component are excluded
 from both, with a warning giving the count excluded.

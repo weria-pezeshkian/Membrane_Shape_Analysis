@@ -50,6 +50,32 @@ def get_fourier_modes(
     return Nx, Ny
 
 
+# The long-standing output-grid default, kept as a floor even when Nx/Ny
+# alone would need fewer points - a generous evaluation grid independent of
+# the fit's own resolution has always been this codebase's default, and
+# this only ever raises it further, never lowers it below this.
+DEFAULT_GRIDSIZE = 100
+
+
+def resolve_build_gridsize(gridsize: int | None, Nx: int, Ny: int) -> int:
+    """`gridsize` unchanged if given; otherwise `DEFAULT_GRIDSIZE`, raised only as far as Nyquist requires.
+
+    The fit's own shortest representable wavelength is Lx/Nx (or Ly/Ny) -
+    representing it on the output evaluation grid without aliasing needs at
+    least 2 grid points per wavelength (Nyquist), i.e. gridsize >= 2*Nx and
+    >= 2*Ny. `DEFAULT_GRIDSIZE` already covers that for a typical Nx/Ny
+    (<=50), but a finer fit - e.g. from an auto-selected lambda on a large
+    box - can need more; this fills in `max(DEFAULT_GRIDSIZE, 2*max(Nx, Ny))`
+    whenever `gridsize` wasn't given explicitly, so the output grid is never
+    silently coarser than the fit it's sampling. An explicitly given
+    `gridsize` is returned untouched either way - this only ever fills in a
+    sensible value for "not given", never overrides a real choice.
+    """
+    if gridsize is not None:
+        return gridsize
+    return max(DEFAULT_GRIDSIZE, 2 * max(Nx, Ny))
+
+
 class Fourier_Series_Function:
     """A 2D Fourier series surface Z(x, y) = sum_ij Anm[i,j] * (cos + sin)(q0*i*x + p0*j*y)."""
 

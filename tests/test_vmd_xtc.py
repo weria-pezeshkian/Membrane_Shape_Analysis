@@ -112,6 +112,37 @@ def test_build_rotation_tcl_writes_script_when_rotation_used(tmp_path: Path) -> 
     assert "set radius 40.000000" in content
 
 
+def test_build_rotation_tcl_re_centers_when_center_selection_is_known(tmp_path: Path) -> None:
+    sft = _make_sft([0.0, 0.1, 0.3, 0.6])
+    sft.center_selection = "name BB and resid 1 to 50"
+    out_path = tmp_path / "rotate_and_select.tcl"
+
+    assert build_rotation_tcl(sft, str(out_path)) is True
+
+    content = out_path.read_text()
+    assert "set center_selection {name BB and resid 1 to 50}" in content
+    assert "measure center $center_sel weight none" in content
+    assert "moveby" in content
+    assert "pbc join residue" in content
+    # The re-centering shift must happen before the rotation is applied.
+    assert content.index("moveby") < content.index("transaxis z")
+
+
+def test_build_rotation_tcl_warns_and_skips_centering_when_selection_unknown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sft = _make_sft([0.0, 0.1, 0.3, 0.6])  # center_selection left as None (older SFT)
+    out_path = tmp_path / "rotate_and_select.tcl"
+
+    assert build_rotation_tcl(sft, str(out_path)) is True
+    assert "cannot re-center" in capsys.readouterr().out
+
+    content = out_path.read_text()
+    assert "measure center" not in content
+    assert "moveby" not in content
+    assert "transaxis z" in content  # rotation itself is still written
+
+
 def test_build_rotation_tcl_skips_when_no_rotation_used(tmp_path: Path) -> None:
     sft = _make_sft([0.0, 0.0, 0.0, 0.0])
     out_path = tmp_path / "rotate_and_select.tcl"
