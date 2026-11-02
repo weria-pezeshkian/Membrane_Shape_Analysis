@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from CALM.map.lipids_plot import (
+    _fractions_value_and_coverage,
     _leaflet_counts,
     _lipids_dimensions,
     _mean_fractions,
@@ -111,6 +112,68 @@ def test_mean_fractions_poisons_a_point_holed_in_even_one_frame(tmp_path: Path) 
     np.testing.assert_allclose(mean[:, 0, 0, 1], [1.0, 0.0])  # untouched neighboring point
 
 
+# ---- _fractions_value_and_coverage: --alpha-TMD-aware averaging ----
+
+def test_fractions_value_and_coverage_without_alpha_tmd_matches_mean_fractions(tmp_path: Path) -> None:
+    frame0 = np.zeros((2, 2, 3, 3))
+    frame0[0] = 1.0
+    frame1 = np.zeros((2, 2, 3, 3))
+    frame1[1] = 1.0
+    (tmp_path / "lipid_species.txt").write_text("A\nB\n")
+    np.save(tmp_path / "00_lipid_fractions.npy", frame0)
+    np.save(tmp_path / "01_lipid_fractions.npy", frame1)
+
+    value, frac_missing = _fractions_value_and_coverage(str(tmp_path), frame_numbers=None, alpha_tmd=False)
+    np.testing.assert_allclose(value, _mean_fractions(str(tmp_path), frame_numbers=None))
+    assert frac_missing is None
+
+
+def test_fractions_value_and_coverage_alpha_tmd_uses_only_frames_with_real_data(tmp_path: Path) -> None:
+    # Both frames: species 0 owns everything. Frame 1 additionally holes
+    # point (0, 0) in the upper leaflet via --Remove-TMD.
+    frame0 = np.zeros((2, 2, 3, 3))
+    frame0[0] = 1.0
+    frame1 = np.zeros((2, 2, 3, 3))
+    frame1[0] = 1.0
+    (tmp_path / "lipid_species.txt").write_text("A\nB\n")
+    np.save(tmp_path / "00_lipid_fractions.npy", frame0)
+    np.save(tmp_path / "01_lipid_fractions.npy", frame1)
+
+    hole = np.zeros((2, 3, 3), dtype=bool)
+    hole[0, 0, 0] = True  # upper leaflet, point (0, 0)
+    np.save(tmp_path / "01_hole_mask.npy", hole)
+
+    value, frac_missing = _fractions_value_and_coverage(str(tmp_path), frame_numbers=None, alpha_tmd=True)
+    assert frac_missing is not None
+    np.testing.assert_allclose(frac_missing[:, 0, 0, 0], [0.5, 0.5])  # holed in 1 of 2 frames
+    # Both frames agree species 0 owns this point where not holed - the
+    # nanmean over the one remaining real frame reproduces that exactly,
+    # instead of the plain mean's NaN.
+    np.testing.assert_allclose(value[:, 0, 0, 0], [1.0, 0.0])
+    # Untouched neighboring point: nothing missing, same as the plain mean.
+    np.testing.assert_allclose(frac_missing[:, 0, 0, 1], [0.0, 0.0])
+
+
+def test_fractions_value_and_coverage_alpha_tmd_all_frames_missing_stays_nan(tmp_path: Path) -> None:
+    frame0 = np.zeros((2, 2, 3, 3))
+    frame0[0] = 1.0
+    frame1 = np.zeros((2, 2, 3, 3))
+    frame1[0] = 1.0
+    (tmp_path / "lipid_species.txt").write_text("A\nB\n")
+    np.save(tmp_path / "00_lipid_fractions.npy", frame0)
+    np.save(tmp_path / "01_lipid_fractions.npy", frame1)
+
+    hole = np.zeros((2, 3, 3), dtype=bool)
+    hole[0, 0, 0] = True
+    np.save(tmp_path / "00_hole_mask.npy", hole)
+    np.save(tmp_path / "01_hole_mask.npy", hole)
+
+    value, frac_missing = _fractions_value_and_coverage(str(tmp_path), frame_numbers=None, alpha_tmd=True)
+    assert frac_missing is not None
+    np.testing.assert_allclose(frac_missing[:, 0, 0, 0], [1.0, 1.0])  # missing in every frame
+    assert np.all(np.isnan(value[:, 0, 0, 0]))
+
+
 def test_leaflet_counts_reads_mean_count_for_the_requested_leaflet(tmp_path: Path) -> None:
     (tmp_path / "area_per_lipid.csv").write_text(
         "leaflet,species,area_per_lipid_flat,area_per_lipid_curved,mean_count\n"
@@ -165,3 +228,26 @@ def test_draw_clips_to_the_fixed_circle_only_when_rotated(
     np.save(tmp_path / "rotated.npy", np.array(True))
     draw(Dir=str(tmp_path), filename=str(tmp_path / "out.png"))
     assert radii == [40.0] * 4  # min(100, 80) / 2
+
+
+def test_draw_applies_alpha_overlay_only_when_alpha_tmd_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import CALM.map.lipids_plot as lipids_plot_module
+
+    fractions = np.zeros((1, 2, 5, 5))
+    fractions[0] = 1.0
+    _write_lipids_output(tmp_path, ["POPC"], fractions, box=(100.0, 80.0, 60.0))
+
+    calls: list[np.ndarray] = []
+    monkeypatch.setattr(
+        lipids_plot_module, "_apply_alpha_overlay",
+        lambda ax, frac_missing, circle_radius, box_size: calls.append(frac_missing),
+    )
+
+    draw(Dir=str(tmp_path), filename=str(tmp_path / "out.png"), alpha_tmd=False)
+    assert calls == []
+
+    draw(Dir=str(tmp_path), filename=str(tmp_path / "out.png"), alpha_tmd=True)
+    # 4 panels total: 2 in the combined overview + 2 in the one per-species figure.
+    assert len(calls) == 4

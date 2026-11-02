@@ -11,7 +11,7 @@ import numpy as np
 
 from ..core.manual import add_manual
 from ..core.rotation import fixed_circle_radius
-from .plot import _clip_to_circle, _frame_filtered_glob, get_XY
+from .plot import _apply_alpha_overlay, _clip_to_circle, _frame_filtered_glob, get_XY
 
 warnings.filterwarnings("ignore")
 
@@ -23,22 +23,18 @@ def _read_species(Dir: str) -> list[str]:
     return Path(Dir, "lipid_species.txt").read_text().split()
 
 
-def _mean_fractions(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndarray:
-    """Trajectory-mean per-species occupancy: shape (n_species, 2, gridsize, gridsize), NaN where holed.
+def _lipid_fraction_stack(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndarray:
+    """Every {frame}_lipid_fractions.npy, hole-masked (NaN'd) per frame.
 
-    Each {frame}_lipid_fractions.npy is a hard per-point species
-    assignment (1 for that frame's own nearest species, 0 for the rest -
-    see 'CALM analyze lipids --man'). The plain mean across frames (not a
-    NaN-aware one - same convention 'CALM map plot' uses) turns this into
-    each point's own occupancy *frequency* over the averaging window - 1.0
-    where one species always wins there, lower where the winner changes
-    frame to frame (e.g. a boundary between two species' territory).
+    Shape (n_frames, n_species, 2, gridsize, gridsize).
 
-    If a matching {frame}_hole_mask.npy exists (--Remove-TMD was used),
-    every species' value at a holed point in that frame is set to NaN
-    before averaging, so a point holed in even one frame ends up NaN in
-    the trajectory mean too, rather than being silently diluted by frames
-    where it had no real lipid competing at all.
+    Each saved frame is a hard per-point species assignment (1 for that
+    frame's own nearest species, 0 for the rest - see 'CALM analyze
+    lipids --man'). If a matching {frame}_hole_mask.npy exists
+    (--Remove-TMD was used), every species' value at a holed point in
+    that frame is set to NaN here, before any averaging - shared by both
+    `_mean_fractions`'s plain mean and `_fractions_value_and_coverage`'s
+    --alpha-TMD-aware one below.
     """
     files = _frame_filtered_glob(os.path.join(Dir, "*_lipid_fractions.npy"), frame_numbers)
     if not files:
@@ -54,7 +50,50 @@ def _mean_fractions(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndarray
                 arr[:, leaflet_idx, hole[leaflet_idx]] = np.nan
         frames.append(arr)
 
-    return np.mean(np.stack(frames), axis=0)
+    return np.stack(frames)
+
+
+def _mean_fractions(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndarray:
+    """Trajectory-mean per-species occupancy: shape (n_species, 2, gridsize, gridsize), NaN where holed.
+
+    The plain mean across frames (not a NaN-aware one - same convention
+    'CALM map plot' uses by default) turns each frame's hard assignment
+    into each point's own occupancy *frequency* over the averaging
+    window - 1.0 where one species always wins there, lower where the
+    winner changes frame to frame (e.g. a boundary between two species'
+    territory). A point holed (NaN) in even one frame ends up NaN in the
+    trajectory mean too, rather than being silently diluted by frames
+    where it had no real lipid competing at all.
+    """
+    return np.mean(_lipid_fraction_stack(Dir, frame_numbers), axis=0)
+
+
+def _fractions_value_and_coverage(
+    Dir: str, frame_numbers: Iterable[int] | None, alpha_tmd: bool,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """(value, frac_missing) for the occupancy-frequency map, --alpha-TMD aware.
+
+    Mirrors `map/plot.py::_load_value_and_coverage` for lipids' own
+    per-species fraction fields. `alpha_tmd=False` (default): `value` is
+    `_mean_fractions`'s own plain mean (a NaN in ANY averaged frame makes
+    that point NaN in the result); `frac_missing` is None - unchanged
+    behavior.
+
+    `alpha_tmd=True`: `value` is the nanmean over just the frames that DID
+    have real data at each point (NaN only where EVERY averaged frame was
+    hole there); `frac_missing` is, per point, the fraction of averaged
+    frames that were hole - fed to `_render_panel`'s own
+    `_apply_alpha_overlay` call to fade a point toward white in
+    proportion to how much of it is real data, rather than discarding it
+    outright for a single bad frame.
+    """
+    if not alpha_tmd:
+        return _mean_fractions(Dir, frame_numbers), None
+
+    stack = _lipid_fraction_stack(Dir, frame_numbers)
+    frac_missing = np.mean(np.isnan(stack), axis=0)
+    value = np.nanmean(stack, axis=0)  # all-NaN slices warn and return NaN - fine, see docstring above
+    return value, frac_missing
 
 
 def _leaflet_counts(Dir: str, leaflet: str) -> dict[str, float] | None:
@@ -104,10 +143,18 @@ def _lipids_dimensions(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndar
 def _render_panel(
     ax, X: np.ndarray, Y: np.ndarray, frac: np.ndarray, levels: np.ndarray,
     circle_radius: float | None, box_size: np.ndarray, title: str, fontsize: int,
+    frac_missing: np.ndarray | None = None,
 ):
-    """One leaflet's own occupancy-frequency panel: contourf + circle-clip + ticks/aspect. Returns the contour set."""
+    """One leaflet's own occupancy-frequency panel: contourf + circle-clip + ticks/aspect. Returns the contour set.
+
+    `frac_missing`, if given (--alpha-TMD), fades a point toward white in
+    proportion to how many averaged frames were hole there - same overlay
+    'CALM map plot' draws for its own curvature/thickness panels.
+    """
     contour = ax.contourf(X, Y, frac, cmap="viridis", levels=levels, vmin=0, vmax=1)
     _clip_to_circle(contour, ax, circle_radius, box_size)
+    if frac_missing is not None:
+        _apply_alpha_overlay(ax, frac_missing, circle_radius, box_size)
     ax.set_title(title, fontsize=fontsize, fontweight="bold", pad=12)
     ax.set_xticks([0, box_size[0]])
     ax.set_yticks([0, box_size[1]])
@@ -121,16 +168,26 @@ def draw(
     Dir: str,
     filename: str = "",
     frame_numbers: Iterable[int] | None = None,
+    alpha_tmd: bool = False,
 ) -> None:
     """Render every species' own continuous occupancy-frequency field: one combined overview, one file per species.
 
     Every panel is a species' own `mean_fractions` slice directly (no
     collapsing species against each other into a single "dominant
     species" per point), a continuous value in [0, 1] - how often that
-    species owns each grid point across the averaged frames. A point held
-    out by `--Remove-TMD` in any averaged frame is NaN (`_mean_fractions`'s
-    own all-or-nothing convention) and left unfilled by `contourf`, the
-    same way 'CALM map plot' leaves its own holes unfilled.
+    species owns each grid point across the averaged frames. By default
+    (`alpha_tmd=False`), a point held out by `--Remove-TMD` in any
+    averaged frame is NaN (`_mean_fractions`'s own all-or-nothing
+    convention) and left unfilled by `contourf`, the same way 'CALM map
+    plot' leaves its own holes unfilled.
+
+    `alpha_tmd=True` changes this exactly the way it does for 'CALM map
+    plot': each panel's value comes from the mean of just the frames that
+    DID have real data at that point, which is then faded toward white in
+    proportion to how many of the averaged frames were actually missing
+    there - a point with no real data in ANY averaged frame still renders
+    fully white either way (`_fractions_value_and_coverage`,
+    `_render_panel`'s own `_apply_alpha_overlay` call).
 
     A single combined "which species wins here" map (one color per point,
     the winning species) was tried and rejected: collapsing every species
@@ -154,7 +211,7 @@ def draw(
     dims = _lipids_dimensions(Dir, frame_numbers)
     box_size = dims[0]
 
-    mean_fractions = _mean_fractions(Dir, frame_numbers)
+    mean_fractions, frac_missing_all = _fractions_value_and_coverage(Dir, frame_numbers, alpha_tmd)
     gridsize = mean_fractions.shape[-1]
     X, Y = get_XY(box_size, gridsize)
     levels = np.linspace(0, 1, 21)
@@ -180,8 +237,9 @@ def draw(
     for row, name in enumerate(species):
         for leaflet_idx, ax in enumerate(axes[row]):
             frac = mean_fractions[row, leaflet_idx]  # (gridsize, gridsize), NaN where holed
+            missing = frac_missing_all[row, leaflet_idx] if frac_missing_all is not None else None
             contour = _render_panel(
-                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), fontsize
+                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), fontsize, missing
             )
     cbar_ax = fig.add_axes((0.89, 0.08, 0.02, 0.84))
     cbar = fig.colorbar(contour, cax=cbar_ax)
@@ -200,8 +258,9 @@ def draw(
 
         for leaflet_idx, ax in enumerate(axes):
             frac = mean_fractions[row, leaflet_idx]  # (gridsize, gridsize), NaN where holed
+            missing = frac_missing_all[row, leaflet_idx] if frac_missing_all is not None else None
             contour = _render_panel(
-                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), fontsize
+                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), fontsize, missing
             )
 
         cbar_ax = fig.add_axes((0.89, 0.1, 0.02, 0.78))
@@ -228,6 +287,11 @@ def _build_lipids_plot_parser() -> argparse.ArgumentParser:
         '-o', '--outfile', type=str, default="lipids.png",
         help="output image path (default: lipids.png)",
     )
+    parser.add_argument(
+        '--alpha-TMD', dest='alpha_tmd', action="store_true", default=False,
+        help="fade a --Remove-TMD hole point toward white by how many averaged frames it was "
+             "actually missing in, instead of blanking it outright on a single bad frame (see --man)",
+    )
     add_manual(parser, "map_lipids_plot")
     return parser
 
@@ -237,7 +301,7 @@ def lipids_plot(argv: list[str]) -> None:
     parser = _build_lipids_plot_parser()
 
     ns = parser.parse_args(argv)
-    draw(Dir=ns.numpys_directory, filename=ns.outfile)
+    draw(Dir=ns.numpys_directory, filename=ns.outfile, alpha_tmd=ns.alpha_tmd)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,9 @@ CALM map lipids_plot -i lipids_out_dir -o lipids.png
   directory.
 - `-o`, `--outfile` (default `lipids.png`) - output image path. Also
   names every other file this command writes (see Output).
+- `--alpha-TMD` - fade a point toward white by how much of it is real
+  data instead of blanking it outright on a single missing frame (see
+  Averaging below). Off by default.
 
 ## What's plotted
 
@@ -33,9 +36,24 @@ competition CALM already computes, and with only two species it
 degenerates into a plain binary map that shows less than the two
 continuous fields it was built from.
 
-A point held out by `--Remove-TMD` in even one averaged frame is left
-unfilled (same all-or-nothing convention `CALM map plot` uses for its own
-holes) - see `{frame}_hole_mask.npy` in `CALM analyze lipids --man`.
+## Averaging
+
+By default (`--alpha-TMD` off), a point held out by `--Remove-TMD` in even
+one averaged frame is left unfilled (same all-or-nothing convention `CALM
+map plot` uses for its own holes) - see `{frame}_hole_mask.npy` in `CALM
+analyze lipids --man`.
+
+`--alpha-TMD` changes this exactly the way it does for `CALM map plot`: a
+point's own occupancy frequency comes from the mean of just the frames
+that DID have real data there (so a point missing in only a few frames
+out of many still shows a real, representative value), and that point is
+then faded toward white in proportion to how many of the averaged frames
+were actually missing there - a point with data in 99 of 100 frames
+renders at 99% opacity, one with data in 40 of 100 at 40% opacity, and so
+on. A point with no real data in ANY averaged frame still renders fully
+white either way, on or off. The fade is drawn as a flat, semi-transparent
+white layer on top of the normal filled-contour colors, at the same grid
+resolution the underlying data has (no smoothing).
 
 ## Rotation
 
