@@ -153,17 +153,68 @@ lower leaflet's is used as-is. The result matches the field-standard
 convention throughout: positive C0 = conical, headgroup-outward (e.g.
 lysolipids); negative C0 = inverted-cone (e.g. PE).
 
-**Units.** Reported in nm^-1 (the standard unit in the membrane-biophysics
-literature, matching what a tool like TS2CG expects as input), converted
-from the code's native Angstrom^-1 (MDAnalysis's internal length unit,
-same as every other length here) only at the final CSV-writing step -
-every per-frame saved value stays in Angstrom^-1.
+**Units and scale.** Reported in nm^-1 (the standard unit in the
+membrane-biophysics literature), converted from the code's native
+Angstrom^-1 (MDAnalysis's internal length unit, same as every other
+length here) at the final CSV-writing step - every per-frame saved value
+stays in Angstrom^-1, undoubled (see below). The reported value is also
+**doubled** relative to the raw sampled-curvature-minus-baseline
+quantity, to match TS2CG's own Helfrich-energy convention directly: TS2CG's
+`DOP` (`TS2CG/tools/domain_placer.py::calculate_curvature_weights`) weighs
+lipid placement by `exp(-k*(2H-C0)^2*area)`, where `H` is plain mean
+curvature and `C0` is the Helfrich spontaneous curvature - defined as
+twice the preferred mean curvature at equilibrium, not mean curvature
+itself. What this command actually *samples* is mean curvature (H); it is
+doubled before being reported as `C0_nm-1`/`C0_stderr_nm-1`, so that value
+can be fed straight into TS2CG's own `domain_input.txt` `curvature` column
+with no further conversion.
 
 **Small samples.** A species with only a handful of residues in a given
 leaflet (the same small-N caveat that already applies to that species'
 own composition/area numbers) produces a noisier C0 estimate - check
 `n_frames_sampled`/`mean_count` in `curvature_preference.csv` before
 trusting a value built from very few residues.
+
+## Matching TS2CG's own --k-factor (`curvature_preference_k.csv`)
+
+TS2CG's `DOP` takes exactly one `--k-factor`/`-k` value for an entire run
+- not one per lipid type - so reproducing the curvature-sorting *sharpness*
+this trajectory actually showed needs one pooled number, not a per-species
+table the way C0 is. `curvature_preference_k.csv` reports exactly that:
+one `k` per leaflet (`upper`, `lower`, `both`), ready to pass straight to
+`TS2CG DOP -k`.
+
+**Method.** Treating `DOP`'s own weighting formula as the generative model
+and fitting its one free parameter `k` by maximum likelihood against every
+species' own real curvature samples (holding each species' own C0 fixed
+at its already-measured value) gives
+
+```
+k = N_total / (2 * area * sum_i SS_i)
+```
+
+where `SS_i` is species `i`'s own within-species sum of squared deviations
+from its own `C0_i` (standard "within-group" pooling - each species keeps
+its own center, never one shared center across species), and `N_total` is
+the total residue-frame occurrence count across every species in that
+leaflet. `area` is left at 1.0, matching `DOP`'s own default (`--area`
+off); a `DOP` run that does use `--area` would need this value divided by
+that run's own typical point area instead.
+
+`SS_i` is accumulated in a single trajectory pass, the same way C0's own
+mean is: `_one_lipid_frame` saves each frame's own per-residue curvature
+deviations as a sum and a sum-of-squares
+(`{frame}_curvature_preference_stats.npy`), which
+`_write_curvature_preference_k_csv` pools across every frame first
+(summed, not averaged) and then reduces via the single-pass variance
+identity `SS_i = sum_sq_i - sum_i^2/count_i` - centering each sample by
+its own species' mean without a second trajectory pass. A species with
+only one occurrence anywhere contributes `0` to its own `SS_i` (a single
+point has no spread around its own single-point mean) but still counts
+toward `N_total` - correctly reporting "no variance information from this
+species", not inflating `k` artificially. `k` is reported as `nan` when
+the pooled sum of squares is exactly zero (every occurrence, across every
+species, sat at exactly the same curvature) - undefined, not infinite.
 
 ## Other build arguments
 

@@ -265,6 +265,17 @@ def _one_lipid_frame(
     # analyze_lipids.md) - NaN where a species has zero residues in a
     # leaflet this frame, distinct from a genuine 0.0 preference.
     curvature_preference = np.full((len(species), 2), np.nan)
+    # [species, upper/lower], the same sign-adjusted per-residue deviations'
+    # own sum and sum-of-squares (0.0, not NaN, where a species has zero
+    # residues - a true zero contribution, unambiguous once paired with
+    # that frame's own {frame}_lipid_counts.npy). curvature_preference
+    # above already collapses a frame's own residues to one mean, losing
+    # the per-residue spread a --k-factor estimate needs
+    # (_write_curvature_preference_k_csv) - this is that spread's own
+    # single-pass accumulator (sum/sum-of-squares, not every raw sample),
+    # pooled across every frame once the trajectory is done.
+    curvature_sum = np.zeros((len(species), 2))
+    curvature_sum_sq = np.zeros((len(species), 2))
 
     species_xy_upper: list[np.ndarray] = []
     species_xy_lower: list[np.ndarray] = []
@@ -312,13 +323,15 @@ def _one_lipid_frame(
         # lower leaflet needs no negation, since its own outward direction
         # (-z) already flips the raw sign back the other way.
         if is_upper.any():
-            curvature_preference[i, 0] = -(
-                _curvature_at_points(fourier_upper, xy[is_upper, 0], xy[is_upper, 1]).mean() - baseline_upper
-            )
+            d_upper = -(_curvature_at_points(fourier_upper, xy[is_upper, 0], xy[is_upper, 1]) - baseline_upper)
+            curvature_preference[i, 0] = d_upper.mean()
+            curvature_sum[i, 0] = d_upper.sum()
+            curvature_sum_sq[i, 0] = float(np.sum(d_upper ** 2))
         if is_lower.any():
-            curvature_preference[i, 1] = (
-                _curvature_at_points(fourier_lower, xy[is_lower, 0], xy[is_lower, 1]).mean() - baseline_lower
-            )
+            d_lower = _curvature_at_points(fourier_lower, xy[is_lower, 0], xy[is_lower, 1]) - baseline_lower
+            curvature_preference[i, 1] = d_lower.mean()
+            curvature_sum[i, 1] = d_lower.sum()
+            curvature_sum_sq[i, 1] = float(np.sum(d_lower ** 2))
 
     # Always built on the raw (X, Y) grid, feeding area_per_lipid only -
     # this is what keeps --rotate from touching area_per_lipid.csv at all.
@@ -369,6 +382,11 @@ def _one_lipid_frame(
     np.save(out / f"{frame:0{num_digits}d}_area_per_lipid.npy", area_per_lipid)
     np.save(out / f"{frame:0{num_digits}d}_lipid_counts.npy", counts)
     np.save(out / f"{frame:0{num_digits}d}_curvature_preference.npy", curvature_preference)
+    # [species, upper/lower, (sum, sum_sq)] - see curvature_sum's own comment above.
+    np.save(
+        out / f"{frame:0{num_digits}d}_curvature_preference_stats.npy",
+        np.stack([curvature_sum, curvature_sum_sq], axis=-1),
+    )
     if out_hole_mask is not None:
         # Same (2, gridsize, gridsize) [upper, lower] convention as
         # calc_fourier's own {frame}_hole_mask.npy, saved flat here (not
@@ -416,6 +434,15 @@ def _write_curvature_preference_csv(out_dir: str, species: list[str], frames: li
     average of the upper/lower C0 values (with standard error propagation),
     falling back to whichever leaflet has data when the other is entirely
     absent, and NaN when neither leaflet ever had this species.
+
+    C0 is doubled (on top of the Angstrom^-1 -> nm^-1 unit conversion) to
+    match TS2CG's own Helfrich-energy convention
+    (`TS2CG/tools/domain_placer.py::calculate_curvature_weights`'s own
+    `(2*local_curvature - lipid.curvature)^2` term, where `lipid.curvature`
+    is this same C0) - c0 there means the curvature of 2x the leaflet's
+    own mean curvature at equilibrium, not mean curvature itself. Applied
+    once here, right where C0/stderr are computed, so the "both" row's own
+    count-weighted average below picks it up automatically.
     """
     num_digits = len(str(abs(until)))
     out = Path(out_dir)
@@ -431,8 +458,10 @@ def _write_curvature_preference_csv(out_dir: str, species: list[str], frames: li
         # all-NaN slice here - the resulting NaN is the correct answer (no
         # data), not a bug to silence differently.
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        c0_mean = np.nanmean(curvature_stack, axis=0) * 10.0  # (n_species, 2): Angstrom^-1 -> nm^-1
-        c0_std = np.nanstd(curvature_stack, axis=0) * 10.0
+        # Angstrom^-1 -> nm^-1 (x10), then the Helfrich-c0 doubling (x2) -
+        # see docstring above.
+        c0_mean = np.nanmean(curvature_stack, axis=0) * 20.0  # (n_species, 2)
+        c0_std = np.nanstd(curvature_stack, axis=0) * 20.0
     n_sampled = np.sum(~np.isnan(curvature_stack), axis=0)  # (n_species, 2)
     c0_stderr = np.where(n_sampled > 0, c0_std / np.sqrt(np.maximum(n_sampled, 1)), np.nan)
     mean_count = np.mean(count_stack, axis=0)  # (n_species, 2)
@@ -463,6 +492,74 @@ def _write_curvature_preference_csv(out_dir: str, species: list[str], frames: li
         lines.append(f"both,{name},{c0_both:.6f},{stderr_both:.6f},{weight_u + weight_l:.2f},{n_both}")
 
     (out / "curvature_preference.csv").write_text("\n".join(lines) + "\n")
+
+
+def _write_curvature_preference_k_csv(out_dir: str, frames: list[int], until: int) -> None:
+    """Pooled TS2CG --k-factor estimate per leaflet (and both combined), from every frame's
+    own {frame}_curvature_preference_stats.npy.
+
+    TS2CG's own DOP takes exactly one --k-factor for a whole run, not one
+    per lipid type (`TS2CG/tools/domain_placer.py::DOP`'s own CLI has a
+    single `-k`/`--k-factor` flag) - so this reports one pooled value per
+    leaflet, not a per-species table the way C0 is. Treating DOP's own
+    weighting formula `exp(-k*(2H-C0_i)^2*area)` as the generative model
+    and fitting its one shared free parameter k by maximum likelihood
+    against every species' own real curvature samples (holding each
+    species' own already-measured C0_i fixed) gives:
+
+        k = N_total / (2 * area * sum_i SS_i)
+
+    where `SS_i` is species i's own within-species sum of squared
+    deviations from its own C0_i (standard ANOVA-style "within-group"
+    pooling - each species keeps its own center, never one shared one),
+    and `N_total` is the total occurrence count across every species in
+    that leaflet. `area` is left at 1.0, matching DOP's own default
+    (`--area` off) - the value to pass straight to `-k` for an
+    out-of-the-box DOP run; a run with `--area` instead would need to
+    divide this by that run's own typical point area.
+
+    `SS_i` comes from each frame's own saved per-residue sum/sum-of-squares
+    (`curvature_sum`/`curvature_sum_sq` in `_one_lipid_frame`), pooled
+    across frames first (summed, not averaged - these are sums), then
+    reduced via `SS_i = sum_sq_i - sum_i^2/count_i` (the single-pass
+    variance identity, avoiding a second trajectory pass to center each
+    sample by its own already-computed C0_i).
+    """
+    num_digits = len(str(abs(until)))
+    out = Path(out_dir)
+    stats_stack = np.stack(
+        [np.load(out / f"{frame:0{num_digits}d}_curvature_preference_stats.npy") for frame in frames]
+    )  # (n_frames, n_species, 2, 2) - last axis: (sum, sum_sq), Angstrom^-1/-2
+    count_stack = np.stack(
+        [np.load(out / f"{frame:0{num_digits}d}_lipid_counts.npy") for frame in frames]
+    )  # (n_frames, n_species, 2)
+
+    total_sum = stats_stack[..., 0].sum(axis=0)  # (n_species, 2)
+    total_sum_sq = stats_stack[..., 1].sum(axis=0)  # (n_species, 2)
+    total_count = count_stack.sum(axis=0)  # (n_species, 2)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ss = total_sum_sq - np.where(total_count > 0, total_sum ** 2 / total_count, 0.0)
+    # Angstrom^-2 -> nm^-2 (x100), then x4 - the same Helfrich c0=2H doubling
+    # _write_curvature_preference_csv applies to C0 itself (x2, since C0 is
+    # linear in curvature), applied here to a SQUARED quantity (x2^2 = x4).
+    ss = ss * 100.0 * 4.0
+
+    lines = ["leaflet,k,n_total"]
+    per_leaflet: list[tuple[float, float]] = []  # (pooled_ss, n_total), for the "both" row below
+    for leaflet_idx, leaflet_name in enumerate(("upper", "lower")):
+        pooled_ss = float(ss[:, leaflet_idx].sum())
+        n_total = float(total_count[:, leaflet_idx].sum())
+        per_leaflet.append((pooled_ss, n_total))
+        k = n_total / (2.0 * pooled_ss) if pooled_ss > 0 and n_total > 0 else float("nan")
+        lines.append(f"{leaflet_name},{k:.6f},{int(n_total)}")
+
+    pooled_ss_both = sum(ss_val for ss_val, _n in per_leaflet)
+    n_total_both = sum(n_val for _ss, n_val in per_leaflet)
+    k_both = n_total_both / (2.0 * pooled_ss_both) if pooled_ss_both > 0 and n_total_both > 0 else float("nan")
+    lines.append(f"both,{k_both:.6f},{int(n_total_both)}")
+
+    (out / "curvature_preference_k.csv").write_text("\n".join(lines) + "\n")
 
 
 def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
@@ -570,6 +667,7 @@ def calc_lipids(args: argparse.Namespace, u: mda.Universe) -> None:
 
     _write_area_per_lipid_csv(args.out, species, frames, Until)
     _write_curvature_preference_csv(args.out, species, frames, Until)
+    _write_curvature_preference_k_csv(args.out, frames, Until)
 
 
 def _build_lipids_parser() -> argparse.ArgumentParser:

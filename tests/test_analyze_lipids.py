@@ -4,16 +4,17 @@ _true_surface_area/_one_lipid_frame, and core/headgroup.py's
 _headgroup_centers), the final trajectory-averaged area_per_lipid.csv
 (_write_area_per_lipid_csv), the per-lipid preferred-curvature sampling
 (_curvature_at_points, and _one_lipid_frame's curvature_preference output),
-and its own trajectory-averaged curvature_preference.csv
-(_write_curvature_preference_csv). Headgroup-detection internals
-(_contract_rings/_terminal_arms/_headgroup_atoms_from_graph/_require_bonds)
-have their own tests in test_headgroup.py.
+its own trajectory-averaged curvature_preference.csv
+(_write_curvature_preference_csv), and the pooled TS2CG --k-factor estimate
+derived from the same per-residue samples (_write_curvature_preference_k_csv).
+Headgroup-detection internals (_contract_rings/_terminal_arms/
+_headgroup_atoms_from_graph/_require_bonds) have their own tests in
+test_headgroup.py.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import MDAnalysis as mda
 import numpy as np
@@ -26,6 +27,7 @@ from CALM.analyze.lipids import (
     _true_surface_area,
     _write_area_per_lipid_csv,
     _write_curvature_preference_csv,
+    _write_curvature_preference_k_csv,
 )
 from CALM.core import fourier_build as fb
 from CALM.core.curvature import shape_operator_curvatures
@@ -250,7 +252,8 @@ def test_one_lipid_frame_flat_surface_area_per_lipid(tmp_path: Path) -> None:
     # species order: POPC=0, POPE=1, CHOL=2; leaflet order: upper=0, lower=1
     assert counts[0, 0] == 3  # 3 POPC residues, all upper
     assert counts[1, 0] == 2  # 2 POPE residues, all upper
-    assert counts[2, 0] == 1  # 1 CHOL residue, upper - present in counts even though not "requested" beyond being listed
+    # 1 CHOL residue, upper - present in counts even though not "requested" beyond being listed.
+    assert counts[2, 0] == 1
     assert (counts[:, 1] == 0).all()  # nothing assigned to the (empty) lower leaflet
 
     # On a flat surface, true (curved) area-per-lipid equals the flat area-per-lipid.
@@ -522,24 +525,26 @@ def test_write_curvature_preference_csv_converts_units_and_skips_nan_frames(tmp_
     lines = content.strip().splitlines()
     assert lines[0] == "leaflet,species,C0_nm-1,C0_stderr_nm-1,mean_count,n_frames_sampled"
 
-    # POPC upper: mean(0.02, 0.04) A^-1 = 0.03 -> 0.3 nm^-1; 2 real samples.
-    assert "upper,POPC,0.300000," in content
+    # POPC upper: mean(0.02, 0.04) A^-1 = 0.03 -> 0.3 nm^-1, doubled to match
+    # TS2CG's own Helfrich c0=2H convention -> 0.6 nm^-1; 2 real samples.
+    assert "upper,POPC,0.600000," in content
     assert ",2\n" in content or content.rstrip().endswith(",2")
     # POPC lower: never present - NaN C0, zero samples.
     assert "lower,POPC,nan,nan,0.00,0" in content
 
-    # POPE upper: mean(0.00, 0.02) -> 0.1 nm^-1; lower: mean(0.01, 0.03) -> 0.2 nm^-1.
-    assert "upper,POPE,0.100000," in content
-    assert "lower,POPE,0.200000," in content
+    # POPE upper: mean(0.00, 0.02) -> 0.1 nm^-1 doubled -> 0.2 nm^-1;
+    # lower: mean(0.01, 0.03) -> 0.2 nm^-1 doubled -> 0.4 nm^-1.
+    assert "upper,POPE,0.200000," in content
+    assert "lower,POPE,0.400000," in content
 
     # "both" for POPC falls back entirely to its only real leaflet (upper),
     # since the lower leaflet contributes zero weight (NaN there).
-    assert "both,POPC,0.300000," in content
+    assert "both,POPC,0.600000," in content
 
     # "both" for POPE is a genuine count-weighted average of both leaflets'
     # own values: weights are POPE's own mean_count per leaflet (3.0 upper,
-    # mean(4,6)=5.0 lower), applied to the already-asserted 0.1/0.2 nm^-1.
-    expected_both_pope = (3.0 * 0.1 + 5.0 * 0.2) / (3.0 + 5.0)
+    # mean(4,6)=5.0 lower), applied to the already-doubled 0.2/0.4 nm^-1.
+    expected_both_pope = (3.0 * 0.2 + 5.0 * 0.4) / (3.0 + 5.0)
     assert f"both,POPE,{expected_both_pope:.6f}," in content
 
 
@@ -552,3 +557,105 @@ def test_write_curvature_preference_csv_both_is_nan_when_absent_from_every_leafl
 
     content = (tmp_path / "curvature_preference.csv").read_text()
     assert "both,POPI,nan,nan,0.00,0" in content
+
+
+def test_one_lipid_frame_curvature_preference_stats_match_the_saved_mean(tmp_path: Path) -> None:
+    """{frame}_curvature_preference_stats.npy's own sum, divided by that species/leaflet's
+    own count, must reproduce {frame}_curvature_preference.npy's own mean exactly - the
+    same sign-adjusted per-residue values, just not yet collapsed to one number."""
+    u, layer_group, layer_group_2 = _curved_lipid_universe()
+
+    fb._worker_state["universe"] = u
+    fb._worker_state["layer_group"] = layer_group
+    fb._worker_state["layer_group_2"] = layer_group_2
+    fb._worker_state["rotation_and_center"] = None
+    try:
+        lipids_module._one_lipid_frame(
+            0, out_dir=str(tmp_path), species=["POPC", "POPS", "POPE"], dynamic_select=False,
+            until=1, Nx=5.0, Ny=5.0, sqrt_n_atoms=40, regularize=False,
+        )
+    finally:
+        fb._worker_state.clear()
+
+    cp = np.load(tmp_path / "0_curvature_preference.npy")
+    stats = np.load(tmp_path / "0_curvature_preference_stats.npy")  # [species, leaflet, (sum, sum_sq)]
+    counts = np.load(tmp_path / "0_lipid_counts.npy")
+
+    for i in range(3):
+        for leaflet in (0, 1):
+            if counts[i, leaflet] > 0:
+                assert np.isclose(stats[i, leaflet, 0] / counts[i, leaflet], cp[i, leaflet])
+                # Cauchy-Schwarz: sum_sq*count >= sum^2 always - the implied
+                # variance (sum_sq - sum^2/count) is never negative.
+                assert stats[i, leaflet, 1] * counts[i, leaflet] >= stats[i, leaflet, 0] ** 2 - 1e-12
+            else:
+                assert stats[i, leaflet, 0] == 0.0
+                assert stats[i, leaflet, 1] == 0.0
+
+
+def test_write_curvature_preference_k_csv_pools_within_species_deviations(tmp_path: Path) -> None:
+    # Species A, upper: two residues at d = +0.01, -0.01 A^-1 (own mean 0, nonzero spread).
+    # Species B, upper: one residue at d = 0.05 A^-1 (own mean 0.05, trivially zero spread -
+    # a single sample has no variance around its own single-point mean).
+    # Lower leaflet: no data for either species.
+    stats = np.zeros((2, 2, 2))  # [species, leaflet, (sum, sum_sq)]
+    stats[0, 0] = [0.0, 0.0002]  # A upper: sum(d)=0.01-0.01=0, sum(d^2)=0.0001+0.0001
+    stats[1, 0] = [0.05, 0.0025]  # B upper: sum(d)=0.05, sum(d^2)=0.0025
+    np.save(tmp_path / "0_curvature_preference_stats.npy", stats)
+    np.save(tmp_path / "0_lipid_counts.npy", np.array([[2.0, 0.0], [1.0, 0.0]]))
+
+    _write_curvature_preference_k_csv(str(tmp_path), [0], until=1)
+
+    content = (tmp_path / "curvature_preference_k.csv").read_text()
+    lines = content.strip().splitlines()
+    assert lines[0] == "leaflet,k,n_total"
+
+    # SS_A = 0.0002 - 0^2/2 = 0.0002 A^-2; SS_B = 0.0025 - 0.05^2/1 = 0 (single sample).
+    # Pooled SS (A^-2) = 0.0002 -> nm^-2 (x100) -> Helfrich doubling (x4) = 0.08.
+    # N_total = 3 -> k = 3 / (2*0.08) = 18.75.
+    assert "upper,18.750000,3" in content
+    # Lower leaflet: no data anywhere - k is NaN, n_total 0.
+    assert "lower,nan,0" in content
+    # "both": same as upper alone, since lower contributed nothing.
+    assert "both,18.750000,3" in content
+
+
+def test_write_curvature_preference_k_csv_single_sample_species_contributes_zero_variance(
+    tmp_path: Path,
+) -> None:
+    """A species with exactly one occurrence anywhere contributes 0 to the pooled sum of
+    squares (a single point has no spread around its own mean) but still counts toward N -
+    correctly reflecting "no variance information from here", not inflating k artificially."""
+    stats = np.zeros((1, 2, 2))
+    stats[0, 0] = [0.03, 0.0009]  # one residue, d=0.03 -> SS = 0.0009 - 0.0009 = 0
+    np.save(tmp_path / "0_curvature_preference_stats.npy", stats)
+    np.save(tmp_path / "0_lipid_counts.npy", np.array([[1.0, 0.0]]))
+
+    _write_curvature_preference_k_csv(str(tmp_path), [0], until=1)
+
+    content = (tmp_path / "curvature_preference_k.csv").read_text()
+    # Pooled SS is exactly 0 - k is undefined (NaN), not infinite or zero.
+    assert "upper,nan,1" in content
+
+
+def test_write_curvature_preference_k_csv_pools_sums_across_frames_not_per_frame_means(
+    tmp_path: Path,
+) -> None:
+    """Sums (not per-frame means) are pooled across frames before the single-pass variance
+    identity is applied - splitting the same data across two frames must give the same k
+    as reporting it all in one frame."""
+    stats0 = np.zeros((1, 2, 2))
+    stats0[0, 0] = [0.01, 0.0001]
+    stats1 = np.zeros((1, 2, 2))
+    stats1[0, 0] = [-0.01, 0.0001]
+    np.save(tmp_path / "0_curvature_preference_stats.npy", stats0)
+    np.save(tmp_path / "0_lipid_counts.npy", np.array([[1.0, 0.0]]))
+    np.save(tmp_path / "1_curvature_preference_stats.npy", stats1)
+    np.save(tmp_path / "1_lipid_counts.npy", np.array([[1.0, 0.0]]))
+
+    _write_curvature_preference_k_csv(str(tmp_path), [0, 1], until=2)
+
+    content = (tmp_path / "curvature_preference_k.csv").read_text()
+    # Pooled: sum=0, sum_sq=0.0002, count=2 -> SS = 0.0002 - 0 = 0.0002 A^-2
+    # -> nm^-2 (x100) -> Helfrich doubling (x4) = 0.08 -> k = 2/(2*0.08) = 12.5.
+    assert "upper,12.500000,2" in content
