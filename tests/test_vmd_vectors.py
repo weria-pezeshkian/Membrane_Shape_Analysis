@@ -1,6 +1,7 @@
 """Tests for vmd_vectors's static/dynamic principal-direction TCL scripts:
 arrow endpoints, --which/--layer filtering, --Remove-TMD hole exclusion,
-per-frame (not averaged) directions in the dynamic script, and --scale.
+per-frame (not averaged) directions in the dynamic script, --scale, and the
+k1/k2 families that continue across neighbors and frames.
 """
 
 from __future__ import annotations
@@ -11,7 +12,12 @@ import numpy as np
 import pytest
 
 from CALM.core.fourier_sft import SFT
-from CALM.utilize.vmd_vectors import build_dynamic_vectors_tcl, build_static_vectors_tcl, vmd_vectors
+from CALM.utilize.vmd_vectors import (
+    build_dynamic_vectors_tcl,
+    build_static_vectors_tcl,
+    family_swap_mask,
+    vmd_vectors,
+)
 
 
 def _make_q_mn(Lx: float, Ly: float, Nx: int, Ny: int, theta: float) -> np.ndarray:
@@ -186,3 +192,74 @@ def test_scale_multiplies_arrow_length_and_defaults_to_ten(tmp_path: Path) -> No
     # Default scale is 10: base fixed length 15 Angstrom -> 150.
     assert "calm_draw_arrow {0.0000 0.0000 0.0000} {150.0000 0.0000 0.0000} red" in out_default.read_text()
     assert "calm_draw_arrow {0.0000 0.0000 0.0000} {30.0000 0.0000 0.0000} red" in out_explicit.read_text()
+
+
+def _stripe_dirs(gridsize: int, swapped_columns: slice) -> np.ndarray:
+    """A 6-slice principal_dirs stack whose stored k1 points along +x and k2 along +y, except
+    in `swapped_columns`, where the stored labels are the other way round."""
+    dirs = np.zeros((6, gridsize, gridsize, 3))
+    dirs[0::2, ..., 0] = 1.0
+    dirs[1::2, ..., 1] = 1.0
+    dirs[0::2, :, swapped_columns] = [0.0, 1.0, 0.0]
+    dirs[1::2, :, swapped_columns] = [1.0, 0.0, 0.0]
+    return dirs
+
+
+def test_family_swap_mask_swaps_the_smaller_stripe() -> None:
+    dirs = _stripe_dirs(4, slice(3, 4))
+    swap = family_swap_mask(dirs[0], dirs[1])
+    assert swap[:, 3].all()
+    assert not swap[:, :3].any()
+
+
+def test_family_swap_mask_never_swaps_nan_points() -> None:
+    dirs = _stripe_dirs(4, slice(3, 4))
+    dirs[:, 0, 3] = np.nan
+    swap = family_swap_mask(dirs[0], dirs[1])
+    assert not swap[0, 3]
+    assert swap[1:, 3].all()
+
+
+def test_static_red_arrows_keep_one_axis_and_carry_their_own_curvature(tmp_path: Path) -> None:
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    gridsize = 4
+    np.save(in_dir / "0_principal_dirs.npy", _stripe_dirs(gridsize, slice(3, 4)))
+    np.save(in_dir / "0_Z_fitted.npy", np.zeros((3, gridsize, gridsize)))
+    curv = np.zeros((6, gridsize, gridsize))
+    curv[0::2] = 2.0  # stored k1
+    curv[1::2] = 1.0  # stored k2
+    curv[0::2, :, 3] = 3.0  # stored k1 of the swapped column, along y
+    curv[1::2, :, 3] = 0.5  # stored k2 of the swapped column, along x
+    np.save(in_dir / "0_principal_curvatures.npy", curv)
+    sft = _make_sft([0.0], Lx=100.0, Ly=100.0)
+
+    out_path = tmp_path / "static.tcl"
+    build_static_vectors_tcl(
+        sft, str(in_dir), str(out_path), which="k1", layers=["upper"], step=1, dynamic_length=True, scale=1.0
+    )
+
+    content = out_path.read_text()
+    # Column 3 sits at x = 75: its red arrow runs along x with the stored k2 of 0.5 (length 5).
+    assert "calm_draw_arrow {75.0000 0.0000 0.0000} {80.0000 0.0000 0.0000} red" in content
+    assert "calm_draw_arrow {0.0000 0.0000 0.0000} {20.0000 0.0000 0.0000} red" in content
+    assert " {0.0000 15.0000 0.0000} red" not in content
+
+
+def test_dynamic_red_arrows_keep_the_previous_frames_axis(tmp_path: Path) -> None:
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    gridsize = 2
+    np.save(in_dir / "0_principal_dirs.npy", _stripe_dirs(gridsize, slice(0, 0)))
+    np.save(in_dir / "1_principal_dirs.npy", _stripe_dirs(gridsize, slice(0, gridsize)))
+    np.save(in_dir / "0_Z_fitted.npy", np.zeros((3, gridsize, gridsize)))
+    np.save(in_dir / "1_Z_fitted.npy", np.zeros((3, gridsize, gridsize)))
+    sft = _make_sft([0.0, 0.0], Lx=100.0, Ly=100.0)
+
+    out_path = tmp_path / "dynamic.tcl"
+    build_dynamic_vectors_tcl(sft, str(in_dir), str(out_path), which="k1", layers=["upper"], step=1, scale=1.0)
+
+    frames = [line for line in out_path.read_text().splitlines() if line.startswith("    { {")]
+    assert len(frames) == 2
+    for frame in frames:
+        assert "{0.0000 0.0000 0.0000 15.0000 0.0000 0.0000 red}" in frame
