@@ -10,6 +10,7 @@ from ..core.manual import add_manual
 from ..core.rotation import fixed_circle_radius, rotation_was_used
 from .plot import _frame_filtered_glob, _load_and_mask
 from .replica_average import add_replica_argument, align_and_average, all_replica_dirs
+from .style import DPI, LABEL_SIZE, LEGEND_SIZE, TICK_SIZE
 
 plt.rcParams["font.family"] = "serif"
 
@@ -219,7 +220,6 @@ def draw(
         lower_x, lower_profile, lower_band, _ = align_and_average([(p[2], p[3]) for p in per_dir])
 
     linewidth = 3
-    fontsize = 22
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.axhline(0, color="black", linewidth=linewidth, linestyle="--", alpha=0.8)
@@ -235,9 +235,9 @@ def draw(
             lower_x, lower_profile - lower_band, lower_profile + lower_band,
             color="tab:blue", alpha=0.2, linewidth=0,
         )
-    ax.set_xlabel("Radial distance from center (Angstrom)", fontsize=fontsize)
-    ax.set_ylabel(ylabel, fontsize=fontsize)
-    ax.tick_params(labelsize=fontsize * 0.8, width=linewidth, length=2 * linewidth)
+    ax.set_xlabel("Radial distance from center (Angstrom)", fontsize=LABEL_SIZE)
+    ax.set_ylabel(ylabel, fontsize=LABEL_SIZE)
+    ax.tick_params(labelsize=TICK_SIZE, width=linewidth, length=2 * linewidth)
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
     ax.spines["left"].set_linewidth(linewidth)
@@ -255,10 +255,10 @@ def draw(
     )
     ax.fill(no_value_x, no_value_y, color="gray", alpha=0.15, label="No value", zorder=0)
     ax.set_ylim(y_min, y_max)
-    ax.legend(fontsize=fontsize * 0.8)
+    ax.legend(fontsize=LEGEND_SIZE)
 
     fig.tight_layout()
-    fig.savefig(filename, dpi=150)
+    fig.savefig(filename, dpi=DPI)
     plt.close(fig)
 
 

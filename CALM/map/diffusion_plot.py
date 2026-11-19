@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..core.manual import add_manual
+from .plot import fit_figure_to_content
 from .replica_average import add_replica_argument, align_and_average, all_replica_dirs
+from .style import DPI, LABEL_SIZE, LEGEND_SIZE, TICK_SIZE
 
 plt.rcParams["font.family"] = "serif"
 
@@ -55,18 +57,21 @@ def _draw_guide_line(
     )
 
 
-def _style_axes_and_save(fig: plt.Figure, ax: plt.Axes, filename: str, fontsize: float, linewidth: float) -> None:
-    ax.set_xlabel("Lag time (ps)", fontsize=fontsize)
-    ax.set_ylabel(r"MSD ($\mathrm{\AA}^2$)", fontsize=fontsize)
-    ax.tick_params(labelsize=fontsize, width=linewidth * 1.5, length=3 * linewidth)
+def _style_axes_and_save(fig: plt.Figure, ax: plt.Axes, filename: str, linewidth: float) -> None:
+    ax.set_xlabel("Lag time (ps)", fontsize=LABEL_SIZE)
+    ax.set_ylabel(r"MSD ($\mathrm{\AA}^2$)", fontsize=LABEL_SIZE)
+    ax.tick_params(labelsize=TICK_SIZE, width=linewidth * 1.5, length=3 * linewidth)
+    # Log axes label their minor ticks too (e.g. 2x10^1, 3x10^1).
+    ax.tick_params(which="minor", labelsize=TICK_SIZE)
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
     ax.spines["left"].set_linewidth(linewidth)
     ax.spines["bottom"].set_linewidth(linewidth)
-    ax.legend(fontsize=fontsize * 0.5)
+    # The legend sits right of the axes; the figure widens to hold it.
+    ax.legend(fontsize=LEGEND_SIZE, loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
-    fig.tight_layout()
-    fig.savefig(filename, dpi=150)
+    fit_figure_to_content(fig)
+    fig.savefig(filename, dpi=DPI)
     plt.close(fig)
 
 
@@ -109,7 +114,6 @@ def draw(
     species_order = sorted({str(s) for diffusion_rows, _ in per_dir for s in diffusion_rows["species"]})
     color_by_species = {name: f"C{i}" for i, name in enumerate(species_order)}
 
-    fontsize = 22
     linewidth = 3
     fig, ax = plt.subplots(figsize=(10, 8))
     guide_anchor: tuple[float, float] | None = None
@@ -179,7 +183,7 @@ def draw(
                 guide_anchor = (float(tau_common[0]), float(msd_mean[0]))
 
     _draw_guide_line(ax, scale, guide_anchor, linewidth)
-    _style_axes_and_save(fig, ax, filename, fontsize, linewidth)
+    _style_axes_and_save(fig, ax, filename, linewidth)
 
 
 def _build_diffusion_plot_parser() -> argparse.ArgumentParser:

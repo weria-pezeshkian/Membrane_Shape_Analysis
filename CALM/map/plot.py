@@ -23,6 +23,7 @@ from ..core.rotation import (
     recover_all_rotation_angles,
     rotation_was_used,
 )
+from .style import DPI, FIGURE_TITLE_SIZE, LABEL_SIZE, PANEL_TITLE_SIZE, TICK_SIZE
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -332,8 +333,9 @@ def _add_colorbar_histogram(fig, cbar_ax, values: np.ndarray, levels: np.ndarray
     vertical axis lines up with the colorbar's color mapping one-to-one.
     `side` ("left" or "right") places the strip on the side of `cbar_ax`
     facing away from the data panels, bars growing outward from it. Sits
-    with no gap against the colorbar; `cbar_ax`'s own ticks and axis label
-    are pushed out past the strip's own width so neither overlaps it.
+    with no gap against the colorbar; `cbar_ax`'s tick labels are pushed out
+    past the strip's own width, and its axis label follows them at its usual
+    spacing.
     """
     valid = values[~np.isnan(values)]
     counts, _ = np.histogram(valid, bins=levels)
@@ -359,7 +361,30 @@ def _add_colorbar_histogram(fig, cbar_ax, values: np.ndarray, levels: np.ndarray
 
     hist_width_points = width * fig.get_figwidth() * 72
     cbar_ax.tick_params(pad=hist_width_points + 4)
-    cbar_ax.yaxis.labelpad = hist_width_points + 55
+
+
+def fit_figure_to_content(fig, margin_in: float = 0.2) -> None:
+    """Resize `fig` so its drawn content sits `margin_in` inches from every edge.
+
+    Every axes keeps its size and its distance to every other axes in inches;
+    only the outer margins change, so text of any size fits inside the figure.
+    """
+    fig.canvas.draw()
+    width, height = fig.get_size_inches()
+    content = fig.get_tightbbox(fig.canvas.get_renderer())
+    new_width = content.width + 2 * margin_in
+    new_height = content.height + 2 * margin_in
+    shift_x = margin_in - content.x0
+    shift_y = margin_in - content.y0
+    for ax in fig.axes:
+        pos = ax.get_position()
+        ax.set_position((
+            (pos.x0 * width + shift_x) / new_width,
+            (pos.y0 * height + shift_y) / new_height,
+            pos.width * width / new_width,
+            pos.height * height / new_height,
+        ))
+    fig.set_size_inches(new_width, new_height)
 
 
 def draw(
@@ -409,7 +434,6 @@ def draw(
     `_apply_alpha_overlay`) - a point with no real data in any averaged
     frame still renders fully white either way.
     """
-    fontsize = 20
     # Extra figure width (inches) a colorbar histogram strip, plus its
     # colorbar's own pushed-out ticks and axis label, need beyond a plain
     # colorbar alone - added to figsize rather than reclaimed from the
@@ -454,25 +478,26 @@ def draw(
             ax, X, Y, thickness_mean, thickness_missing, circle_radius, box_size,
             cmap="viridis", levels=thickness_levels,
         )
-        ax.set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
+        ax.set_title("Bilayer Thickness", fontsize=FIGURE_TITLE_SIZE, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes((10.44 / fig_w, 0.1, 0.36 / fig_w, 0.8))
         cbar = fig.colorbar(contour, cax=cbar_ax)
-        cbar.set_label("Thickness (nm)", fontsize=fontsize)
-        cbar_ax.tick_params(labelsize=fontsize)
+        cbar.set_label("Thickness (nm)", fontsize=LABEL_SIZE)
+        cbar_ax.tick_params(labelsize=TICK_SIZE)
         if histogram:
             _add_colorbar_histogram(fig, cbar_ax, thickness_mean, thickness_levels, side="right")
 
         ax.set_aspect(box_size[0] / box_size[1])
         ax.set_xticks([0, box_size[0]])
         ax.set_yticks([0, box_size[1]])
-        ax.set_xticklabels(['0', 'L$_x$'], fontsize=fontsize)
-        ax.set_yticklabels(['0', 'L$_y$'], fontsize=fontsize)
+        ax.set_xticklabels(['0', 'L$_x$'], fontsize=TICK_SIZE)
+        ax.set_yticklabels(['0', 'L$_y$'], fontsize=TICK_SIZE)
 
+        fit_figure_to_content(fig)
         if filename == "":
             plt.show()
         else:
-            fig.savefig(filename, dpi=300)
+            fig.savefig(filename, dpi=DPI)
             plt.close(fig)
         return
 
@@ -583,7 +608,7 @@ def draw(
             axes[0], X, Y, thickness_mean, thickness_missing, circle_radius, box_size,
             cmap="viridis", levels=thickness_levels,
         )
-        axes[0].set_title("Bilayer Thickness", fontsize=fontsize, fontweight="bold", pad=title_pad)
+        axes[0].set_title("Bilayer Thickness", fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad)
 
         contour1 = _draw_masked_contourf(
             axes[1], X, Y, curvature_data1, missing1, circle_radius, box_size,
@@ -598,13 +623,13 @@ def draw(
             cmap="plasma", norm=norm, levels=levels,
         )
 
-        axes[1].set_title(f"{layer1} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
-        axes[2].set_title(f"{layer2} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
-        axes[3].set_title(f"{layer3} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+        axes[1].set_title(f"{layer1} Surface: {quantity}", fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad)
+        axes[2].set_title(f"{layer2} Surface: {quantity}", fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad)
+        axes[3].set_title(f"{layer3} Surface: {quantity}", fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad)
 
         cbar_ax = fig.add_axes(((1.728 + shift) / fig_w, 0.15, 0.64 / fig_w, 0.7))
-        fig.colorbar(contour0, cax=cbar_ax).set_label("Thickness (nm)", fontsize=fontsize)
-        cbar_ax.tick_params(labelsize=fontsize)
+        fig.colorbar(contour0, cax=cbar_ax).set_label("Thickness (nm)", fontsize=LABEL_SIZE)
+        cbar_ax.tick_params(labelsize=TICK_SIZE)
         cbar_ax.yaxis.set_ticks_position('left')
         cbar_ax.yaxis.set_label_position('left')
         if histogram:
@@ -612,9 +637,9 @@ def draw(
 
         cbar_ax2 = fig.add_axes(((28.16 + shift) / fig_w, 0.15, 0.64 / fig_w, 0.7))
         cbar2 = fig.colorbar(contour1, cax=cbar_ax2)
-        cbar2.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
+        cbar2.set_label("Curvature (nm$^{-1}$)", fontsize=LABEL_SIZE)
         cbar2.ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-        cbar2.ax.tick_params(labelsize=fontsize)
+        cbar2.ax.tick_params(labelsize=TICK_SIZE)
         if histogram:
             combined = np.concatenate([curvature_data1.ravel(), curvature_data2.ravel(), curvature_data3.ravel()])
             _add_colorbar_histogram(fig, cbar_ax2, combined, levels, side="right")
@@ -637,12 +662,14 @@ def draw(
                 axes[i], X, Y, curvatures[i], missings[i], circle_radius, box_size,
                 cmap="plasma", norm=norm, levels=levels,
             )
-            axes[i].set_title(f"{layers[i]} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+            axes[i].set_title(
+                f"{layers[i]} Surface: {quantity}", fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad,
+            )
 
         cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
-        cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
-        cbar_ax.tick_params(labelsize=fontsize)
+        cbar.set_label("Curvature (nm$^{-1}$)", fontsize=LABEL_SIZE)
+        cbar_ax.tick_params(labelsize=TICK_SIZE)
         if histogram:
             combined = np.concatenate([layer_data.ravel() for layer_data in curvatures])
             _add_colorbar_histogram(fig, cbar_ax, combined, levels, side="right")
@@ -665,12 +692,14 @@ def draw(
                 axes[i], X, Y, curvatures[i], missings[i], circle_radius, box_size,
                 cmap="plasma", norm=norm, levels=levels,
             )
-            axes[i].set_title(f"{layers[i]} Surface: {quantity}", fontsize=fontsize, fontweight="bold", pad=title_pad)
+            axes[i].set_title(
+                f"{layers[i]} Surface: {quantity}", fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad,
+            )
 
         cbar_ax = fig.add_axes((27.0 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
-        cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize, labelpad=title_pad)
-        cbar_ax.tick_params(labelsize=fontsize)
+        cbar.set_label("Curvature (nm$^{-1}$)", fontsize=LABEL_SIZE)
+        cbar_ax.tick_params(labelsize=TICK_SIZE)
         if histogram:
             combined = np.concatenate([layer_data.ravel() for layer_data in curvatures])
             _add_colorbar_histogram(fig, cbar_ax, combined, levels, side="right")
@@ -693,7 +722,7 @@ def draw(
                 cmap="plasma", norm=norm, levels=levels,
             )
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Surface: k1",
-                         fontsize=fontsize, fontweight="bold", pad=title_pad)
+                         fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad)
             if show_vectors:
                 step = 5
                 ax.quiver(X[::step, ::step], Y[::step, ::step],
@@ -707,7 +736,7 @@ def draw(
                 cmap="plasma", norm=norm, levels=levels,
             )
             ax.set_title(f"{layer1 if i==0 else layer2 if i==1 else layer3} Surface: k2",
-                         fontsize=fontsize, fontweight="bold", pad=title_pad)
+                         fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=title_pad)
             if show_vectors:
                 step = 5
                 ax.quiver(X[::step, ::step], Y[::step, ::step],
@@ -716,8 +745,8 @@ def draw(
 
         cbar_ax = fig.add_axes((27.9 / fig_w, 0.08, 0.6 / fig_w, 0.8))
         cbar = fig.colorbar(c, cax=cbar_ax)
-        cbar.set_label("Curvature (nm$^{-1}$)", fontsize=fontsize)
-        cbar_ax.tick_params(labelsize=fontsize)
+        cbar.set_label("Curvature (nm$^{-1}$)", fontsize=LABEL_SIZE)
+        cbar_ax.tick_params(labelsize=TICK_SIZE)
         cbar.ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
         if histogram:
             combined = np.concatenate([layer_data.ravel() for layer_data in curvature_k1 + curvature_k2])
@@ -727,13 +756,14 @@ def draw(
         ax.set_aspect(box_size[0] / box_size[1])
         ax.set_xticks([0, box_size[0]])
         ax.set_yticks([0, box_size[1]])
-        ax.set_xticklabels(['0', 'L$_x$'], fontsize=fontsize)
-        ax.set_yticklabels(['0', 'L$_y$'], fontsize=fontsize)
+        ax.set_xticklabels(['0', 'L$_x$'], fontsize=TICK_SIZE)
+        ax.set_yticklabels(['0', 'L$_y$'], fontsize=TICK_SIZE)
 
+    fit_figure_to_content(fig)
     if filename == "":
         plt.show()
     else:
-        fig.savefig(filename, dpi=300)
+        fig.savefig(filename, dpi=DPI)
         plt.close(fig)
 
 

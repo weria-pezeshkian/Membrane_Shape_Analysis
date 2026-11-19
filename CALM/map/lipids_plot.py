@@ -11,7 +11,8 @@ import numpy as np
 
 from ..core.manual import add_manual
 from ..core.rotation import fixed_circle_radius
-from .plot import _apply_alpha_overlay, _clip_to_circle, _frame_filtered_glob, get_XY
+from .plot import _apply_alpha_overlay, _clip_to_circle, _frame_filtered_glob, fit_figure_to_content, get_XY
+from .style import DPI, LABEL_SIZE, PANEL_TITLE_SIZE, TICK_SIZE
 
 warnings.filterwarnings("ignore")
 
@@ -142,7 +143,7 @@ def _lipids_dimensions(Dir: str, frame_numbers: Iterable[int] | None) -> np.ndar
 
 def _render_panel(
     ax, X: np.ndarray, Y: np.ndarray, frac: np.ndarray, levels: np.ndarray,
-    circle_radius: float | None, box_size: np.ndarray, title: str, fontsize: int,
+    circle_radius: float | None, box_size: np.ndarray, title: str,
     frac_missing: np.ndarray | None = None,
 ):
     """One leaflet's own occupancy-frequency panel: contourf + circle-clip + ticks/aspect. Returns the contour set.
@@ -155,11 +156,11 @@ def _render_panel(
     _clip_to_circle(contour, ax, circle_radius, box_size)
     if frac_missing is not None:
         _apply_alpha_overlay(ax, frac_missing, circle_radius, box_size)
-    ax.set_title(title, fontsize=fontsize, fontweight="bold", pad=12)
+    ax.set_title(title, fontsize=PANEL_TITLE_SIZE, fontweight="bold", pad=12)
     ax.set_xticks([0, box_size[0]])
     ax.set_yticks([0, box_size[1]])
-    ax.set_xticklabels(['0', 'L$_x$'], fontsize=fontsize)
-    ax.set_yticklabels(['0', 'L$_y$'], fontsize=fontsize)
+    ax.set_xticklabels(['0', 'L$_x$'], fontsize=TICK_SIZE)
+    ax.set_yticklabels(['0', 'L$_y$'], fontsize=TICK_SIZE)
     ax.set_aspect(box_size[0] / box_size[1])
     return contour
 
@@ -204,7 +205,6 @@ def draw(
     figure interactively in turn (`plt.show()` blocks until closed)
     instead of saving either.
     """
-    fontsize = 20
     species = _read_species(Dir)
     n_species = len(species)
 
@@ -239,16 +239,17 @@ def draw(
             frac = mean_fractions[row, leaflet_idx]  # (gridsize, gridsize), NaN where holed
             missing = frac_missing_all[row, leaflet_idx] if frac_missing_all is not None else None
             contour = _render_panel(
-                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), fontsize, missing
+                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), missing
             )
     cbar_ax = fig.add_axes((0.89, 0.08, 0.02, 0.84))
     cbar = fig.colorbar(contour, cax=cbar_ax)
-    cbar.set_label("Occupancy frequency", fontsize=fontsize)
-    cbar_ax.tick_params(labelsize=fontsize)
+    cbar.set_label("Occupancy frequency", fontsize=LABEL_SIZE)
+    cbar_ax.tick_params(labelsize=TICK_SIZE)
+    fit_figure_to_content(fig)
     if filename == "":
         plt.show()
     else:
-        fig.savefig(filename, dpi=300)
+        fig.savefig(filename, dpi=DPI)
         plt.close(fig)
 
     # Per-species detail: one two-panel figure, own colorbar, per species.
@@ -260,18 +261,19 @@ def draw(
             frac = mean_fractions[row, leaflet_idx]  # (gridsize, gridsize), NaN where holed
             missing = frac_missing_all[row, leaflet_idx] if frac_missing_all is not None else None
             contour = _render_panel(
-                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), fontsize, missing
+                ax, X, Y, frac, levels, circle_radius, box_size, panel_title(name, leaflet_idx), missing
             )
 
         cbar_ax = fig.add_axes((0.89, 0.1, 0.02, 0.78))
         cbar = fig.colorbar(contour, cax=cbar_ax)
-        cbar.set_label("Occupancy frequency", fontsize=fontsize)
-        cbar_ax.tick_params(labelsize=fontsize)
+        cbar.set_label("Occupancy frequency", fontsize=LABEL_SIZE)
+        cbar_ax.tick_params(labelsize=TICK_SIZE)
 
+        fit_figure_to_content(fig)
         if filename == "":
             plt.show()
         else:
-            fig.savefig(_species_outfile(filename, name), dpi=300)
+            fig.savefig(_species_outfile(filename, name), dpi=DPI)
             plt.close(fig)
 
 
